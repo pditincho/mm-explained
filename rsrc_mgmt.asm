@@ -8,10 +8,6 @@
 #import "actor.asm"
 #import "misc.asm"
 
-/*===========================================
- * Private variables & constants
- *-------------------------------------------*/
-
 .const RSRC_DHDR_BYTES              = $04   // On-disk header size (bytes).
 .const RSRC_MHDR_BYTES              = $04   // In-memory header size (bytes).
 
@@ -36,8 +32,6 @@
 .const PRIORITY_WRAP_AT    = $04    // Threshold: if evict_pri_cur ≥ this, set to $FF so INC → $00 (wrap to ROOM).
 
 
-/*-------------------------------------------*/
-
 .label rsrc_hdr_ptr                 = $4F   // ZP pointer → header base in RAM; used with (rsrc_hdr_ptr),Y indexed accesses.
 .label rsrc_payload_ptr             = $E4   // 16-bit pointer → first byte after header (payload start).
 .label rsrc_payload_len             = $E6   // 16-bit remaining payload byte count (used during checksum loop).
@@ -50,9 +44,9 @@
  *   - Immediately after disk read: use as 4-byte disk header scratch (copy target).
  *   - After header parse: reuse lo/hi as 16-bit total size (header + payload).
  */
-.label rsrc_hdr_scratch             = $553b // 4-byte scratch buffer for on-disk header copy.
-.label rsrc_total_bytes             = $553b // 16-bit total size in bytes (header + payload); aliases rsrc_hdr_scratch.
-.label rsrc_data_ptr                = $553f // 16-bit pointer → resource base in RAM (header at +0, payload at +RSRC_*HDR_BYTES).
+.label rsrc_hdr_scratch             = $553B // 4-byte scratch buffer for on-disk header copy.
+.label rsrc_total_bytes             = $553B // 16-bit total size in bytes (header + payload); aliases rsrc_hdr_scratch.
+.label rsrc_data_ptr                = $553F // 16-bit pointer → resource base in RAM (header at +0, payload at +RSRC_*HDR_BYTES).
 
 .label rsrc_raw_size                = $FD9C // 16-bit raw payload size (bytes); written into memory header size fields.
 
@@ -88,32 +82,30 @@
 .label tmp_ptr_hi = $18
 .label costume_idx_saved = $15
 
-/*===========================================
- * rsrc_ensure_costume_resident: ensure a costume resource is resident; load and publish if missing
- *
- * Summary:
- *   Given a costume index in X, returns immediately if the costume is already
- *   resident (pointer table non-zero). Otherwise, selects the correct disk
- *   side/chain from the owning room, programs the disk stream position using
- *   a 2-byte disk-location entry (offset + sector), loads the costume via the
- *   generic resource loader, and publishes the resulting pointer to the
- *   costume pointer tables.
- *
- * Arguments:
- *   X                        Costume resource index (0..N).
- *
- * Returns:
- *   (none in regs)           Pointer is published to costume_ptr_{lo,hi}_tbl[resource_index].
- *   Flags/regs               Clobbers A/X/Y and flags (Y ends holding resource_index).
- *
- * Description:
- *   1) Fast path: if costume_ptr_hi_tbl[X] ≠ 0 → already loaded → rts.
- *   2) Miss path:
- *        - Save costume index; X := costume_room_res_idx[index]; jsr room_disk_chain_prepare.
- *        - X := 2*index; set rsrc_read_offset (offset-in-sector) and rsrc_sector_step (sector index).
- *        - resource_type := #$02 (COSTUME); jsr rsrc_load_from_disk → X:Y pointer.
- *        - Publish pointer into costume tables at rsrc_resource_index; rts.
- *===========================================*/
+/*
+================================================================================
+  rsrc_ensure_costume_resident
+================================================================================
+Summary:
+	Given a costume index in X, returns immediately if the costume is already
+	resident (pointer table non-zero). Otherwise, selects the correct disk
+	side/chain from the owning room, programs the disk stream position using
+	a 2-byte disk-location entry (offset + sector), loads the costume via the
+	generic resource loader, and publishes the resulting pointer to the
+	costume pointer tables.
+
+Arguments:
+	X                        Costume resource index (0..N).
+
+Description:
+	1) Fast path: if costume_ptr_hi_tbl[X] ≠ 0 → already loaded → rts.
+	2) Miss path:
+		- Save costume index; X := costume_room_res_idx[index]; jsr room_disk_chain_prepare.
+		- X := 2*index; set rsrc_read_offset (offset-in-sector) and rsrc_sector_step (sector index).
+		- resource_type := #$02 (COSTUME); jsr rsrc_load_from_disk → X:Y pointer.
+		- Publish pointer into costume tables at rsrc_resource_index; rts.
+================================================================================
+*/
 * = $38A8
 rsrc_ensure_costume_resident:
         // Stash the incoming costume index (X) so we can publish the pointer later.
@@ -168,43 +160,38 @@ costume_cache_miss:
         lda     tmp_ptr_hi
         sta     costume_ptr_hi_tbl,y    // table[Y].hi := ptr.hi
         rts		
-/*===========================================
- * rsrc_ensure_sound_resident: ensure a sound resource is resident; load and publish if missing
- *
- * Summary:
- *   Given a sound index in A, returns immediately if the sound is already
- *   resident (pointer table non-zero). Otherwise, selects the correct disk
- *   side/chain from the owning room, programs the disk stream position using
- *   a 2-byte disk-location entry (offset + sector), loads the sound via the
- *   generic resource loader, and publishes the resulting pointer to the
- *   sound pointer tables.
- *
- * Arguments:
- *   A                        Sound resource index (0..N).
- *
- * Uses / Globals:
- *   sound_room_idx_tbl[X]        Owning room index for sound X (selects disk side).
- *   sound_disk_loc_tbl       2 bytes/entry: +0 offset-in-sector, +1 sector index.
- *   sound_ptr_lo_tbl[Y]      Published with returned ptr.lo.
- *   sound_ptr_hi_tbl[Y]      Published with returned ptr.hi.
- *   resource_type            Set to RSRC_TYPE_SOUND prior to load.
- *   room_disk_chain_prepare  Ensures active disk side; seeds track/sector chain.
- *   rsrc_load_from_disk      Performs the stream copy; returns X=ptr.lo, Y=ptr.hi.
- *
- * Returns:
- *   Pointer                  Not returned in registers; published to tables instead.
- *   Registers                A/X clobbered; Y preserved (fast path leaves Y unchanged,
- *                            slow path restores Y from saved_y). Flags clobbered.
- *
- * Description:
- *   1) Fast path: X := A; if sound_ptr_hi_tbl[X] ≠ 0 → already loaded → RTS.
- *   2) Miss path:
- *        - Save sound index; X := sound_room_idx_tbl[index]; jsr room_disk_chain_prepare.
- *        - X := 2*index; read disk-location pair:
- *            rsrc_read_offset := disk_loc[+0]; rsrc_sector_idx := disk_loc[+1].
- *        - resource_type := RSRC_TYPE_SOUND; jsr rsrc_load_from_disk → X:Y pointer.
- *        - Publish to sound_ptr_{lo,hi}_tbl[resource_index]; restore Y; RTS.
- *===========================================*/
+/*
+================================================================================
+  rsrc_ensure_sound_resident
+================================================================================\
+Summary:
+	Given a sound index in A, returns immediately if the sound is already
+	resident (pointer table non-zero). Otherwise, selects the correct disk
+	side/chain from the owning room, programs the disk stream position using
+	a 2-byte disk-location entry (offset + sector), loads the sound via the
+	generic resource loader, and publishes the resulting pointer to the
+	sound pointer tables.
+
+Arguments:
+	A                        Sound resource index (0..N).
+
+Globals:
+	sound_room_idx_tbl[X]    Owning room index for sound X (selects disk side).
+	sound_disk_loc_tbl       2 bytes/entry: +0 offset-in-sector, +1 sector index.
+	sound_ptr_lo_tbl[Y]      Published with returned ptr.lo.
+	sound_ptr_hi_tbl[Y]      Published with returned ptr.hi.
+	resource_type            Set to RSRC_TYPE_SOUND prior to load.
+
+Description:
+	1) Fast path: X := A; if sound_ptr_hi_tbl[X] ≠ 0 → already loaded → RTS.
+	2) Miss path:
+		- Save sound index; X := sound_room_idx_tbl[index]; jsr room_disk_chain_prepare.
+		- X := 2*index; read disk-location pair:
+			rsrc_read_offset := disk_loc[+0]; rsrc_sector_idx := disk_loc[+1].
+		- resource_type := RSRC_TYPE_SOUND; jsr rsrc_load_from_disk → X:Y pointer.
+		- Publish to sound_ptr_{lo,hi}_tbl[resource_index]; restore Y; RTS.
+================================================================================
+*/
 * = $39E6
 rsrc_ensure_sound_resident:
         // Save caller’s Y only for the slow path (publish step below).
@@ -268,43 +255,38 @@ sound_cache_miss:
         // Slow-path only: restore caller’s Y (fast path returns earlier by design).
         ldy saved_y
         rts
-/*===========================================
- * rsrc_ensure_script_resident — ensure a script is resident; load from disk on miss
- *
- * Summary:
- *   Fast path: if the script at index A is already resident (ptr.hi ≠ 0),
- *   return immediately. Slow path: find the owning room, prepare the disk
- *   chain for that room, choose the correct sector/offset tables based on
- *   the script’s scope bit (index bit7), program the stream (read_offset /
- *   sector_step), set resource_type=SCRIPT, load from disk, and publish the
- *   returned data pointer into the script pointer tables.
- *
- * Arguments:
- *   A                      Script resource index (bit7 encodes scope: 0=global, 1=room).
- *   Y                      Caller-provided value (saved/restored only on slow path).
- *
- * Returns:
- *   On slow path:          X:Y = data pointer; tables updated for this script.
- *   On fast path:          RTS as soon as ptr.hi ≠ 0 (Y is NOT restored).
- *
- * Reads:
- *   room_for_script[X]     Owning room index for script X.
- *   global_script_disk_loc_tbl[2X] / global_script_sector_index[2X]
- *   room_script_disk_loc_tbl[2X] / room_script_sector_index[2X]
- *
- * Writes:
- *   script_ptr_lo_tbl[script_index], script_ptr_hi_tbl[script_index]
- *   rsrc_read_offset, rsrc_sector_step, resource_type
- *
- * Clobbers:
- *   A, X, Y (Y restored on slow path only), flags, temps (script_idx_saved/temp_2/saved_y).
- *
- * Notes:
- *   - The ASL on the script index doubles it for 2-byte tables and also captures
- *     the original bit7 into C: C=0 ⇒ global script; C=1 ⇒ room script.
- *   - Fast path does NOT restore Y; callers must not rely on Y preservation when
- *     the script is already resident.
- *===========================================*/
+/*
+================================================================================
+  rsrc_ensure_script_resident
+================================================================================
+Summary:
+	Fast path: if the script at index A is already resident (ptr.hi ≠ 0),
+	return immediately. Slow path: find the owning room, prepare the disk
+	chain for that room, choose the correct sector/offset tables based on
+	the script’s scope bit (index bit7), program the stream (read_offset /
+	sector_step), set resource_type=SCRIPT, load from disk, and publish the
+	returned data pointer into the script pointer tables.
+
+Arguments:
+	A                	Script resource index (bit7 encodes scope: 0=global, 1=room).
+	Y                   Caller-provided value (saved/restored only on slow path).
+
+Returns:
+	On slow path:        X:Y = data pointer; tables updated for this script.
+	On fast path:        RTS as soon as ptr.hi ≠ 0 (Y is NOT restored).
+
+Globals:
+	room_for_script[X]     Owning room index for script X.
+	global_script_disk_loc_tbl[2X] / global_script_sector_index[2X]
+	room_script_disk_loc_tbl[2X] / room_script_sector_index[2X]
+	script_ptr_lo_tbl[script_index], script_ptr_hi_tbl[script_index]
+	rsrc_read_offset, rsrc_sector_step, resource_type
+
+Notes:
+	- The ASL on the script index doubles it for 2-byte tables and also captures
+	 the original bit7 into C: C=0 ⇒ global script; C=1 ⇒ room script.
+================================================================================
+*/
 * = $3A29
 rsrc_ensure_script_resident:
         /*----------------------------------------
@@ -380,28 +362,26 @@ load_script_from_disk:
         // Restore caller’s Y saved on the miss path (fast path never saves/restores Y)
         ldy saved_y
         rts
-/*===========================================
- * room_disk_chain_prepare: set up sector chain for room load
- *
- * Summary:
- *   Ensures the correct disk side is active for the requested room,
- *   computes the (track, sector) pair for that room, and initializes
- *   the disk sector chain so the stream is ready for rsrc_load_from_disk.
- *
- * Arguments:
- *   X = room index              Index into per-room disk tables.
- *
- * Returns:
- *   (none)                      Disk stream positioned via disk_init_chain.
- *   Clobbers                    A, X, Y.
- *
- * Description:
- *   - If the current disk side doesn’t match active_side_id, call
- *     disk_ensure_side (X is preserved across the call via temp_index).
- *   - Offset into room_sec_trk_tbl by (room_index * 2)
- *     to fetch sector (lo) and track (hi).
- *   - Call disk_init_chain with X=sector, Y=track.
- *===========================================*/
+/*
+================================================================================
+  room_disk_chain_prepare
+================================================================================
+Summary:
+	Ensures the correct disk side is active for the requested room,
+	computes the (track, sector) pair for that room, and initializes
+	the disk sector chain so the stream is ready for rsrc_load_from_disk.
+
+Arguments:
+	X							Index into per-room disk tables.
+
+Description:
+	- If the current disk side doesn’t match active_side_id, call
+	 disk_ensure_side (X is preserved across the call via temp_index).
+	- Offset into room_sec_trk_tbl by (room_index * 2)
+	 to fetch sector (lo) and track (hi).
+	- Call disk_init_chain with X=sector, Y=track.
+================================================================================
+*/
 * = $3ABD
 room_disk_chain_prepare:
         // Side OK fast-path: if the drive’s active side matches the room’s required side, skip change.
@@ -441,48 +421,47 @@ fetch_sector_track:
         ldy chain_track
         jsr disk_init_chain                         // stream := T=Y, S=X
         rts
-/*===========================================================
- * rsrc_load_from_disk: load resource, verify checksum, and stage header
- *
- * Summary:
- *   Pauses the game loop, seeks the disk stream to this resource,
- *   copies/validates the on-disk header, allocates memory for the
- *   full object, copies the payload, computes and verifies the
- *   checksum, then continues into rsrc_hdr_init on success.
- *
- * Arguments:
- *   rsrc_read_offset		Byte offset into the resource stream.
- *   rsrc_sector_idx 		Which sector in the physical chain.
- *   rsrc_total_bytes		16-bit total size in bytes (header + payload).
- *
- * State:
- *   rsrc_hdr_scratch		Destination buffer for the on-disk header copy.
- *
- * Returns:
- *   Flow:      BEQ on checksum match → falls through to rsrc_hdr_init.
- *   Globals:   rsrc_data_ptr set to allocated destination.
- *              rsrc_payload_ptr, rsrc_payload_len prepared.
- *              rsrc_chk_expected/rsrc_chk_accum updated.
- *              rsrc_retry_rem decremented on failures.
- *   Flags:     Clobbered by loads/stores and helper calls.
- *
- * Description:
- *   1) Pause game; seek to header start.
- *   2) Copy header into rsrc_hdr_scratch; validate header sentinel == 0.
- *      If not zero: run disk_ensure_side and retry from the top.
- *   3) Allocate memory for rsrc_total_bytes; publish result in rsrc_data_ptr.
- *   4) Seek stream to the payload start and copy rsrc_total_bytes bytes to rsrc_data_ptr.
- *   5) Prepare checksum:
- *        rsrc_hdr_ptr := rsrc_data_ptr
- *        rsrc_payload_len := rsrc_total_bytes − header size (RSRC_DHDR_BYTES)
- *        rsrc_payload_ptr := rsrc_data_ptr + header size (RSRC_DHDR_BYTES)
- *        rsrc_chk_expected := rsrc_hdr_ptr[RSRC_DHDR_OFF_CHECKSUM]
- *   6) Checksum: XOR-accumulate payload bytes into rsrc_chk_accum
- *		When length is 0, compare with rsrc_chk_expected. 
- *		If equal → BEQ rsrc_hdr_init; otherwise decrement rsrc_retry_rem.
- *      If retries remain → retry_copy payload; else show disk_error_msg and retry after user ack.
- *===========================================================
- */
+/*
+================================================================================
+  rsrc_load_from_disk
+================================================================================
+Summary:
+	Pauses the game loop, seeks the disk stream to this resource,
+	copies/validates the on-disk header, allocates memory for the
+	full object, copies the payload, computes and verifies the
+	checksum, then continues into rsrc_hdr_init on success.
+
+Arguments:
+	rsrc_sector_idx 		Which sector in the physical chain.
+	rsrc_read_offset		Byte offset into the resource stream.
+	rsrc_total_bytes		16-bit total size in bytes.
+
+Flow:      
+	BEQ on checksum match → falls through to rsrc_hdr_init.
+
+Globals:   
+	rsrc_data_ptr 						set to allocated destination.
+	rsrc_payload_ptr, rsrc_payload_len 	prepared.
+	rsrc_chk_expected/rsrc_chk_accum 	updated.
+	rsrc_retry_rem 						decremented on failures.
+
+Description:
+	1) Pause game; seek to header start.
+	2) Copy header into rsrc_hdr_scratch; validate header sentinel == 0.
+	  If not zero: run disk_ensure_side and retry from the top.
+	3) Allocate memory for rsrc_total_bytes; publish result in rsrc_data_ptr.
+	4) Seek stream to the payload start and copy rsrc_total_bytes bytes to rsrc_data_ptr.
+	5) Prepare checksum:
+		rsrc_hdr_ptr := rsrc_data_ptr
+		rsrc_payload_len := rsrc_total_bytes − header size (RSRC_DHDR_BYTES)
+		rsrc_payload_ptr := rsrc_data_ptr + header size (RSRC_DHDR_BYTES)
+		rsrc_chk_expected := rsrc_hdr_ptr[RSRC_DHDR_OFF_CHECKSUM]
+	6) Checksum: XOR-accumulate payload bytes into rsrc_chk_accum
+		When length is 0, compare with rsrc_chk_expected. 
+		If equal → BEQ rsrc_hdr_init; otherwise decrement rsrc_retry_rem.
+	  If retries remain → retry_copy payload; else show disk_error_msg and retry after user ack.
+================================================================================
+*/
 * = $5541
 rsrc_load_from_disk:
         // Pause the game loop while performing disk I/O to avoid tearing/state races.
@@ -696,33 +675,34 @@ dec_rem_lo:
 retry_copy:
         // Re-read the raw data from disk, then recompute and re-validate checksum.
         jmp copy_payload_from_disk
-/*===========================================
- * rsrc_hdr_init (section): write resource header and return data pointer
- *
- * Summary:
- *   Initializes the resource header at rsrc_hdr_ptr with size (lo/hi),
- *   type, and index. Returns the payload pointer in X:Y, then resumes
- *   the game.
- *
- * Arguments (from previous section):
- *   rsrc_hdr_ptr           Base address for header
- *   rsrc_raw_size         	16-bit raw payload size in bytes.
- *   rsrc_resource_type    	Resource type identifier.
- *   rsrc_resource_index   	Resource index within the type.
- *   rsrc_data_ptr	        16-bit pointer to start of payload.
- *
- * Returns:
- *   X:Y                        rsrc_data_ptr (lo in X, hi in Y).
- *   Flags                      Clobbered by loads/stores and by unpause_game.
- *
- * Description:
- *   Writes header layout at (rsrc_hdr_ptr):
- *     +0..+1  size  (little-endian): <rsrc_raw_size, >rsrc_raw_size
- *     +2      type  (rsrc_resource_type)
- *     +3      index (rsrc_resource_index)
- *   Loads X:=<rsrc_data_ptr, Y:=>rsrc_data_ptr and calls unpause_game before RTS.
- *===========================================
- */
+/*
+================================================================================
+  rsrc_hdr_init
+================================================================================
+Summary:
+	Initializes the resource header at rsrc_hdr_ptr with size (lo/hi),
+	type, and index. Returns the payload pointer in X:Y, then resumes
+	the game.
+
+Arguments (from previous section):
+	rsrc_hdr_ptr				Base address for header
+	rsrc_raw_size         	16-bit raw payload size in bytes.
+	rsrc_resource_type    	Resource type identifier.
+	rsrc_resource_index   	Resource index within the type.
+	rsrc_data_ptr	        16-bit pointer to start of payload.
+
+Returns:
+	X:Y                        rsrc_data_ptr (lo in X, hi in Y).
+	Flags                      Clobbered by loads/stores and by unpause_game.
+
+Description:
+	Writes header layout at (rsrc_hdr_ptr):
+	 +0..+1  size  (little-endian): <rsrc_raw_size, >rsrc_raw_size
+	 +2      type  (rsrc_resource_type)
+	 +3      index (rsrc_resource_index)
+	Loads X:=<rsrc_data_ptr, Y:=>rsrc_data_ptr and calls unpause_game before RTS.
+================================================================================
+*/
 * = $5604
 rsrc_hdr_init:
 		// Store raw data size
@@ -750,47 +730,41 @@ rsrc_hdr_init:
 		// Unpause game
         jsr unpause_game
         rts
-/*===========================================
- * rsrc_unlock_or_unassign_costume: unlock one locked costume or unassign one idle, loaded costume
- *
- * Summary:
- *   Two-phase policy. 
- *	 Phase 1 scans all costumes from highest index down and unlocks at most one by 
- *   clearing bit7 of its attribute byte. If no locks remain, Phase 2 scans indices 8..1 
- *   and unassigns an actor for the first eligible costume (not the current actor, loaded, attrs==0). 
- *   After unassignment, resets default destination coords, and “parks” the costume in a holding room.
- *   If no candidate exists, the routine raises a diagnostic and hard-halts.
- *
- * Arguments:
- *   (none)                 Computes candidates internally.
- *
- * Uses / Globals:
- *   costume_attr_tbl[X]    Attribute byte; bit7=1 ⇒ locked, bit7=0 ⇒ unlocked.
- *   costume_ptr_hi_tbl[X]  Non-zero ⇒ resource resident in memory.
- *   current_actor_idx      Index of active/controlled actor; never evicted.
- *   costume_dest_x_tbl[X]  Set to COSTUME_DFLT_X_DEST on unassignment.
- *   costume_dest_y_tbl[X]  Set to COSTUME_DFLT_Y_DEST on unassignment.
- *   actor_room_idx_tbl[X]  Set to COSTUME_HOLDING_ROOM on unassignment.
- *
- * Returns:
- *   Unlock path:           RTS after unlocking exactly one costume.
- *   Eviction path:         RTS after freeing one costume and updating tables.
- *   Failure path:          No return; infinite loop toggling border color.
- *   Registers:             Clobbers A/X/Y/flags; stack remains balanced.
- *
- * Description:
- *   1) Unlock pass:
- *        LDX := COSTUME_MAX_INDEX; scan downward.
- *        If costume_attr_tbl[X].bit7 == 1 → clear with AND #$7F; RTS.
- *   2) Unassignment pass (only if no locks found):
- *        LDX := COSTUME_SCAN_FIRST8; scan X = 8..1.
- *        Skip if X == current_actor_idx, or not resident (ptr.hi==0), or attrs != 0.
- *        On hit: attrs := 0; JSR detach_actor_from_costume;
- *                (dest_x,dest_y) := (COSTUME_DFLT_X_DEST,COSTUME_DFLT_Y_DEST);
- *                actor_room_idx_tbl[X] := COSTUME_HOLDING_ROOM; RTS.
- *   3) Failure:
- *        diag_code := #$05; cpu_port := CPU_PORT_MAP_IO; loop on vic_border_color_reg.
- *===========================================*/
+/*
+================================================================================
+  rsrc_unlock_or_unassign_costume
+================================================================================
+Summary:
+	Two-phase policy. 
+   
+	Phase 1 scans all costumes from highest index down and unlocks at most one by 
+	clearing bit7 of its attribute byte. If no locks remain, Phase 2 scans indices 8..1 
+	and unassigns an actor for the first eligible costume (not the current actor, loaded, attrs==0). 
+	After unassignment, resets default destination coords, and “parks” the costume in a holding room.
+	If no candidate exists, the routine raises a diagnostic and hard-halts.
+	
+Uses / Globals:
+	costume_attr_tbl[X]    Attribute byte; bit7=1 ⇒ locked, bit7=0 ⇒ unlocked.
+	costume_ptr_hi_tbl[X]  Non-zero ⇒ resource resident in memory.
+	current_actor_idx      Index of active/controlled actor; never evicted.
+	costume_dest_x_tbl[X]  Set to COSTUME_DFLT_X_DEST on unassignment.
+	costume_dest_y_tbl[X]  Set to COSTUME_DFLT_Y_DEST on unassignment.
+	actor_room_idx_tbl[X]  Set to COSTUME_HOLDING_ROOM on unassignment.
+
+Description:
+	1) Unlock pass:
+		LDX := COSTUME_MAX_INDEX; scan downward.
+		If costume_attr_tbl[X].bit7 == 1 → clear with AND #$7F; RTS.
+	2) Unassignment pass (only if no locks found):
+		LDX := COSTUME_SCAN_FIRST8; scan X = 8..1.
+		Skip if X == current_actor_idx, or not resident (ptr.hi==0), or attrs != 0.
+		On hit: attrs := 0; JSR detach_actor_from_costume;
+				(dest_x,dest_y) := (COSTUME_DFLT_X_DEST,COSTUME_DFLT_Y_DEST);
+				actor_room_idx_tbl[X] := COSTUME_HOLDING_ROOM; RTS.
+	3) Failure:
+		diag_code := #$05; cpu_port := CPU_PORT_MAP_IO; loop on vic_border_color_reg.
+================================================================================
+*/
 * = $567B
 rsrc_unlock_or_unassign_costume:
         ldx #COSTUME_MAX_INDEX            // start at the highest costume index; scan downward one-by-one
@@ -876,44 +850,41 @@ advance_costume_evict_scan:
 costume_evict_hangup:
         sta vic_border_color_reg      		// set border color
         jmp costume_evict_hangup        // infinite loop by design
-/*===========================================
- * rsrc_update_ptr: publish rsrc_ptr into per-type tables (used after block relocation)
- *
- * Summary:
- *   Dispatches on resource type in Y and writes the resource pointer
- *   (lo/hi) to the matching pointer table at index X, then returns.
- *   Each test label (*test_type_…*) checks a specific type code and
- *   falls through to the next test on mismatch.
- *
- * Arguments:
- *   rsrc_ptr            Zero-page pointer to the resource base (lo/hi).
- *   Y = resource_type   One of:
- *                         RSRC_TYPE_OBJECT, RSRC_TYPE_COSTUME,
- *                         RSRC_TYPE_ROOM, RSRC_TYPE_ROOM_LAYERS,
- *                         RSRC_TYPE_SCRIPT, RSRC_TYPE_SOUND.
- *   X = resource_index  Table index to update.
- *
- * Updates:
- *   object_ptr_lo_tbl[X],  object_ptr_hi_tbl[X]
- *   costume_ptr_lo_tbl[X], costume_ptr_hi_tbl[X]
- *   room_ptr_lo_tbl[X],    room_ptr_hi_tbl[X]
- *   room_gfx_layers_lo[X], room_gfx_layers_hi[X]
- *   script_ptr_lo_tbl[X],  script_ptr_hi_tbl[X]
- *   sound_ptr_lo_tbl[X],   sound_ptr_hi_tbl[X]
- *   (Each receives <rsrc_ptr / >rsrc_ptr respectively.)
- *
- * Returns:
- *   Flow:                 RTS after storing into the matched table.
- *   Registers/Flags:      Modified by loads/stores and comparisons.
- *
- * Description:
- *   - Compare Y against known RSRC_TYPE_* codes in ascending checks.
- *   - On match, store <rsrc_ptr to the *_lo_tbl[X] and >rsrc_ptr to
- *     the *_hi_tbl[X], then RTS.
- *   - On mismatch, fall through to the next *test_type_* label.
- *   - NOTE (bug/placeholder): if none match, current code jumps to
- *     rsrc_evict_one_by_priority; this should trap/halt instead.
- *===========================================*/
+/*
+================================================================================
+  rsrc_update_ptr
+================================================================================
+Summary:
+	Dispatches on resource type in Y and writes the resource pointer
+	(lo/hi) to the matching pointer table at index X, then returns.
+	Each test label (*test_type_…*) checks a specific type code and
+	falls through to the next test on mismatch.
+
+Arguments:
+	rsrc_ptr            Zero-page pointer to the resource base (lo/hi).
+	Y = resource_type   One of:
+						 RSRC_TYPE_OBJECT, RSRC_TYPE_COSTUME,
+						 RSRC_TYPE_ROOM, RSRC_TYPE_ROOM_LAYERS,
+						 RSRC_TYPE_SCRIPT, RSRC_TYPE_SOUND.
+	X = resource_index  Table index to update.
+
+Updates:
+	object_ptr_lo/hi_tbl[X]
+	costume_ptr_lo/hi_tbl[X]
+	room_ptr_lo/hi_tbl[X]
+	room_gfx_layers_lo/hi[X]
+	script_ptr_lo/hi_tbl[X]
+	sound_ptr_lo/hi_tbl[X]
+
+Description:
+	- Compare Y against known RSRC_TYPE_* codes in ascending checks.
+	- On match, store <rsrc_ptr to the *_lo_tbl[X] and >rsrc_ptr to
+	 the *_hi_tbl[X], then RTS.
+	- On mismatch, fall through to the next *test_type_* label.
+	- NOTE (bug/placeholder): if none match, current code jumps to
+	 rsrc_evict_one_by_priority; this should trap/halt instead.
+================================================================================
+*/
 * = $5A89
 rsrc_update_ptr:
         // Dispatch by resource_type in Y. Each test label *checks* a value and falls through
@@ -982,45 +953,43 @@ test_type_sound:
         lda rsrc_ptr + 1
         sta sound_ptr_hi_tbl,x
         rts
-/*===========================================
- * rsrc_evict_one_by_priority: try one eviction by rotating priority
- *
- * Summary:
- *   Attempts to evict exactly one resource per call, using a rotating
- *   priority: room → costume → sound → script. Starts from evict_pri_cur,
- *   tries that class’ eviction routine, then advances priority (with wrap).
- *   If any callee frees something, returns true; otherwise cycles priorities
- *   until it wraps back to the starting priority and returns false.
- *
- * Arguments:
- *   (none)
- *
- * Reads:
- *   evict_pri_cur              Current priority selector (0..3).
- *   rsrc_released_flag         Set ≠ 0 by callees when they free something.
- *
- * Updates:
- *   evict_pri_start            Snapshot of starting priority for wrap detection.
- *   evict_pri_cur              Incremented each attempt; may wrap ($FF→$00).
- *   rsrc_released_flag         Cleared on entry; may be set by callees.
- *
- * Returns:
- *   A = #$FF                   A resource was released (success).
- *   A = #$00                   Completed a full cycle with no release.
- *   Registers/Flags            Modified by dispatch and callee routines.
- *
- * Description:
- *   1) Clear rsrc_released_flag; save evict_pri_cur into evict_pri_start.
- *   2) Dispatch based on evict_pri_cur:
- *        0 → rsrc_release_evictable_room_lru
- *        1 → rsrc_release_one_evictable_costume
- *        2 → rsrc_release_evictable_sounds
- *        3 → rsrc_release_evictable_scripts
- *      If evict_pri_cur ≥ PRIORITY_WRAP_AT, set it to $FF so INC → $00.
- *   3) INC evict_pri_cur; if rsrc_released_flag ≠ 0 → return #$FF.
- *   4) If evict_pri_cur != evict_pri_start → continue dispatch loop.
- *      Else return #$00 (no release this cycle).
- *===========================================*/
+/*
+================================================================================
+  rsrc_evict_one_by_priority
+================================================================================
+Summary:
+	Attempts to evict exactly one resource per call, using a rotating
+	priority: room → costume → sound → script. Starts from evict_pri_cur,
+	tries that class’ eviction routine, then advances priority (with wrap).
+	If any callee frees something, returns true; otherwise cycles priorities
+	until it wraps back to the starting priority and returns false.
+
+Reads:
+	evict_pri_cur              Current priority selector (0..3).
+	rsrc_released_flag         Set ≠ 0 by callees when they free something.
+
+Updates:
+	evict_pri_start            Snapshot of starting priority for wrap detection.
+	evict_pri_cur              Incremented each attempt; may wrap ($FF→$00).
+	rsrc_released_flag         Cleared on entry; may be set by callees.
+
+Returns:
+	A = #$FF                   A resource was released (success).
+	A = #$00                   Completed a full cycle with no release.
+
+Description:
+	1) Clear rsrc_released_flag; save evict_pri_cur into evict_pri_start.
+	2) Dispatch based on evict_pri_cur:
+		0 → rsrc_release_evictable_room_lru
+		1 → rsrc_release_one_evictable_costume
+		2 → rsrc_release_evictable_sounds
+		3 → rsrc_release_evictable_scripts
+	If evict_pri_cur ≥ PRIORITY_WRAP_AT, set it to $FF so INC → $00.
+	3) INC evict_pri_cur; if rsrc_released_flag ≠ 0 → return #$FF.
+	4) If evict_pri_cur != evict_pri_start → continue dispatch loop.
+	Else return #$00 (no release this cycle).
+================================================================================
+*/
 * = $5AE3
 rsrc_evict_one_by_priority:
         // Initialize: assume no release this pass (flag := #$00).
@@ -1096,45 +1065,36 @@ wrap_check_no_release:
         // Completed a full cycle with no releases → return False (#00).
         lda #$00
         rts
-/*===========================================
- * rsrc_release_evictable_room_lru: evict one LRU room
- *
- * Summary:
- *   Scans room slots from ROOM_MAX_INDEX down and selects the
- *   least-recently-used *evictable* room: it must be loaded
- *   (ptr.hi != 0), not locked (attr bit7 = 0), and have a
- *   non-zero “age/attr” score. The candidate with the largest
- *   attr value is evicted: table pointers are cleared and
- *   mem_release is called.
- *
- * Arguments:
- *   (none)
- *
- * Reads:
- *   ROOM_MAX_INDEX           Highest valid room index (inclusive).
- *   room_ptr_lo_tbl[X]       Room resource pointer (lo).
- *   room_ptr_hi_tbl[X]       Room resource pointer (hi); nonzero ⇒ loaded.
- *   room_mem_attrs[X]        Per-room attribute/age score; bit7=1 ⇒ locked.
- *
- * Updates:
- *   room_ptr_*_tbl[X]        Cleared for the evicted room to avoid dangling refs.
- *   room_mem_attrs[X]        Cleared for the evicted room.
- *   (Policy) release flags   May be updated by mem_release.
- *
- * Returns:
- *   Flow                      Evicts at most one room; returns immediately after free,
- *                             otherwise returns with no change if none qualified.
- *   Registers                 Clobbered by helper calls (mem_release) and table updates.
- *   Flags                     Modified by loads/stores/branches; no specific exit state.
- *
- * Description:
- *   - Iterate X := ROOM_MAX_INDEX … 1 (index 0 is not considered).
- *   - Skip if not loaded (ptr.hi == 0), or if locked (attr bit7 == 1),
- *     or if attr == 0 (not evictable/fresh).
- *   - Track the best candidate using the largest attr value (strictly greater).
- *   - If a candidate exists:
- *       Y := ptr.hi, X := ptr.lo; clear table refs & attrs; call mem_release.
- *===========================================*/
+/*
+================================================================================
+ rsrc_release_evictable_room_lru
+================================================================================
+Summary:
+	Scans room slots from ROOM_MAX_INDEX down and selects the
+	least-recently-used *evictable* room: it must be loaded
+	(ptr.hi != 0), not locked (attr bit7 = 0), and have a
+	non-zero “age/attr” score. The candidate with the largest
+	attr value is evicted: table pointers are cleared and
+	mem_release is called.
+
+Reads:
+	room_ptr_lo_tbl[X]       Room resource pointer (lo).
+	room_ptr_hi_tbl[X]       Room resource pointer (hi); nonzero ⇒ loaded.
+	room_mem_attrs[X]        Per-room attribute/age score; bit7=1 ⇒ locked.
+
+Updates:
+	room_ptr_*_tbl[X]        Cleared for the evicted room to avoid dangling refs.
+	room_mem_attrs[X]        Cleared for the evicted room.
+
+Description:
+	- Iterate X := ROOM_MAX_INDEX … 1 (index 0 is not considered).
+	- Skip if not loaded (ptr.hi == 0), or if locked (attr bit7 == 1),
+	 or if attr == 0 (not evictable/fresh).
+	- Track the best candidate using the largest attr value (strictly greater).
+	- If a candidate exists:
+	   Y := ptr.hi, X := ptr.lo; clear table refs & attrs; call mem_release.
+================================================================================
+*/
 * = $5B38
 rsrc_release_evictable_room_lru:
         lda #$00                        // A := 0 (initializer for fields below)
@@ -1210,46 +1170,37 @@ evict_room_candidate:
         // Free the block at (X=lo, Y=hi). Callee may clobber A/X/Y and flags.
         jsr mem_release
         rts                               // done: room entry cleared and memory released
-/*===========================================
- * rsrc_release_one_evictable_costume: free one eligible costume
- *
- * Summary:
- *   Scans costume slots from COSTUME_MAX_INDEX down and frees the first
- *   costume that is both loaded and not in the current room, provided
- *   its attributes mark it evictable (attrs == 0). Exits immediately
- *   after freeing one costume.
- *
- * Arguments:
- *   (none)
- *
- * Reads:
- *   COSTUME_MAX_INDEX           Highest valid costume index (inclusive).
- *   costume_ptr_lo_tbl[X]     Costume resource pointer (lo).
- *   costume_ptr_hi_tbl[X]     Costume resource pointer (hi); nonzero ⇒ loaded.
- *   costume_mem_attrs[X]      Per-costume attributes; 0 ⇒ evictable.
- *   room_for_character[X]     Owning room index for costume X.
- *   current_room              Index of the current room (active/in use).
- *
- * Updates:
- *   costume_ptr_*_tbl[X]      Cleared for the freed costume to avoid dangling refs.
- *   costume_mem_attrs[X]      Cleared for the freed costume.
- *   (Policy) release flags    May be updated by mem_release.
- *
- * Returns:
- *   Flow:                     Returns immediately after freeing one costume,
- *                             otherwise falls through with no frees.
- *   Registers                 Clobbered by helper calls (mem_release) and table updates.
- *   Flags                     Modified by loads/stores/branches; no specific exit condition.
- *
- * Description:
- *   - Iterate X := COSTUME_MAX_INDEX … 0.
- *   - Skip if not loaded (ptr.hi == 0) or if in current_room (in use).
- *   - Skip if attrs != 0 (not evictable); attrs == 0 ⇒ candidate.
- *   - Preserve loop index on stack; prepare mem_release calling convention:
- *       X := ptr.lo, Y := ptr.hi.
- *   - Clear table pointers and attributes *before* freeing to prevent stale uses.
- *   - Call mem_release and return.
- *===========================================*/
+/*
+================================================================================
+  rsrc_release_one_evictable_costume
+================================================================================
+Summary:
+	Scans costume slots from COSTUME_MAX_INDEX down and frees the first
+	costume that is both loaded and not in the current room, provided
+	its attributes mark it evictable (attrs == 0). Exits immediately
+	after freeing one costume.
+
+Reads:
+	costume_ptr_lo_tbl[X]     Costume resource pointer (lo).
+	costume_ptr_hi_tbl[X]     Costume resource pointer (hi); nonzero ⇒ loaded.
+	costume_mem_attrs[X]      Per-costume attributes; 0 ⇒ evictable.
+	room_for_character[X]     Owning room index for costume X.
+	current_room              Index of the current room (active/in use).
+
+Updates:
+	costume_ptr_*_tbl[X]      Cleared for the freed costume to avoid dangling refs.
+	costume_mem_attrs[X]      Cleared for the freed costume.
+
+Description:
+	- Iterate X := COSTUME_MAX_INDEX … 0.
+	- Skip if not loaded (ptr.hi == 0) or if in current_room (in use).
+	- Skip if attrs != 0 (not evictable); attrs == 0 ⇒ candidate.
+	- Preserve loop index on stack; prepare mem_release calling convention:
+	   X := ptr.lo, Y := ptr.hi.
+	- Clear table pointers and attributes *before* freeing to prevent stale uses.
+	- Call mem_release and return.
+================================================================================
+*/
 * = $5B84
 rsrc_release_one_evictable_costume:
         ldx #COSTUME_MAX_INDEX        // start from highest costume index; iterate X downward
@@ -1298,42 +1249,35 @@ advance_costume:
         dex                               // X := X-1 → next candidate
         bne scan_costume                  // Z=0 ⇒ more to scan; Z=1 ⇒ finished
         rts
-/*===========================================
- * rsrc_release_evictable_sounds: free all evictable sounds
- *
- * Summary:
- *   Scans sound slots from SOUND_MAX_INDEX down to 0. For each slot,
- *   if its attributes indicate “evictable” (attrs == 0) and it is
- *   loaded (pointer hi-byte != 0), clears the table entry and calls
- *   mem_release to free the block. Protected slots are skipped.
- *
- * Arguments:
- *   (none)
- *
- * Reads:
- *   SOUND_MAX_INDEX            Highest valid sound index (inclusive).
- *   SOUND_PROTECT_1..3         Reserved, non-evictable sound indices.
- *   sound_attr_tbl[X]         Per-sound attributes; 0 ⇒ evictable.
- *   sound_ptr_lo_tbl[X]        Sound resource pointer (lo).
- *   sound_ptr_hi_tbl[X]        Sound resource pointer (hi); nonzero ⇒ loaded.
- *
- * Updates:
- *   sound_ptr_*_tbl[X]         Cleared to zero for each released sound.
- *   (Policy) release flags      May be updated by mem_release.
- *
- * Returns:
- *   Registers                  Clobbered by helper calls (mem_release) and table updates.
- *   Flags                      Modified by loads/stores/branches; no specific exit condition.
- *
- * Description:
- *   - Iterate X := SOUND_MAX_INDEX … 0.
- *   - Skip if attrs != 0 (not evictable) or ptr.hi == 0 (not loaded).
- *   - Skip protected indices SOUND_PROTECT_1, _2, _3.
- *   - Preserve X on stack; prepare mem_release calling convention:
- *       X := ptr.lo, Y := ptr.hi.
- *   - Clear table pointers *before* freeing to avoid dangling references.
- *   - Call mem_release; restore X (loop index) and continue.
- *===========================================*/
+/*
+================================================================================
+  rsrc_release_evictable_sounds
+================================================================================
+Summary:
+	Scans sound slots from SOUND_MAX_INDEX down to 0. For each slot,
+	if its attributes indicate “evictable” (attrs == 0) and it is
+	loaded (pointer hi-byte != 0), clears the table entry and calls
+	mem_release to free the block. Protected slots are skipped.
+
+
+Reads:
+	sound_attr_tbl[X]         Per-sound attributes; 0 ⇒ evictable.
+	sound_ptr_lo_tbl[X]        Sound resource pointer (lo).
+	sound_ptr_hi_tbl[X]        Sound resource pointer (hi); nonzero ⇒ loaded.
+
+Updates:
+	sound_ptr_*_tbl[X]         Cleared to zero for each released sound.
+
+Description:
+	- Iterate X := SOUND_MAX_INDEX … 0.
+	- Skip if attrs != 0 (not evictable) or ptr.hi == 0 (not loaded).
+	- Skip protected indices SOUND_PROTECT_1, _2, _3.
+	- Preserve X on stack; prepare mem_release calling convention:
+	   X := ptr.lo, Y := ptr.hi.
+	- Clear table pointers *before* freeing to avoid dangling references.
+	- Call mem_release; restore X (loop index) and continue.
+================================================================================
+*/
 * = $5BB5
 rsrc_release_evictable_sounds:
         ldx #SOUND_MAX_INDEX          // start from the highest sound index; iterate X downward
@@ -1389,39 +1333,33 @@ advance_sound:
         dex                               // X := X-1 → next candidate
         bne scan_sound                    // Z=0 ⇒ more to scan; Z=1 ⇒ finished
         rts
-/*===========================================
- * rsrc_release_evictable_scripts: free all evictable scripts
- *
- * Summary:
- *   Scans all script slots from highest index down. For each script,
- *   if its memory attributes indicate “evictable” (attrs==0) and it is
- *   loaded (pointer hi-byte != 0), clears the table entry and calls
- *   mem_release to free the block.
- *
- * Arguments:
- *   (none)
- *
- * Reads:
- *   SCRIPT_MAX_INDEX        Highest valid script index (inclusive).
- *   script_memory_attrs[X]  Per-script memory attributes; 0 ⇒ evictable.
- *   script_ptr_lo_tbl[X]    Script resource pointer (lo).
- *   script_ptr_hi_tbl[X]    Script resource pointer (hi); nonzero ⇒ loaded.
- *
- * Updates:
- *   script_ptr_*_tbl[X]     Cleared to zero for each released script.
- *   rsrc_released_flag  	 Set by mem_release upon any successful free.
- *
- * Returns:
- *   Registers:  Clobbered by helper calls (mem_release) and table updates.
- *   Flags:      Modified by loads/stores and branches; no specific condition on exit.
- *
- * Description:
- *   - Iterate X := SCRIPT_MAX_INDEX .. 0.
- *   - Skip if attrs != 0 (not evictable) or pointer hi == 0 (not loaded).
- *   - Preserve X (index) on stack; form (X=ptr.lo, Y=ptr.hi) for mem_release.
- *   - Clear table pointers *before* freeing to avoid dangling references.
- *   - Restore index and continue scanning until all candidates processed.
- *===========================================*/
+/*
+================================================================================
+  rsrc_release_evictable_scripts
+================================================================================
+Summary:
+	Scans all script slots from highest index down. For each script,
+	if its memory attributes indicate “evictable” (attrs==0) and it is
+	loaded (pointer hi-byte != 0), clears the table entry and calls
+	mem_release to free the block.
+
+Reads:
+	script_memory_attrs[X]  Per-script memory attributes; 0 ⇒ evictable.
+	script_ptr_lo_tbl[X]    Script resource pointer (lo).
+	script_ptr_hi_tbl[X]    Script resource pointer (hi); nonzero ⇒ loaded.
+
+Updates:
+	script_ptr_*_tbl[X]     Cleared to zero for each released script.
+	rsrc_released_flag 		Set by mem_release upon any successful free.
+
+Description:
+	- Iterate X := SCRIPT_MAX_INDEX .. 0.
+	- Skip if attrs != 0 (not evictable) or pointer hi == 0 (not loaded).
+	- Preserve X (index) on stack; form (X=ptr.lo, Y=ptr.hi) for mem_release.
+	- Clear table pointers *before* freeing to avoid dangling references.
+	- Restore index and continue scanning until all candidates processed.
+================================================================================
+*/
 * = $5BEA
 rsrc_release_evictable_scripts:
         ldx #SCRIPT_MAX_INDEX        // start from highest script index; iterate X downward
@@ -1467,5 +1405,4 @@ advance_script:
         dex                               // X := X-1 → next candidate
         bne scan_script                   // more to scan? (Z=0) → loop; else done
         rts
-
 		

@@ -114,67 +114,84 @@
 #import "rsrc_mgmt.asm"
 
 // mem_alloc vars
-.label mem_req_size = $5501   // 16-bit requested payload size (bytes, little-endian).
-                               // Contract: allocator treats this as payload bytes; it accounts
-                               // for header bytes internally. Access with <mem_req_size/>mem_req_size.
+.label mem_req_size_lo = $5501  // 16-bit requested payload size (bytes, little-endian).
+.label mem_req_size_hi = $5502  
+								// Contract: allocator treats this as payload bytes; it accounts
+								// for header bytes internally. Access with <mem_req_size/>mem_req_size.
 // mem_release vars
-.label mem_edit_tail = $61    // 16-bit ZP “edit tail” pointer (lo/hi) used while appending a
-                               // freed block to the FREE list. Points at the current tail node
-                               // when writing tail->next and terminating the list (next := NULL).
+.label mem_edit_tail_lo 	= $61    // 16-bit ZP “edit tail” pointer (lo/hi) used while appending a
+.label mem_edit_tail_hi 	= $62    // freed block to the FREE list. Points at the current tail node
+									 // when writing tail->next and terminating the list (next := NULL).
+                                                              
 // mem_coalesce_right vars
-.label left_size           = $56C5    	// 16-bit size of current free block on the left side; shared temp reused elsewhere
-.label mem_left            = $4F      	// zp pointer to current free block header (lo @ $4F, hi @ $50)
-.label mem_right           = $59      	// pointer to block at (mem_left + left_size): immediate right neighbor
+.label left_size_lo        = $56C5    	// 16-bit size of current free block on the left side; shared temp reused elsewhere
+.label left_size_hi        = $56C6    	
+.label mem_left_lo         = $4F      	// zp pointer to current free block header (lo @ $4F, hi @ $50)
+.label mem_left_hi         = $50      	
+.label mem_right_lo        = $59      	// pointer to block at (mem_left + left_size): immediate right neighbor
+.label mem_right_hi        = $5A      	
 
 // mem_sort_free_ao vars
-.label curr_block          = $4F      // node under comparison during scan (alias of mem_free_cur storage)
-.label anchor_block        = $51      // pass anchor / predecessor for this sweep (often the head stub initially)
-.label anchor_next         = $53      // first candidate after anchor_block for this pass
-.label min_offender        = $55      // lowest-address node found with addr < anchor_next; $FFFF sentinel = none
-.label min_prev            = $57      // predecessor of min_offender (for relinking); shares ZP with `mem_src`
-.label curr_prev           = $5746    // ABS temp: rolling predecessor while scanning
-.label curr_next           = $5748    // ABS temp: cached anchor_next->next
-.label min_next            = $574A    // ABS temp: cached min_offender->next
+.label curr_block_lo       = $4F      // node under comparison during scan (alias of mem_free_cur storage)
+.label curr_block_hi       = $50      
+.label anchor_block_lo     = $51      // pass anchor / predecessor for this sweep (often the head stub initially)
+.label anchor_block_hi     = $52      
+.label anchor_next_lo      = $53      // first candidate after anchor_block for this pass
+.label anchor_next_hi      = $54      
+.label min_offender_lo     = $55      // lowest-address node found with addr < anchor_next; $FFFF sentinel = none
+.label min_offender_hi     = $56      
+.label min_prev_lo         = $57      // predecessor of min_offender (for relinking); shares ZP with `mem_src`
+.label min_prev_hi         = $58      
+.label curr_prev_lo        = $5746    // ABS temp: rolling predecessor while scanning
+.label curr_prev_hi        = $5747    
+.label curr_next_lo        = $5748    // ABS temp: cached anchor_next->next
+.label curr_next_hi        = $5749    
+.label min_next_lo         = $574A    // ABS temp: cached min_offender->next
+.label min_next_hi         = $574B    
 
 // mem_alloc_bestfit / mem_bestfit_select vars
 .label mem_free_cur_lo     = $4F      // zp pointer to current free block header
-.label mem_free_cur_hi     = $50      // zp pointer to current free block header
+.label mem_free_cur_hi     = $50      
 .label mem_req_payload_lo  = $FD9C    // requested payload size in bytes (header NOT included)
-.label mem_req_payload_hi  = $FD9D    // requested payload size in bytes (header NOT included)
-.label mem_best_blk        = $5813    // pointer to best-fit free block found
+.label mem_req_payload_hi  = $FD9D    
+.label mem_best_blk_lo     = $5813    // pointer to best-fit free block found
+.label mem_best_blk_hi     = $5814    
 .label mem_best_size_lo    = $5815    // 16-bit size of best-fit block (lo=tail, hi=pages)
-.label mem_best_size_hi    = $5816    // 16-bit size of best-fit block (lo=tail, hi=pages)
-.label mem_prev            = $5817    // rolling predecessor of the current candidate during the scan
-.label mem_req_total       = $5819    // total bytes to carve = mem_req_payload + 4 (header + payload)
-.label candidate_size      = $56C5    // size of the candidate under inspection (reuses shared temp @ $56C5)
+.label mem_best_size_hi    = $5816    
+.label mem_prev_lo         = $5817    // rolling predecessor of the current candidate during the scan
+.label mem_prev_hi         = $5818    
+.label mem_req_total_lo    = $5819    // total bytes to carve = mem_req_payload + 4 (header + payload)
+.label mem_req_total_hi    = $581A    
+.label candidate_size_lo   = $56C5    // size of the candidate under inspection (reuses shared temp @ $56C5)
+.label candidate_size_hi   = $56C6    
 
 // mem_compact_then_release vars
 .label mem_req_saved_lo    = $58D3    // preserved copy of mem_req_payload across compaction/retry attempts
-.label mem_req_saved_hi    = $58D4    // preserved copy of mem_req_payload across compaction/retry attempts
+.label mem_req_saved_hi    = $58D4    
 
 // mem_read_next_ptr vars
 .label mem_hdr_ptr         = $4F      // input: pointer to a block header; routine returns next in X=lo, Y=hi
 
 // mem_alloc_from_free vars
 .label mem_split_rem_lo    = $56C5    // remainder after carve: mem_best_size − mem_req_total (shared temp)
-.label mem_split_rem_hi    = $56C6    // remainder after carve: mem_best_size − mem_req_total (shared temp)
+.label mem_split_rem_hi    = $56C6    
 .label temp                = $56C7    // 8-bit scratch used during pointer transfers
 .label mem_split_tail_lo   = $55      // trailing free block created on split; in consume path holds predecessor for tail update
-.label mem_split_tail_hi   = $56      // trailing free block created on split; in consume path holds predecessor for tail update
+.label mem_split_tail_hi   = $56      
 .label predecessor_lo      = $51      // predecessor pointer; may be the head stub
-.label predecessor_hi      = $52      // predecessor pointer; may be the head stub
+.label predecessor_hi      = $52      
 
 // mem_bubble_used_left vars
 .label mem_src_lo          = $57      // pointer to USED block being moved (initially right of the leading FREE block); shares ZP with min_prev
-.label mem_src_hi          = $58      // pointer to USED block being moved (initially right of the leading FREE block); shares ZP with min_prev
+.label mem_src_hi          = $58      
 .label mem_dst_lo          = $4F      // pointer to mem_dst (start of the leading FREE span)
-.label mem_dst_hi          = $50      // pointer to mem_dst (start of the leading FREE span)
+.label mem_dst_hi          = $50      
 .label mem_free_sz_lo      = $59A2    // size (bytes) of the current leading FREE block
-.label mem_free_sz_hi      = $59A3    // size (bytes) of the current leading FREE block
+.label mem_free_sz_hi      = $59A3    
 .label mem_used_sz_lo      = $59A4    // size (bytes) of the USED block being relocated (header + payload)
-.label mem_used_sz_hi      = $59A5    // size (bytes) of the USED block being relocated (header + payload)
+.label mem_used_sz_hi      = $59A5    
 .label mem_next_free_lo    = $59A6    // pointer to the next FREE block after the leading one
-.label mem_next_free_hi    = $59A7    // pointer to the next FREE block after the leading one
+.label mem_next_free_hi    = $59A7    
 .label resource_type       = $59A8    // resource type tag for pointer fix-ups
 .label resource_index      = $59A9    // resource index/id for pointer fix-ups
 
@@ -182,16 +199,16 @@
 .label mem_copy_tail       = $5B      // final-page byte count (1..255); set to 0 on non-final pages to copy a full 256 via Y-wrap
 .label mem_copy_page_cnt   = $5C      // number of full 256-byte pages to copy; decremented once per completed page
 .label mem_read_ptr_lo     = $5D      // mem_src pointer
-.label mem_read_ptr_hi     = $5E      // mem_src pointer
+.label mem_read_ptr_hi     = $5E      
 .label mem_write_ptr_lo    = $5F      // mem_dst pointer
-.label mem_write_ptr_hi    = $60      // mem_dst pointer
+.label mem_write_ptr_hi    = $60      
 
 // Head and Tail of free block list
 .label mem_free_stub       = $FF61    // synthetic head: its header[+2..+3] holds mem_free_head
 .label mem_free_head_lo    = $FF63    // free-list head pointer
-.label mem_free_head_hi    = $FF64    // free-list head pointer
+.label mem_free_head_hi    = $FF64    
 .label mem_free_tail_lo    = $FF65    // free-list tail pointer
-.label mem_free_tail_hi    = $FF66    // free-list tail pointer
+.label mem_free_tail_hi    = $FF66    
 
 
 /*
@@ -214,6 +231,7 @@ State:
 Returns:
     Z                          0 on success, 1 on failure (after all attempts).
     X/Y                        On success: pointer to allocated block header (lo/hi).
+	
 Globals                    
 	FREE list may be reordered/compacted
 	low-prio asset may be released by policy.
@@ -237,8 +255,8 @@ Description:
 mem_alloc:
 		// Preserve caller’s requested size:
 		// X/Y = payload size (bytes) — needed for retries below.
-        stx mem_req_size
-        sty mem_req_size + 1
+        stx mem_req_size_lo
+        sty mem_req_size_hi
 
 		// First attempt: allocate by best-fit over current free list.
 		// On return: Z=0 success (header ptr in X/Y), Z=1 failure → try recovery.
@@ -254,8 +272,8 @@ mem_alloc:
         jsr rsrc_unlock_or_unassign_costume
 
         // Restore original request size into X/Y and loop back to first attempt.
-        ldx mem_req_size
-        ldy mem_req_size + 1
+        ldx mem_req_size_lo
+        ldy mem_req_size_hi
         jmp mem_alloc
 
 mem_alloc_ok:
@@ -272,18 +290,8 @@ Summary:
     resource was released.
  
 Arguments:
-    X:Y 	              16-bit pointer to the block header being released.
-    mem_free_tail        16-bit pointer to current FREE-list tail (lo/hi).
-    rsrc_tail_old        ZP scratch; snapshot of old tail (lo/hi).
-    mem_edit_tail       ZP scratch; edit pointer to the new tail (lo/hi).
-    MEM_HDR_OFS_NEXT_LO    Header layout: +2..+3 = next pointer (lo/hi).
-    PTR_NULL           Null pointer value written to tail.next.
- 
-Returns:
-    Globals                   	mem_free_tail := X:Y
-                             	old_tail->next := X:Y
-                            	new_tail->next := NULL
-                             	mem_released_flag := 1
+    X:Y 	              	16-bit pointer to the block header being released.
+    mem_free_tail        	16-bit pointer to current FREE-list tail (lo/hi).
  
 Description:
     - Snapshot current tail: rsrc_tail_old := mem_free_tail.
@@ -296,101 +304,95 @@ Description:
         mem_edit_tail->next := NULL
     - Normalize order by address: jsr mem_sort_free_ao  (O(n^2), non-stable).
     - Coalesce right-adjacent blocks: jsr mem_coalesce_right.
-    Note:
-      The hi byte for mem_edit_tail is taken from A after linking; if this
-      sequence changes, prefer STY mem_edit_tail+1 to avoid stale-A hazards.
 ================================================================================
 */
 * = $5503
 mem_release:
-        /*
-          Snapshot current tail of the FREE list so we can splice after it.
-            mem_edit_tail := mem_free_tail   (little-endian pointer copy)
-         */
+		// ------------------------------------------------------------
+		// Snapshot current tail of the FREE list so we can splice after it.
+		//
+		//   mem_edit_tail := mem_free_tail
+		// ------------------------------------------------------------
         lda mem_free_tail_lo
-        sta mem_edit_tail
+        sta mem_edit_tail_lo
         lda mem_free_tail_hi
-        sta mem_edit_tail + 1
+        sta mem_edit_tail_hi
 
-        /*
-          Make the block being released (X=lo, Y=hi) the new FREE tail.
-            mem_free_tail := (X,Y)
-         */
+		// ------------------------------------------------------------
+		// Make the block being released (X=lo, Y=hi) the new FREE tail.
+		//
+		//   mem_free_tail := (X,Y)
+		// ------------------------------------------------------------
         stx mem_free_tail_lo
         sty mem_free_tail_hi
 
-        /*
-          Link old tail → new tail:
-            mem_edit_tail->next := mem_free_tail
-            Header layout: +0..+1 size (total), +2..+3 next (ptr)
-         */
-        ldy #MEM_HDR_OFS_NEXT_LO        // +2 = next.lo
+		// ------------------------------------------------------------
+		// Link old tail → new tail:
+		//
+		//    mem_edit_tail->next := mem_free_tail
+		// ------------------------------------------------------------
+        ldy #MEM_HDR_OFS_NEXT_LO        
         lda mem_free_tail_lo
-        sta (mem_edit_tail),Y
-        iny                         // +3 = next.hi
+        sta (mem_edit_tail_lo),Y
+        iny                         
         lda mem_free_tail_hi
-        sta (mem_edit_tail),Y
+        sta (mem_edit_tail_lo),Y
 
-        /*
-          Advance our edit pointer to the newly appended FREE tail:
-            mem_edit_tail := mem_free_tail
-         */
-        stx mem_edit_tail              // lo = X (from above)
-        sta mem_edit_tail + 1          // hi = A (still = >mem_free_tail)
+		// ------------------------------------------------------------
+		// Advance our edit pointer to the newly appended FREE tail:
+		//
+		//   mem_edit_tail := mem_free_tail
+		// ------------------------------------------------------------
+        stx mem_edit_tail_lo    	// lo = X (from above)
+        sta mem_edit_tail_hi        // hi = A (still = mem_free_tail_hi)
 
-        /*
-          Terminate the list at the new tail:
-            mem_edit_tail->next := NULL
-         */
+		// ------------------------------------------------------------
+		// Terminate the list at the new tail:
+		//
+		//   mem_edit_tail->next := NULL
+		// ------------------------------------------------------------
         lda #PTR_NULL
         ldy #MEM_HDR_OFS_NEXT_LO
-        sta (mem_edit_tail),Y          // next.lo = 0
+        sta (mem_edit_tail_lo),Y          
         iny
-        sta (mem_edit_tail),Y          // next.hi = 0
+        sta (mem_edit_tail_lo),Y          
 
-        // Normalize FREE list order by address (in-place, O(n^2), non-stable).
+        // Normalize FREE list order by address
         jsr mem_sort_free_ao
 
-        /*
-          Coalesce right-adjacent FREE nodes:
-            while (next == this + this.size) { this.size += next.size; unlink(next); }
-         */
+		// ------------------------------------------------------------
+		// Coalesce right-adjacent FREE nodes:
+		//
+		// 	 while (next == this + this.size) { this.size += next.size; unlink(next); }
+		// ------------------------------------------------------------
         jsr mem_coalesce_right
 
         // Signal to callers/policies that a block has been released.
-        lda #$01
+        lda #TRUE
         sta rsrc_released_flag
         rts
 /*
 ================================================================================
   mem_coalesce_right
 ================================================================================
- 
-  Summary:
+Summary:
     Walks the free list, merging pairs of free nodes that are laid out
     back-to-back in memory (right node starts at left + left.size). Merges can
     cascade at the same left node until its next is non-adjacent. Maintains
     mem_free_tail if the right node was the tail.
  
-  Arguments:
+Arguments:
     mem_free_head    	   	Head pointer of the free list. Seeds the walk.
     mem_free_tail  	    	Tail pointer of the free list. May be updated
-                                when the rightmost participant of a merge was the tail.
+								when the rightmost participant of a merge was the tail.
  
-  Effects / Returns:
+Effects:
     In-place merges of adjacent nodes (sizes and next links updated).
     mem_free_tail updated if the old tail got merged into its left neighbor.
  
-    Clobbers                      A, X, Y; condition flags. Calls mem_read_next_ptr.
- 
-  Preconditions / Invariants:
-    - Null = $0000 detected via HI byte == $00 (no headers reside in page $00).
-    - mem_read_next_ptr returns X=next.lo, Y=next.hi and sets Z from Y; STX/STY do not change flags.
- 
-  Description:
- 
+Description: 
     For each node:
-      1) Read its 16-bit size into mem_used_sz.
+      1) Read its size into mem_used_sz.
  
       2) Compute mem_right = mem_left + mem_used_sz (the address that would
          be immediately to the right if a neighbor is touching).
@@ -412,40 +414,36 @@ mem_release:
 mem_coalesce_right:
 		// Load the head of the free list into ‘mem_left’.
 		lda mem_free_head_lo
-		sta mem_left
+		sta mem_left_lo
 		lda mem_free_head_hi
-		sta mem_left + 1
+		sta mem_left_hi
 
 		// Empty list? If mem_free_head == $0000, nothing to merge → return.
 		beq mem_exit_1
 
 compute_adjacent:
-		/*
-		  ----------------------------------------
-		  Read the current free block’s size (on the left side):
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Read the current free block’s size (on the left side):
+		// ------------------------------------------------------------
 		ldy #MEM_HDR_OFS_SIZE_LO
-		lda (mem_left),Y
-		sta left_size
+		lda (mem_left_lo),Y
+		sta left_size_lo
 		iny
-		lda (mem_left),Y
-		sta left_size + 1
+		lda (mem_left_lo),Y
+		sta left_size_hi
 
-		/*
-		  ----------------------------------------
-		  Compute the address of the block that would be immediately to the right:
-		 
-		    mem_right = mem_left + left_size
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Compute the address of the block that would be immediately to the right:
+		// 
+		// mem_right = mem_left + left_size
+		// ------------------------------------------------------------
 		clc
-		lda left_size
-		adc mem_left
-		sta mem_right
-		lda left_size + 1
-		adc mem_left + 1
-		sta mem_right + 1
+		lda left_size_lo
+		adc mem_left_lo
+		sta mem_right_lo
+		lda left_size_hi
+		adc mem_left_hi
+		sta mem_right_hi
 
 		// Fetch the pointer to the NEXT free block (into X/Y).
 		jsr mem_read_next_ptr
@@ -455,135 +453,112 @@ compute_adjacent:
 		rts
 
 adjacency_check:
-		/*
-		  ----------------------------------------
-		  Test right-adjacency:
-		 
-		    Are we exactly at mem_left + mem_used_sz ? (i.e., mem_right)
-		    Compare mem_next_free (X/Y) against mem_right (lo/hi).
-		  ----------------------------------------
-		 */
-		cpx mem_right
+		// ------------------------------------------------------------
+		// Test right-adjacency:
+		// 
+		// Are we exactly at mem_left + mem_used_sz ? (i.e., mem_right)
+		// Compare mem_next_free (X/Y) against mem_right (lo/hi).
+		// ------------------------------------------------------------
+		cpx mem_right_lo
 		bne adjacency_check_hi
-		cpy mem_right + 1
+		cpy mem_right_hi
 adjacency_check_hi:
 		// Branch if NOT adjacent (X:Y ≠ mem_right).
 		bne next_block_is_not_adjacent
 
-		/*
-		  ----------------------------------------
-		  Adjacent detected
-		  ----------------------------------------
-		 */
-	   
-		/*
-		  Unnecessary code, as X/Y already have the desired values
-		  Keeping here for consistency with original
-		 */
-		stx mem_right
-		sty mem_right + 1
+		// ------------------------------------------------------------
+		// Adjacent detected
+		// ------------------------------------------------------------
+		
+		// Unnecessary code, as X/Y already have the desired values
+		// Keeping here for consistency with original
+		stx mem_right_lo
+		sty mem_right_hi
 
-		/*
-		  ----------------------------------------
-		  Splice out the second block from the free list:
-		    first_block.next ← second_block.next
-		 
-		  Copy header +2..+3 (next pointer) from mem_right → mem_left.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Splice out the second block from the free list:
+		//  mem_left.next ← mem_right.next
+		// 
+		// Copy header +2..+3 (next pointer) from mem_right → mem_left.
+		// ------------------------------------------------------------
 		ldy #MEM_HDR_OFS_NEXT_LO
-		lda (mem_right),Y
-		sta (mem_left),Y
+		lda (mem_right_lo),Y
+		sta (mem_left_lo),Y
 		iny
-		lda (mem_right),Y
-		sta (mem_left),Y
+		lda (mem_right_lo),Y
+		sta (mem_left_lo),Y
 
-		/*
-		  ----------------------------------------
-		  Add the two block sizes to form the new, coalesced size in mem_left.
-		 
-		  Perform 16-bit addition: mem_left.size = left_size + mem_right.size
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Add the two block sizes to form the new, coalesced size in mem_left.
+		// 
+		// Perform 16-bit addition: mem_left.size = left_size + mem_right.size
+		// ------------------------------------------------------------
 		ldy #MEM_HDR_OFS_SIZE_LO
 		clc
-		lda left_size
-		adc (mem_right),Y          // add size.lo
-		sta (mem_left),Y              // write new size.lo
+		lda left_size_lo
+		adc (mem_right_lo),Y          
+		sta (mem_left_lo),Y           
 		iny
-		lda left_size + 1
-		adc (mem_right),Y          // add size.hi (+ carry from low-byte add)
-		sta (mem_left),Y              // write new size.hi
+		lda left_size_hi
+		adc (mem_right_lo),Y          
+		sta (mem_left_lo),Y           
 
-		/*
-		  ----------------------------------------
-		  If we just removed the TAIL node (mem_right == mem_free_tail),
-		  then the newly coalesced first block becomes the new tail.
-		  ----------------------------------------
-		 */
-		lda mem_right
+		// ------------------------------------------------------------
+		// If we just removed the TAIL node (mem_right == mem_free_tail),
+		// then the newly coalesced first block becomes the new tail.
+		// ------------------------------------------------------------
+		lda mem_right_lo
 		cmp mem_free_tail_lo
 		bne continue
-		lda mem_right + 1
+		lda mem_right_hi
 		cmp mem_free_tail_hi
 		bne continue
 	   
-		lda mem_left
+	    // Set the new tail = mem_left
+		lda mem_left_lo
 		sta mem_free_tail_lo
-		lda mem_left + 1
+		lda mem_left_hi
 		sta mem_free_tail_hi
 
 continue:
 		// Continue scanning: fall through to null-check using hi byte of mem_left.
-		lda mem_left + 1
+		lda mem_left_hi
 		jmp is_block_null
 
 next_block_is_not_adjacent:
 		// Not adjacent → advance to the next free block and keep checking.
 		jsr mem_read_next_ptr			//Redundant call - kept here to match the original
-		stx mem_left
-		sty mem_left + 1
+		stx mem_left_lo
+		sty mem_left_hi
 
-/*
-  ----------------------------------------
-  Loop guard: if mem_left != $0000, process next candidate; else exit.
-  ----------------------------------------
- */
+		// ------------------------------------------------------------
+		// Loop guard: if mem_left != $0000, process next candidate; else exit.
+		// ------------------------------------------------------------
 is_block_null:
 		bne compute_adjacent
 mem_exit_1:
 		rts
 /*
 ================================================================================
-  Sort Free Blocks by Address (AO pass with localized swaps)
-================================================================================
- 
-  Summary:
+  mem_sort_free_ao
+================================================================================ 
+Summary:
     Reorders the singly linked free-list into ascending address order (AO).
     For each anchor (anchor_block), find the lowest-address node < anchor_next
     within the remainder of the list and swap it into anchor_next’s position
     by pointer rewiring. Repeat until the end. O(n^2), in-place, non-stable.
  
-  Arguments / Inputs:
-    mem_free_stub   Synthetic head; +2..+3 hold mem_free_head.
-    mem_free_head      Current head pointer (variable).
+Arguments / Inputs:
+    mem_free_stub   	Synthetic head; +2..+3 hold mem_free_head.
+    mem_free_head      	Current head pointer (variable).
     mem_free_tail       Tail pointer (variable).
  
-  Effects / Outputs:
-    List becomes address-ordered. mem_free_tail updated to final node.
-    mem_free_head refreshed from the stub on exit.
+Effects / Outputs:
+    free list 			becomes address-ordered. 
+	mem_free_tail 		updated to final node.
+    mem_free_head 		refreshed from the stub on exit.
  
-    Clobbers                       
-        A, X, Y; condition flags. Uses mem_read_next_ptr. Internal temps updated.
- 
-  Invariants:
-    - Null pointer detected via HI byte == $00 (no headers in page $00).
-    - mem_read_next_ptr: X=next.lo, Y=next.hi, Z from Y; STX/STY do not change flags.
-    - curr_block is the input pointer alias for mem_read_next_ptr.
-    - Tie-breaks don’t matter (addresses unique); algorithm is non-stable.
- 
-  Description:
- 
+Description:
     The routine treats the free-list stub as a synthetic head whose +2..+3
     mirror a normal block’s ‘next’ field. For each pass:
  
@@ -614,288 +589,274 @@ mem_exit_1:
     all anchors advance, the free-list is sorted by address, which increases the
     likelihood that adjacent free blocks become coalescible and can be merged
     efficiently by mem_coalesce_right.
- 
-  	Note: the sorting is actually non-stable, but it doesn't matter as sorting keys (addresses)
-  	are always unique.
+
+Notes: 
+    - Null pointer detected via HI byte == $00 (no headers in page $00).
+    - mem_read_next_ptr: X=next.lo, Y=next.hi, Z from Y; STX/STY do not change flags.
+    - curr_block is the input pointer alias for mem_read_next_ptr.
+    - Tie-breaks don’t matter (addresses unique); algorithm is non-stable, but 
+	it doesn't matter as sorting keys (addresses) are always unique.
 ================================================================================
 */
 * = $574C
 mem_sort_free_ao:
-		/*
-		  ----------------------------------------
-		  Initialize sorting by setting ‘anchor_block’ to point at the
-		  free block stub. This structure mimics a normal block header,
-		  holding the mem_free_head pointer at offsets +2..+3.
-		 
-		  The routine will use anchor_block as the list head during traversal,
-		  allowing consistent pointer logic for block headers and the stub.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Initialize sorting by setting ‘anchor_block’ to point at the
+		// free block stub. This structure mimics a normal block header,
+		// holding the mem_free_head pointer at offsets +2..+3.
+		// 
+		// The routine will use anchor_block as the list head during traversal,
+		// allowing consistent pointer logic for block headers and the stub.
+		// ------------------------------------------------------------
 		lda #<mem_free_stub
-		sta anchor_block
+		sta anchor_block_lo
 		lda #>mem_free_stub
-		sta anchor_block + 1
+		sta anchor_block_hi
 
 setup_comparison:
-		/*
-		  ----------------------------------------
-		  Prepare pass state:
-		    min_offender ← $FFFF
-		      Sentinel meaning “no offender found yet”; any real block address
-		      will compare lower and replace it.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Prepare pass state:
+		//
+		//  min_offender ← $FFFF
+		//
+		// Sentinel meaning “no offender found yet”; any real block address
+		// will compare lower and replace it.
+		// ------------------------------------------------------------
 		lda #$FF
-		sta min_offender
-		sta min_offender + 1
+		sta min_offender_lo
+		sta min_offender_hi
 
-		/*
-		  ----------------------------------------
-		  Initialize the sliding window at the list head:
-		    curr_prev ← anchor_block  (the stub)
-		  We’ll advance to the first real entry next; keeping curr_prev aligned
-		  with the node before the current candidate simplifies pointer swaps.
-		  ----------------------------------------
-		 */
-		lda anchor_block
-		sta curr_prev
-		lda anchor_block + 1
-		sta curr_prev + 1
+		// ------------------------------------------------------------
+		// Initialize the sliding window at the list head:
+		//
+		//  curr_prev ← anchor_block  (the stub)
+		//
+		// We’ll advance to the first real entry next; keeping curr_prev aligned
+		// with the node before the current candidate simplifies pointer swaps.
+		// ------------------------------------------------------------
+		lda anchor_block_lo
+		sta curr_prev_lo
+		lda anchor_block_hi
+		sta curr_prev_hi
 
-		/*
-		  ----------------------------------------
-		  Prime the first candidate pair:
-		    anchor_next ← anchor_block->next        (read stub’s +2..+3)
-		    curr_block ← anchor_next            (mirrored in X/Y for speed)
-		  If anchor_next == $0000, the list is empty/singleton → nothing to sort.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Prime the first candidate pair:
+		//
+		//   anchor_next ← anchor_block->next    (read stub’s next)
+		//   curr_block ← anchor_next            (curr_block mirrored in X/Y for speed)
+		//
+		// If anchor_next == $0000, the list is empty/singleton → nothing to sort.
+		// ------------------------------------------------------------
 		ldy #MEM_HDR_OFS_NEXT_LO
-		lda (anchor_block),Y
-		sta anchor_next
+		lda (anchor_block_lo),Y
+		sta anchor_next_lo
 		tax
 		iny
-		lda (anchor_block),Y
-		sta anchor_next + 1
+		lda (anchor_block_lo),Y
+		sta anchor_next_hi
 		tay
-		bne compare_order            // nonzero: have a first candidate
+		bne compare_order            	// nonzero: have a first candidate
 		// No next block → nothing to sort
 		jmp no_more_blocks
 
 compare_order:
-		/*
-		  ----------------------------------------
-		  Establish the comparison window:
-		    curr_block ← X/Y     (candidate under test)
-		    curr_next    ← curr_block->next
-		  We'll verify whether curr_block is in Address Order (AO)
-		  relative to anchor_next and track any out-of-order offender.
-		  ----------------------------------------
-		 */
-		stx curr_block
-		sty curr_block + 1
+		// ------------------------------------------------------------
+		// Establish the comparison window:
+		//
+		//   curr_block ← X/Y     			(candidate under test)
+		//   curr_next  ← curr_block->next
+		//
+		// We'll verify whether curr_block is in Address Order (AO)
+		// relative to anchor_next and track any out-of-order offender.
+		// ------------------------------------------------------------
+		//   curr_block ← X/Y     			
+		stx curr_block_lo
+		sty curr_block_hi
 
-		// Read the singly-linked ‘next’ pointer from curr_block header.
+		//   curr_next  ← curr_block->next
 		jsr mem_read_next_ptr
-		stx curr_next
-		sty curr_next + 1
+		stx curr_next_lo
+		sty curr_next_hi
 
-		/*
-		  ----------------------------------------
-		  Address Order (AO) check between curr_block and anchor_next.
-		 
-		  Compute (curr_block - anchor_next) as a 16-bit subtract:
-		    SEC; SBC low, then SBC high.
-		  Interpretation:
-		    C=1 (no borrow)  → curr_block ≥ anchor_next  → AO OK → skip to next_comparison
-		    C=0 (borrow)     → curr_block <  anchor_next → AO violated → handle offender
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Address Order (AO) check between curr_block and anchor_next.
+		// 
+		// Compute (curr_block - anchor_next) as a 16-bit subtract
+		//
+		// Interpretation:
+		//   C=1 (no borrow)  → curr_block ≥ anchor_next  → AO OK → skip to next_comparison
+		//   C=0 (borrow)     → curr_block <  anchor_next → AO violated → handle offender
+		// ------------------------------------------------------------
 		sec
-		lda curr_block
-		sbc anchor_next
-		lda curr_block + 1
-		sbc anchor_next + 1
-		bcs next_comparison            // C=1 → in order; continue
+		lda curr_block_lo
+		sbc anchor_next_lo
+		lda curr_block_hi
+		sbc anchor_next_hi
+		bcs next_comparison            	// C=1 → in order; continue
 
-		/*
-		  ----------------------------------------
-		  AO violated → record the lowest-address offender seen so far.
-		 
-		  Compare (curr_block - min_offender):
-		    C=1 (no borrow)  → curr_block ≥ min_offender → not lower → keep existing
-		    C=0 (borrow)     → curr_block <  min_offender → NEW lowest offender
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// AO violated → record the lowest-address offender seen so far.
+		// 
+		// Compare (curr_block - min_offender):
+		//   C=1 (no borrow)  → curr_block ≥ min_offender → not lower → keep existing
+		//   C=0 (borrow)     → curr_block <  min_offender → NEW lowest offender
+		// ------------------------------------------------------------
 		sec
-		lda curr_block
-		sbc min_offender
-		lda curr_block + 1
-		sbc min_offender + 1
-		bcs next_comparison            // C=1 → not lower than current lowest → skip
+		lda curr_block_lo
+		sbc min_offender_lo
+		lda curr_block_hi
+		sbc min_offender_hi
+		bcs next_comparison				// C=1 → not lower than current lowest → skip
 
-		/*
-		  ----------------------------------------
-		  New lowest-address offender detected — snapshot offender and links:
-		 
-		    min_offender ← curr_block       (the out-of-order node)
-		    min_prev   ← curr_prev          (node before offender)
-		    min_next   ← curr_next          (node after offender)
-		  These will be used later to perform the pointer swap with anchor_next.
-		  ----------------------------------------
-		 */
-		lda curr_block
-		sta min_offender
-		lda curr_block + 1
-		sta min_offender + 1
+		// ------------------------------------------------------------
+		// New lowest-address offender detected — snapshot offender and links:
+		// 
+		//    min_offender ← curr_block       	(the out-of-order node)
+		//    min_prev     ← curr_prev          (node before offender)
+		//    min_next     ← curr_next          (node after offender)
+		//
+		// These will be used later to perform the pointer swap with anchor_next.
+		// ------------------------------------------------------------
+		lda curr_block_lo
+		sta min_offender_lo
+		lda curr_block_hi
+		sta min_offender_hi
 
-		lda curr_prev
-		sta min_prev
-		lda curr_prev + 1
-		sta min_prev + 1
+		lda curr_prev_lo
+		sta min_prev_lo
+		lda curr_prev_hi
+		sta min_prev_hi
 
-		lda curr_next
-		sta min_next
-		lda curr_next + 1
-		sta min_next + 1
+		lda curr_next_lo
+		sta min_next_lo
+		lda curr_next_hi
+		sta min_next_hi
 
 next_comparison:
-		/*
-		  ----------------------------------------
-		  Slide the comparison window forward:
-		    curr_prev    ← curr_block
-		    curr_block (X/Y) ← curr_next
-		  Then continue while curr_block != $0000.
-		  ----------------------------------------
-		 */
-		lda curr_block
-		sta curr_prev
-		lda curr_block + 1
-		sta curr_prev + 1
+		// ------------------------------------------------------------
+		// Slide the comparison window forward:
+		//   curr_prev    ← curr_block
+		//   curr_block (X/Y) ← curr_next
+		// Then continue while curr_block != $0000.
+		// ------------------------------------------------------------
+		lda curr_block_lo
+		sta curr_prev_lo
+		lda curr_block_hi
+		sta curr_prev_hi
 
-		ldx curr_next
-		ldy curr_next + 1
+		ldx curr_next_lo
+		ldy curr_next_hi
 
 		// If curr_block (X/Y) is null, we reached the end — proceed to swap check.
 		bne compare_order
 
-		/*
-		  ----------------------------------------
-		  End of this sweep: if an out-of-order (min_offender) was found,
-		  perform a localized re-link to move it directly after anchor_block
-		  (i.e., swap it into the position of anchor_next).
-		 
-		  min_offender == $FFFF → none found → skip swap.
-		  ----------------------------------------
-		 */
-		lda min_offender + 1
+		// ------------------------------------------------------------
+		// End of this sweep: if an out-of-order (min_offender) was found,
+		// perform a localized re-link to move it directly after anchor_block
+		// (i.e., swap it into the position of anchor_next).
+		// 
+		//  min_offender == $FFFF → none found → skip swap.
+		// ------------------------------------------------------------
+		lda min_offender_hi
 		cmp #$FF
 		beq next_start_block
 
-		/*
-		  ----------------------------------------
-		  Swap min_offender with anchor_next
-		  Pointer surgery overview (all writes address header +2..+3 “next” fields):
-		    anchor_block.next     = min_offender
-		    min_prev.next   = anchor_next
-		    min_offender.next = anchor_next.next
-		    anchor_next.next      = min_next
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Swap min_offender with anchor_next
+		//
+		// Pointer surgery overview (all writes address header “next” fields):
+		//   anchor_block.next     	= min_offender
+		//   min_prev.next   		= anchor_next
+		//   min_offender.next 		= anchor_next.next
+		//   anchor_next.next      	= min_next
+		// ------------------------------------------------------------
 		ldy #MEM_HDR_OFS_NEXT_LO
 
 		// anchor_block->next = min_offender
-		lda min_offender
-		sta (anchor_block),Y
+		lda min_offender_lo
+		sta (anchor_block_lo),Y
 
 		// min_prev->next = anchor_next
-		lda anchor_next
-		sta (min_prev),Y
+		lda anchor_next_lo
+		sta (min_prev_lo),Y
 
 		// min_offender->next = anchor_next->next
-		lda (anchor_next),Y
-		sta (min_offender),Y
+		lda (anchor_next_lo),Y
+		sta (min_offender_lo),Y
 
 		// anchor_next->next = min_next
-		lda min_next
-		sta (anchor_next),Y
+		lda min_next_lo
+		sta (anchor_next_lo),Y
 
 		// Repeat for the high bytes of the pointers
 		iny
-		lda min_offender + 1
-		sta (anchor_block),Y
-		lda anchor_next + 1
-		sta (min_prev),Y
-		lda (anchor_next),Y
-		sta (min_offender),Y
-		lda min_next + 1
-		sta (anchor_next),Y
+		lda min_offender_hi
+		sta (anchor_block_lo),Y
+		lda anchor_next_hi
+		sta (min_prev_lo),Y
+		lda (anchor_next_lo),Y
+		sta (min_offender_lo),Y
+		lda min_next_hi
+		sta (anchor_next_lo),Y
 
 next_start_block:
-		/*
-		  ----------------------------------------
-		  Advance the outer pass anchor:
-		    anchor_block ← anchor_block->next
-		  If no further nodes exist, finish by updating the tail pointer.
-		  ----------------------------------------
-		 */
-		lda anchor_block
-		sta curr_block
-		lda anchor_block + 1
-		sta curr_block + 1
+		// ------------------------------------------------------------
+		// Advance the outer pass anchor:
+		//
+		//   anchor_block ← anchor_block->next
+		//
+		// If no further nodes exist, finish by updating the tail pointer.
+		// ------------------------------------------------------------
+		lda anchor_block_lo
+		sta curr_block_lo
+		lda anchor_block_hi
+		sta curr_block_hi
 	   
-		jsr mem_read_next_ptr               // X/Y = anchor_block->next
-		beq no_more_blocks               // null → list exhausted
+		jsr mem_read_next_ptr           // X/Y = anchor_block->next
+		beq no_more_blocks              // null → list exhausted
 	   
-		stx anchor_block                 // step anchor forward
-		sty anchor_block + 1
-		jmp setup_comparison             // begin next sweep from new anchor
+		stx anchor_block_lo             // step anchor forward
+		sty anchor_block_hi
+		jmp setup_comparison            // begin next sweep from new anchor
 
 no_more_blocks:
-		/*
-		  ----------------------------------------
-		  Sorting complete — refresh the recorded tail pointer to the final node.
-		  (At this point anchor_block holds the last node in the list.)
-		  ----------------------------------------
-		 */
-		lda anchor_block
+		// ------------------------------------------------------------
+		// Sorting complete — refresh the recorded tail pointer to the final node.
+		// (At this point anchor_block holds the last node in the list.)
+		// ------------------------------------------------------------
+		lda anchor_block_lo
 		sta mem_free_tail_lo
-		lda anchor_block + 1
+		lda anchor_block_hi
 		sta mem_free_tail_hi
 		rts
 /*
 ================================================================================
-  Get Free Block
-================================================================================
- 
-  Summary:
+  mem_alloc_bestfit
+================================================================================ 
+Summary:
     Entry point for the allocator.  
+	
     Given a requested payload size (in X/Y), this routine searches the free
     list for a suitable memory block, calling the best-fit selector to
     locate and allocate it.
  
-  Arguments:
+Arguments:
     X / Y				Requested payload size (low/high).  
         				Represents only the data portion; 
   						the routine adds 4 bytes for the internal block header.
  
-  Vars/State:
+Vars/State:
     mem_req_payload		Stores requested payload size from X/Y.  
     mem_req_total		Computed as mem_req_payload + 4 (header included).  
     mem_free_head		Head pointer of the free list.  
     mem_free_cur        Updated to point to the current candidate free block.
  
-  Returns:
+Returns:
     X / Y               Pointer to allocated block header if successful.  
     Z Flag              Z=0 on success (block allocated),  
         				Z=1 if no free block exists (free list empty).           
- 
-  Preconditions / Notes:
-    - Null free pointer is detected via HI byte == $00 (no headers in page $00).
-    - BNE uses Z from the last LDA of mem_free_head+1; STA does not affect flags.
-    - Best-fit routine consumes mem_req_total and mem_req_payload and performs the split/consume.
- 
-  Description:
+  
+Description:
     The allocator begins by recording the caller’s requested size and
     calculating the total number of bytes needed, including the 4-byte
     block header.  
@@ -907,6 +868,11 @@ no_more_blocks:
     Otherwise, it chains into the mem_bestfit_select routine, which
     performs a full best-fit scan to locate the optimal block and split
     or consume it as needed.
+	
+Notes:
+    - Null free pointer is detected via HI byte == $00 (no headers in page $00).
+    - BNE uses Z from the last LDA of mem_free_head+1; STA does not affect flags.
+    - Best-fit routine consumes mem_req_total and mem_req_payload and performs the split/consume.
 ================================================================================
 */
 * = $581B	
@@ -915,44 +881,43 @@ mem_alloc_bestfit:
 		stx mem_req_payload_lo
 		sty mem_req_payload_hi
 
-		/*
-		  Compute total bytes required including the 4-byte block header:
-		  Total requested bytes (HEADER + payload): mem_req_total = raw_data_size + MEM_HDR_LEN
-		 */
+		// ------------------------------------------------------------
+		// Compute total bytes required including the 4-byte block header:
+		// Total requested bytes (HEADER + payload): mem_req_total = raw_data_size + MEM_HDR_LEN
+		// ------------------------------------------------------------
 		clc
 		lda mem_req_payload_lo
 		adc #<MEM_HDR_LEN
-		sta mem_req_total
+		sta mem_req_total_lo
 		lda mem_req_payload_hi
 		adc #>MEM_HDR_LEN
-		sta mem_req_total + 1
+		sta mem_req_total_hi
 
 		// Initialize the scan at the head of the free list.
 		lda mem_free_head_lo
 		sta mem_free_cur_lo
-		// LDA sets Z, BNE uses Z from LDA.
+		// LDA sets Z, BNE below uses Z from LDA.
 		lda mem_free_head_hi
 		sta mem_free_cur_hi
 
-		/*
-		  If the free list is empty (mem_free_cur == $0000), return with Z=1.
-		  Otherwise, tail-call into the best-fit selector.
-		 */
+		// ------------------------------------------------------------
+		// If the free list is empty (mem_free_cur == $0000), return with Z=1.
+		// Otherwise, tail-call into the best-fit selector.
+		// ------------------------------------------------------------
 		bne mem_bestfit_select
 		rts
 /*
 ================================================================================
-  Select Best Free Block (Best-Fit)
+  mem_bestfit_select
 ================================================================================
- 
-  Summary:
+Summary:
     Walk the free list and select the smallest block whose size ≥ mem_req_total.
     On success, set mem_free_cur to the winner and invoke mem_alloc_from_free to carve it.
  
-  Arguments:
+Arguments:
     mem_req_total           Requested allocation size in bytes (16-bit)
  
-  Vars/State:
+Vars/State:
     mem_free_cur     		Current free node under scan. 
   							On entry, points to the first REAL free node (not the stub).
     mem_free_stub     		Synthetic predecessor for the list head (used to seed prev tracking).
@@ -960,21 +925,14 @@ mem_alloc_bestfit:
     mem_best_size     		Size of the best candidate. 
     mem_prev     			Rolling predecessor of mem_free_cur during the scan.
  
-  Returns:
- 
+Returns: 
     Success: Z = 0, X = lo(mem_best_blk), Y = hi(mem_best_blk).
     Failure: Z = 1 (no fit found). X/Y are unspecified.
  
-  Clobbers:
-    A, X, Y; condition flags. Calls mem_alloc_from_free on success.
  
-  Preconditions / Invariants:
-    - Null free pointer is detected via HI byte == $00 (no headers reside in page $00).
-    - mem_read_next_ptr leaves X=next.lo, Y=next.hi and Z derived from Y; BNE uses that Z.
-    - Tie-break: equal-size candidates prefer the later one encountered (non-stable).
- 
-  Description:
+Description:
     Initialize mem_best_size = $FFFF and mem_best_blk = $0000; set mem_prev = head stub.
+	
     For each node:
       1) Read candidate size. If candidate < mem_req_total → skip.
       2) If candidate ≤ mem_best_size → record candidate as the new best (size, block, predecessor).
@@ -982,121 +940,110 @@ mem_alloc_bestfit:
     After the scan:
       - If mem_best_blk == $0000 → return with Z = 1 (no fit).
       - Else: mem_free_cur ← mem_best_blk; JSR mem_alloc_from_free; return X/Y = mem_best_blk.
+	  
+Notes:
+	- Tie-break: equal-size candidates prefer the later one encountered (non-stable).
 ================================================================================
 */
+* = $583F
 mem_bestfit_select:
-		/*
-		  ----------------------------------------
-		  Initialize “current best” to: size = $FFFF (max) and block = $0000 (none).
-		  Any real fitting candidate will be smaller than $FFFF and replace this.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Initialize “current best” to: size = $FFFF (max) and block = $0000 (none).
+		// Any real fitting candidate will be smaller than $FFFF and replace this.
+		// ------------------------------------------------------------
 		lda #$FF
 		sta mem_best_size_lo
 		sta mem_best_size_hi
 		lda #$00
-		sta mem_best_blk
+		sta mem_best_blk_lo
 		lda #$00
-		sta mem_best_blk + 1
+		sta mem_best_blk_hi
 
-		/*
-		  ----------------------------------------
-		  Seed mem_prev with the free-list stub head (acts as the predecessor
-		  of the first real free block). As we walk the list, mem_prev will
-		  track the node before ‘mem_free_cur’ for bookkeeping/surgery later.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Seed mem_prev with the free-list stub head (acts as the predecessor
+		// of the first real free block). As we walk the list, mem_prev will
+		// track the node before ‘mem_free_cur’ for bookkeeping/surgery later.
+		// ------------------------------------------------------------
 		lda #<mem_free_stub
-		sta mem_prev
+		sta mem_prev_lo
 		lda #>mem_free_stub
-		sta mem_prev + 1
+		sta mem_prev_hi
 
 check_candidate:
-		/*
-		  ----------------------------------------
-		  Read the candidate’s size from its header:
-		    header +0 = size.lo (tail bytes), header +1 = size.hi (pages)
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Read the candidate’s size from its header
+		// ------------------------------------------------------------
 		ldy #MEM_HDR_OFS_SIZE_LO
 		lda (mem_free_cur_lo),Y
-		sta candidate_size
+		sta candidate_size_lo
 		iny
 		lda (mem_free_cur_lo),Y
-		sta candidate_size + 1
+		sta candidate_size_hi
 
-		/*
-		  ----------------------------------------
-		  Fit test: does candidate >= mem_req_total ?
-		 
-		  Compute (candidate - mem_req_total). 
-		  If a borrow occurs (BCC), then candidate < mem_req_total → it cannot fit → skip to next block.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Fit test: does candidate >= mem_req_total ?
+		// 
+		// Compute (candidate - mem_req_total). 
+		// If a borrow occurs (BCC), then candidate < mem_req_total → it cannot fit → skip to next block.
+		// ------------------------------------------------------------
 		sec
-		lda candidate_size
-		sbc mem_req_total
-		lda candidate_size + 1
-		sbc mem_req_total + 1
+		lda candidate_size_lo
+		sbc mem_req_total_lo
+		lda candidate_size_hi
+		sbc mem_req_total_hi
 		bcc move_to_next_block            // too small → examine next candidate
 
-		/*
-		  ----------------------------------------
-		  DATA FITS — check whether this candidate improves the current best-fit.
-		 
-		  Compare (mem_best_size - candidate_size):
-		 
-		    If borrow (BCC) → candidate is LARGER than current best → not better.
-		    If no borrow    → candidate is <= current best         → accept later.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// DATA FITS — check whether this candidate improves the current best-fit.
+		// 
+		// Compare (mem_best_size - candidate_size):
+		// 
+		// If borrow (BCC) → candidate is LARGER than current best → not better.
+		// If no borrow    → candidate is <= current best         → accept later.
+		// ------------------------------------------------------------
 		sec
 		lda mem_best_size_lo
-		sbc candidate_size
+		sbc candidate_size_lo
 		lda mem_best_size_hi
-		sbc candidate_size + 1
+		sbc candidate_size_hi
 		bcc move_to_next_block            // candidate > best → skip, keep current best
 
-		/*
-		  ----------------------------------------
-		  NEW BEST-FIT FOUND
-		 
-		  This call to "mem_read_next_ptr" is not really needed, as X/Y will get overwritten
-		  again by the following "mem_read_next_ptr" call later on - it doesn't harm either
-		  Keeping it here as it's present in the original code
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// NEW BEST-FIT FOUND
+		// 
+		// This call to "mem_read_next_ptr" is not really needed, as X/Y will get overwritten
+		// again by the following "mem_read_next_ptr" call later on - it doesn't harm either
+		// Keeping it here as it's present in the original code
+		// ------------------------------------------------------------
 		jsr mem_read_next_ptr		
 
 		// Record the new minimum (best) size.
-		lda candidate_size
+		lda candidate_size_lo
 		sta mem_best_size_lo
-		lda candidate_size + 1
+		lda candidate_size_hi
 		sta mem_best_size_hi
 
 		// Record the address of the new best-fit block.
 		lda mem_free_cur_lo
-		sta mem_best_blk
+		sta mem_best_blk_lo
 		lda mem_free_cur_hi
-		sta mem_best_blk + 1
+		sta mem_best_blk_hi
 
 		// Record the address of the predecessor
-		lda mem_prev
+		lda mem_prev_lo
 		sta predecessor_lo
-		lda mem_prev + 1
+		lda mem_prev_hi
 		sta predecessor_hi
 
 move_to_next_block:
-		/*
-		  ----------------------------------------
-		  Remember the current candidate as 'mem_prev' (predecessor tracking).
-		  Useful for later list surgery, though not directly used in this pass.
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Remember the current candidate as 'mem_prev' (predecessor tracking).
+		// Useful for later list surgery, though not directly used in this pass.
+		// ------------------------------------------------------------
 		lda mem_free_cur_lo
-		sta mem_prev
+		sta mem_prev_lo
 		lda mem_free_cur_hi
-		sta mem_prev + 1
+		sta mem_prev_hi
 
 		// Advance the scan to the next free block in the list.
 		jsr mem_read_next_ptr
@@ -1106,15 +1053,13 @@ move_to_next_block:
 		// Continue scanning while mem_free_cur != $0000.
 		bne check_candidate
 
-		/*
-		  ----------------------------------------
-		  END OF SCAN — commit best-fit (if any) and allocate
-		  Load the winner back into mem_free_cur so mem_alloc_from_free operates on it.
-		  ----------------------------------------
-		 */
-		lda mem_best_blk
+		// ------------------------------------------------------------
+		// END OF SCAN — commit best-fit (if any) and allocate
+		// Load the winner back into mem_free_cur so mem_alloc_from_free operates on it.
+		// ------------------------------------------------------------
+		lda mem_best_blk_lo
 		sta mem_free_cur_lo
-		lda mem_best_blk + 1
+		lda mem_best_blk_hi
 		sta mem_free_cur_hi
 
 		// If mem_best_blk == $0000 → no fitting block was found → return with Z=1.
@@ -1125,12 +1070,12 @@ free_block_found:
 		// Consume/split the chosen free block to satisfy the request.
 		jsr mem_alloc_from_free
 
-		/*
-		  Return the allocated block pointer to caller:
-		    X = lo(mem_best_blk), Y = hi(mem_best_blk), Z=0 (success).
-		 */
-		ldx mem_best_blk
-		ldy mem_best_blk + 1
+		// ------------------------------------------------------------
+		// Return the allocated block pointer to caller:
+		//  X = lo(mem_best_blk), Y = hi(mem_best_blk), Z=0 (success).
+		// ------------------------------------------------------------
+		ldx mem_best_blk_lo
+		ldy mem_best_blk_hi
 		rts
 /*
 ================================================================================
@@ -1450,72 +1395,59 @@ mem_exit:
 		rts
 /*
 ================================================================================
-  Compact all leading free space toward higher addresses
+  mem_compact_leading_free
 ================================================================================
- 
-  Summary:
+Summary:
     Iteratively “bubbles” used blocks to the right over the first free block,
     pushing the free space toward higher addresses. After each bubble, merges
     adjacent free blocks. Repeats until no more right-adjacent used blocks
     remain or the free list is exhausted.
  
-  Preconditions / Invariants:
-    - 'mem_free_cur' points to the header of the current leading free block.
-    - ZP aliasing: 'mem_free_cur' and 'mem_dst' share storage (mem_dst=free head).
+Preconditions / Invariants:
+    - mem_free_cur points to the header of the current leading free block.
+    - ZP aliasing: mem_free_cur and mem_dst share storage (mem_dst=free head).
     - Null pointers are detected via hi byte == 0 (no headers live in page $00).
  
-  Arguments / Inputs:
-    mem_free_head          Head pointer of the free list (lo/hi).
-    free header @ mem_free_cur  +0..+1 = size (lo=tail bytes, hi=pages)
-                              +2..+3 = next pointer
-  Updates:
-    mem_free_head          May be updated by 'mem_bubble_used_left' to new free head.
-    Transient state           mem_src (mem_free_cur + size), mem_next_free (free->next),
-                              mem_free_sz. Aliases with vars used by callees.
-  Calls:
-    mem_bubble_used_left              Slides USED run into the FREE region; updates head.
-    mem_coalesce_right      Merges adjacent FREE blocks.
- 
-  Description:
- 
-    Loads the head of the free list into ‘mem_free_cur’, reads its size into
-    ‘mem_free_sz’, and computes ‘adjacent_block = mem_free_cur + mem_free_sz’.
- 
-    It then fetches mem_free_cur->next:
-      • If no next free block exists, the routine returns (nothing to push).
-      • Otherwise, it:
-          1) Calls mem_bubble_used_left to relocate any used blocks that sit immediately
-             to the right of the leading free block, thereby sliding the free
-             region upward in memory (toward higher addresses).
-          2) Calls mem_coalesce_right to merge contiguous free neighbors that
-             may have become adjacent after the relocation.
-          3) Loops back to re-evaluate the (possibly updated) head until no more
-             movement is needed.
- 
-    The end result is a more compacted free region near the top, improving the
-    chance of satisfying larger allocations.
+Arguments / Inputs:
+    mem_free_head         		 Head pointer of the free list (lo/hi).
+
+Updates:
+    mem_free_head          		May be updated by 'mem_bubble_used_left' to new free head.
+	
+Description: 
+	-Loads the head of the free list into ‘mem_free_cur’, reads its size into
+	‘mem_free_sz’, and computes ‘adjacent_block = mem_free_cur + mem_free_sz’.
+
+	-It then fetches mem_free_cur->next:
+		• If no next free block exists, the routine returns (nothing to push).
+		• Otherwise, it:
+			1) Calls mem_bubble_used_left to relocate any used blocks that sit immediately
+			 to the right of the leading free block, thereby sliding the free
+			 region upward in memory (toward higher addresses).
+			2) Calls mem_coalesce_right to merge contiguous free neighbors that
+			 may have become adjacent after the relocation.
+			3) Loops back to re-evaluate the (possibly updated) head until no more
+			 movement is needed.
+
+	The end result is a more compacted free region near the top, improving the
+	chance of satisfying larger allocations.
 ================================================================================
- */
+*/
 * = $59AA
 mem_compact_leading_free:
-		/*
-		  ----------------------------------------
-		  Load the head of the free list into the working pointer ‘mem_free_cur’.
-		  This is the leading free region we try to push “to the back” (higher addrs).
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Load the head of the free list into the working pointer ‘mem_free_cur’.
+		// This is the leading free region we try to push “to the back” (higher addrs).
+		// ------------------------------------------------------------
+		// mem_free_head -> mem_free_cur
 		lda mem_free_head_lo
 		sta mem_free_cur_lo
 		lda mem_free_head_hi
 		sta mem_free_cur_hi
 
-		/*
-		  ----------------------------------------
-		  Read the free block’s size from its header:
-		    header +0 = size lo (tail bytes on last page)
-		    header +1 = size hi (full 256-byte pages)
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Read the free block’s size from its header -> mem_free_sz
+		// ------------------------------------------------------------
 		ldy #MEM_HDR_OFS_SIZE_LO
 		lda (mem_free_cur_lo),Y
 		sta mem_free_sz_lo
@@ -1524,13 +1456,10 @@ mem_compact_leading_free:
 		sta mem_free_sz_hi
 
 
-		/*
-		  ----------------------------------------
-		  Compute the address of the block immediately to the right:
-		    mem_src = mem_free_cur + mem_free_sz
-		  (size is stored as tail-bytes in lo and page count in hi)
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Compute the address of the block immediately to the right:
+		//  mem_src = mem_free_cur + mem_free_sz
+		// ------------------------------------------------------------
 		clc
 		lda mem_free_cur_lo
 		adc mem_free_sz_lo
@@ -1539,40 +1468,38 @@ mem_compact_leading_free:
 		adc mem_free_sz_hi
 		sta mem_src_hi
 
-		/*
-		  ----------------------------------------
-		  Read the singly-linked list pointer:
-		 
-		  mem_read_next_ptr → X=next.lo, Y=next.hi, Z set from Y (TAY inside).
-		  BNE means Y≠0 → non-null next (relies on “no headers in page $00” invariant).
-		  ----------------------------------------
-		 */
+		// ------------------------------------------------------------
+		// Read the singly-linked list pointer:
+		// 
+		// mem_read_next_ptr → X=next.lo, Y=next.hi, Z set from Y (TAY inside).
+		// BNE means Y≠0 → non-null next (relies on “no headers in page $00” invariant).
+		// ------------------------------------------------------------
 		jsr mem_read_next_ptr
 		bne next_block_present
 		rts
 
-
 next_block_present:
+		// mem_src->free   -> mem_next_free
 		stx mem_next_free_lo
 		sty mem_next_free_hi
 
-		/*
-		  Relocate any USED blocks that sit immediately to the right of the
-		  leading free block so that the free region moves “back” (to higher
-		  addresses). This may repeat internally until the next free block
-		  is adjacent to ‘mem_dst’.
-		 */
-	   
-		/*
-		  'mem_free_cur' (alias of 'mem_dst') already points at the FREE head.
-		  'mem_src' = mem_free_cur + size points at the first USED block to the right.
-		  'mem_next_free' is the next FREE block after the USED run.
-		 
-		  mem_bubble_used_left will:
-		    - Copy each USED block (header+payload) from mem_src → mem_dst,
-		    - Advance pointers until mem_src >= mem_next_free,
-		    - Rebuild the free header at the new mem_dst and update mem_free_head.	   
-		 */
+		// ------------------------------------------------------------
+		// Relocate any USED blocks that sit immediately to the right of the
+		// leading free block so that the free region moves “back” (to higher
+		// addresses). This may repeat internally until the next free block
+		// is adjacent to ‘mem_dst’.
+		//
+		// ------------------------------------------------------------
+		//
+		// mem_free_cur (alias of mem_dst) already points at the FREE head.
+		// mem_src = mem_free_cur + size points at the first USED block to the right.
+		// mem_next_free is the next FREE block after the USED run.
+		// 
+		// mem_bubble_used_left will:
+		//  - Copy each USED block (header+payload) from mem_src → mem_dst,
+		//  - Advance pointers until mem_src >= mem_next_free,
+		//  - Rebuild the free header at the new mem_dst and update mem_free_head.	   
+		// ------------------------------------------------------------
 		jsr mem_bubble_used_left
 
 		// The relocated free head may now be adjacent to the next free block; merge them.

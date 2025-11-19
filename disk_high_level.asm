@@ -182,6 +182,8 @@ max_sector_index_by_track:
 .label last_sector_loaded          = $4637   // Sector index last read into SECTOR_BUFFER
 .label last_track_loaded           = $4638   // Track number last read into SECTOR_BUFFER
 
+.label disk_copy_count_lo 			= $463C // 16-bit count of bytes to copy/write: low byte
+.label disk_copy_count_hi 			= $463D // 16-bit count of bytes to copy/write: high byte
 
 
 /*

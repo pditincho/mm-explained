@@ -211,6 +211,14 @@ Optimizations
 .const  VISIBLE_SLOTS             	= $04    // Number of visible item cells per page (2×2)
 .const  INVENTORY_PAGE_STEP       	= $02    // Items advanced per scroll click
 
+
+.label hotspot_entry_ofs = $CB88   // Current hotspot offset (in bytes) from start of hotspot table
+                                    // Each hotspot entry = 6 bytes (see HOTSPOT_ENTRY_SIZE)
+                                    // Used as an index into hotspot metadata for current cursor region
+                                    // Valid range: 0 .. (num_hotspots * HOTSPOT_ENTRY_SIZE - 1)
+                                    // Serves as cursor’s current interaction context
+
+
 // Source text pointer (lo at $C5, hi at $C6). Used by text copy/render.
 .label src_ptr               		= $C5       // ZP pointer to text source
 // Destination pointers (lo at $C7, hi at $C8). Dual use:

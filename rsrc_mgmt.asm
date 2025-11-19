@@ -186,6 +186,11 @@ SCUMM-style resources efficiently on a constrained machine:
 .label rsrc_data_ptr_lo             = $553F  // 16-bit base pointer to allocated resource block in RAM, low byte
 .label rsrc_data_ptr_hi             = $5540  // 16-bit base pointer to allocated resource block in RAM, high byte
 
+.label rsrc_resource_index          = $5676 // Resource index within its type (byte).
+.label rsrc_resource_type           = $5677 // Resource type identifier (byte).
+.label rsrc_read_offset             = $5678 // Byte offset into resource stream (passed in X to disk_seek_read).
+.label rsrc_sector_idx             	= $5679 // Sector index in physical chain (passed in Y to disk_seek_read).  
+
 .label rsrc_raw_size_lo             = $FD9C  // 16-bit raw payload size (bytes) for in-memory header, low byte
 .label rsrc_raw_size_hi             = $FD9D  // 16-bit raw payload size (bytes) for in-memory header, high byte
 

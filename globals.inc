@@ -1,9 +1,19 @@
 #importonce
 
-.label ancestor_overlay_req    = $15     // zp: required ancestor bit7 ($00 clear / $80 set)
+//===========================================================
+// Interrupt handlers
+//===========================================================
+.label nmi_handler_lo = $fffa
+.label nmi_handler_hi = $fffb
+.label irq_handler = $fffe
+
+// Fill memory
 .label fill_dest_ptr            = $19   // 16-bit destination pointer (lo at $19, hi at $1A); advanced after each store
 .label fill_byte_cnt            = $1b   // 16-bit remaining byte count (lo at $1B, hi at $1C); decremented to zero
 
+// ===========================================================
+// Video
+// ===========================================================
 /*
 Video memory mode values
 	#00		Do nothing
@@ -17,14 +27,24 @@ Video memory mode values
 //#01 - frame_buffer_base = CC28, #02 = C828 (yes, they are not in numerical order)
 .label frame_buffer = $23
 .label frame_buffer_base = $24		//Base address of frame buffer
+.label vic_color_ram      = $D800
+.label vic_memory_layout_shadow = $be
 
+
+// ===========================================================
+// Decompressor
+// ===========================================================
 .label decomp_src_ptr 		= $27    // 16-bit pointer to compressed input stream 
-.label decomp_emit_mode    = $29    // current mode flag ($00 = direct, $FF = run). Only bit 7 is tested
-.label decomp_emit_rem     = $2A    // remaining outputs for the current operation (stores L, meaning L+1 total outputs)
-.label decomp_run_symbol   = $2B    // byte value to output while in run mode
+.label decomp_emit_mode    	= $29    // current mode flag ($00 = direct, $FF = run). Only bit 7 is tested
+.label decomp_emit_rem     	= $2A    // remaining outputs for the current operation (stores L, meaning L+1 total outputs)
+.label decomp_run_symbol   	= $2B    // byte value to output while in run mode
 
+// ===========================================================
+// Input controls
+// ===========================================================
 .label kbd_keycode         = $30    // ZP: published keycode when ready
 .label joy_state     	   = $33    // ZP: snapshot of joystick mask (bits 0–4)
+
 .label vertical_offset 	  = $35
 .label current_sprite_y_pos = $3f
 
@@ -39,32 +59,67 @@ Values observed
 
 .label cel_seq_tbl           = $84    // cel sequence table for current actor
 .label mask_row_ptr                = $86    // ZP: pointer to current 8×8-tile row within foreground mask layer
-.label sprite_shape_data_ptr = $8c
-.label video_update_signal = $8e			// synchronization flag - NOT to be confused with vsync
+.label destination_variable = $d0
 .label room_bg0_shadow = $8f
 .label room_bg1_shadow = $90
-.label needs_sentence_rebuild = $95
-.label raster_irq_init_pending_flag = $96
-.label vic_memory_layout_shadow = $be
-.label destination_variable = $d0
+.label sprite_shape_data_ptr = $8c
 .label actor = $D8
 .label irq_entry_count = $d9
 .label print_msg_ptr	   = $DA	// ZP: 16-bit pointer to message to be printed (print_message_wait_for_button)
 .label debug_error_code = $DC
+
+// ===========================================================
+// PRNG
+// ===========================================================
 .label random_1 = $dd
 .label random_2 = $de
 .label random_3 = $df
-.label irq_sync_lock = $e3
 
-.label open_shutter_flag = $066E
+
+// ===========================================================
+// Flags
+// ===========================================================
+.label vic_color_ram_copy_done = $1677
+.label color_ram_copy_done = $1677 //Boolean
+.label game_paused_flag = $1679	//#01 if game is paused, #00 otherwise
+.label needs_sentence_rebuild = $95
 .label remove_obj_from_inv_flag = $0670
-.label video_processed_signal = $166b
+.label open_shutter_flag = $066E
+.label raster_irq_init_pending_flag = $96
+.label kbd_key_ready       = $2061    // flag: 1 when kbd_keycode is valid
+.label reload_sound_ptrs_flag     = $FE70    // flag: non-zero => refresh sound resource pointers after relocation
+.label rsrc_released_flag = $FE4A
+.label button_presses = $cb8a
+.label joystick_button_pressed = $cb89
+.label sentence_bar_needs_refresh = $fe49	//#00 = don't refresh the sentence bar, #01 = refresh it
+									//By "refresh", we mean to update its contents
+.label init_sentence_ui_flag = $fe8f
+.label new_sound_instructions_allowed = $fe71	//00 = not allowed, nonzero = allowed
+.label room_scene_clicked_flag = $fd77
+.label forced_sentence_trigger = $fe8e
+.label arpeggio_ongoing = $5160	// #00 = disabled, #FF = enabled
+.label arpeggio_secondary_active_flag = $5161		// #00 = disabled, #FF = enabled
+.label arpeggio_primary_active_flag = $5162		// #00 = disabled, #FF = enabled
+.label filter_arpeggio_enabled_flag = $5164			// #00 = filter voice, #FF = stop filtering voice
+.label alt_voice_slots_cleared_flag = $5167	// #00 = false, #FF = true
+.label music_playback_in_progress = $4816
+.label sound_processing_disabled_flag = $4819	//#00 = false, #FF = true
+.label lowest_priority_sound_starting_flag = $4cf2 //#01 = True, #00 = false
+.label hide_cursor_flag               = $166C
+.label voice3_in_use = $4CF5				//#00 = false, #FF = true
+.label actor_path_update_flag = $fde1
 
-/*
-===========================================================
- Sprite variables
-===========================================================
-*/
+// ===========================================================
+// Semaphores and signals
+// ===========================================================
+.label ui_section_semaphore = $1678 //Semaphore used to control access to a section in irq_handler1
+.label video_processed_signal = $166b
+.label irq_sync_lock = $e3
+.label video_update_signal = $8e			// synchronization flag - NOT to be confused with vsync
+
+// ===========================================================
+// Sprites
+// ===========================================================
 // Double-buffer selector for sprite attribute buffers. #$00 or #$01.
 .label sprite_bank_sel                 = $FD14
 
@@ -146,7 +201,6 @@ Values observed
 // Cursor state
 //===========================================================
 // Hide cursor flag. #$01 = hidden, #$00 = visible.
-.label hide_cursor_flag               = $166C
 
 // Down-counter for cursor color update cadence.
 // Decremented by irq_handler1 each run. When it reaches 0, color advances and
@@ -156,27 +210,18 @@ Values observed
 // Current cursor color table index (0..N-1). Advanced when wait counter expires.
 .label cursor_color_idx               = $166E
 
-// Reload value for wait counter (ticks per color step). Example: #$06.
-//.label cursor_color_period            = $166F
-
-// Initial color index used when resetting the cursor color cycle.
-//.label cursor_color_idx_first         = $1670
 //===========================================================
 // Cursor physics
 //===========================================================
-//Multicolor bitmap mode has a resolution of 160x200
-
-.label  cursor_x_pos                   = $CB7F   // cursor X position (pixels, 0..$9F)
-.label  cursor_y_pos                   = $CB81   // cursor Y position (pixels, $08..$BF)
-
-.label  cursor_x_vel_frac              = $CB82   // X velocity, fractional byte (8.8 fixed-point)
-.label  cursor_x_vel_int               = $CB83   // X velocity, integer byte   (adds to X position)
-.label  cursor_y_vel_frac              = $CB84   // Y velocity, fractional byte
-.label  cursor_y_vel_int               = $CB85   // Y velocity, integer byte
-.label  drag_shift_count        = $CB7D   // expected 7 (build drag via 7× ASL/ROL)
-
-.label  accel_h_mask            = $CB7B   // horizontal acceleration mask (expects $FA)
-.label  accel_v_mask            = $CB7C   // vertical   acceleration mask (expects $FF)
+.label cursor_x_pos                   = $CB7F   // cursor X position (pixels, 0..$9F)
+.label cursor_y_pos                   = $CB81   // cursor Y position (pixels, $08..$BF)
+.label cursor_x_vel_frac              = $CB82   // X velocity, fractional byte (8.8 fixed-point)
+.label cursor_x_vel_int               = $CB83   // X velocity, integer byte   (adds to X position)
+.label cursor_y_vel_frac              = $CB84   // Y velocity, fractional byte
+.label cursor_y_vel_int               = $CB85   // Y velocity, integer byte
+.label drag_shift_count        = $CB7D   // expected 7 (build drag via 7× ASL/ROL)
+.label accel_h_mask            = $CB7B   // horizontal acceleration mask (expects $FA)
+.label accel_v_mask            = $CB7C   // vertical   acceleration mask (expects $FF)
 .label cursor_x_cell = $cb86		
 .label cursor_y_cell = $cb87		//Range: 01-17 (01-23 decimal)
 .label cursor_y_pos_half = $fe7d				//Vertical range #08-63 (08-99)
@@ -184,12 +229,8 @@ Values observed
 .label cursor_y_pos_half_off_by_8 = $fe7f	//Vertical range #00-5B (00-91)
 .label cursor_x_pos_quarter_absolute = $fe80	//Horizontal range #07-2E (07-46)
 
-
 // ===========================================================
-.label vic_color_ram_copy_done = $1677
-
-.label kbd_key_ready       = $2061    // flag: 1 when kbd_keycode is valid
-
+// Camera and room viewport
 // ===========================================================
 .label viewport_left_col = $0664	 //Left column for the visible room scene
 .label viewport_right_col = $0665 //Right column for the visible room scene
@@ -199,30 +240,51 @@ Values observed
 .label cam_follow_costume_id = $066b	//Index of costume to follow
 .label cam_pan_goal = $066c				//Position to pan camera to
 .label actor_follow_needs_pan = $066d		
+//Flashlight beam coordinates 
+.label flashlight_beam_x = $fe79
+.label flashlight_beam_y = $fe7a
+/*Lights_status values
+#00	environment lights off, flashlights off
+#01	environment lights off, flashlight on
+#02	environment lights on*/
+.label global_lights_state = $FEAB
+
 // ===========================================================
-.label color_ram_copy_done = $1677 //Boolean
-.label ui_section_semaphore = $1678 //Semaphore used to control access to a section in irq_handler1
-.label game_paused_flag = $1679	//#01 if game is paused, #00 otherwise
-
-
-
-// --- Copy/write byte-count accumulator ---
+// Disk
+// ===========================================================
 .label disk_copy_count_lo 			= $463C // 16-bit count of bytes to copy/write: low byte
 .label disk_copy_count_hi 			= $463D // 16-bit count of bytes to copy/write: high byte
                                       // (write path rounds up to whole sectors: hi += (lo != 0))
+.label active_side_id = $fe9c //This represents the desired Side ID (the ID that identifies each of the game's disk sides)
+						//Once disk_ensure_side is called, this parameter is set and execution will not resume until the proper disk side is inserted
 									  
 // ===========================================================
-.label rsrc_resource_index          = $5676 // Resource index within its type (byte).
-.label rsrc_resource_type           = $5677 // Resource type identifier (byte).
-.label rsrc_read_offset             = $5678 // Byte offset into resource stream (passed in X to disk_seek_read).
-.label rsrc_sector_idx             = $5679 // Sector index in physical chain (passed in Y to disk_seek_read).  
+// Room subresources metadata
 // ===========================================================
-
+.label mask_base_ptr = $fd6d
+.label room_metadata_base = $7139
+.label room_width = $7139
+.label room_height = $713a
+.label room_bg0 = $713b
+.label room_bg_colors = $713b
+.label room_tile_definitions_offset = $713f
+.label current_room = $7149
+.label room_gfx_layers_active_ptr = $FE98
 .label room_obj_count = $715c	
 .label obj_gfx_ptr_tbl = $7291
 .label room_obj_ofs_tbl = $72c9		//Offsets of objects in a room resource
 .label room_obj_id_hi_tbl = $7221	//Per-room objects ID table (mapping room object index to global Object ID)
 .label room_obj_id_lo_tbl = $723d
+.label tile_matrix_ofs   = $7141	// 16-bit offset to tile matrix section
+.label color_layer_ofs   = $7143	// 16-bit offset to color layer section
+.label mask_layer_ofs    = $7145	// 16-bit offset to mask layer section 
+.label mask_indexes_ofs  = $7147	// 16-bit offset to mask indexes section
+.label room_exit_script_ptr   = $7156	// 16-bit offset to exit script within room block
+.label room_entry_script_ptr  = $7158	// 16-bit offset to entry script within room block
+
+// ===========================================================
+// Objects
+// ===========================================================
 .label obj_left_col_tbl = $715D		//Per-room object left column table (for rendering)
 .label obj_top_row_tbl = $7179		//Per-room object top row table (for rendering)
 .label obj_width_tbl = $7195		//Per-room object width in columns table (for rendering)
@@ -236,87 +298,63 @@ Values observed
 										// Object index 4: doormat (Object ID 0-21)
 										// The key has parent object INDEX = 4 (doormat)
 
+.label ancestor_overlay_req    = $15     // zp: required ancestor bit7 ($00 clear / $80 set)
 .label ancestor_overlay_req_tbl = $7275	//Requirement for ancestor objects overlay state (boolean: $80 = True, $00 = False)
 .label object_attributes = $7301		//Global attributes for objects (indexed by Object ID) - Note: these are NOT memory attributes like used for other resources	
 
-
 // ===========================================================
-.label tile_matrix_ofs   = $7141	// 16-bit offset to tile matrix section
-.label color_layer_ofs   = $7143	// 16-bit offset to color layer section
-.label mask_layer_ofs    = $7145	// 16-bit offset to mask layer section 
-.label mask_indexes_ofs  = $7147	// 16-bit offset to mask indexes section
-.label room_exit_script_ptr   = $7156	// 16-bit offset to exit script within room block
-.label room_entry_script_ptr  = $7158	// 16-bit offset to entry script within room block
-
-
+// Resource pointer tables
 // ===========================================================
 .label object_ptr_lo_tbl = $705E
 .label object_ptr_hi_tbl = $708B
-.label room_ptr_hi_tbl = $77F3		//Total rooms: 55
+.label room_ptr_hi_tbl = $77F3		
 .label room_ptr_lo_tbl = $782A
-.label costume_ptr_hi_tbl = $7861		//Total costumes: 25
+.label costume_ptr_hi_tbl = $7861		
 .label costume_ptr_lo_tbl = $787A
-.label sound_ptr_hi_tbl = $78C5			//Total sounds: 70
+.label sound_ptr_hi_tbl = $78C5			
 .label sound_ptr_lo_tbl = $790B
-.label script_ptr_hi_tbl = $7997		//Total scripts: 160
+.label script_ptr_hi_tbl = $7997		
 .label script_ptr_lo_tbl = $7A37
-.label room_gfx_layers_hi = $7B77		//Total type 4 resources: 2	- room scene graphic layers
+.label room_gfx_layers_hi = $7B77		
 .label room_gfx_layers_lo = $7B79
 .label mask_bit_patterns_hi = $7B78		
 .label mask_bit_patterns_lo = $7B7A
-.label mask_base_ptr = $fd6d
-.label room_metadata_base = $7139
-.label room_width = $7139
-.label room_height = $713a
-.label room_bg0 = $713b
-.label room_bg_colors = $713b
-.label room_tile_definitions_offset = $713f
-.label current_room = $7149
-.label room_gfx_layers_active_ptr = $FE98
 
-
+// ===========================================================
+// Resource locking, refcount, age
 // ===========================================================
 .label room_mem_attrs = $77BC
 .label costume_mem_attrs = $77A3
-.label sound_attr_tbl       = $7951    // table: per-sound usage attributes, indexed by resource_index
+.label sound_attr_tbl       = $7951    
 .label script_mem_attrs = $7AD7
+
 // ===========================================================
-
-.label reload_sound_ptrs_flag     = $FE70    // flag: non-zero => refresh sound resource pointers after relocation
-.label rsrc_released_flag = $FE4A
-.label saved_task_idx  = $FEA6    	
-
-/*Lights_status values
-#00	environment lights off, flashlights off
-#01	environment lights off, flashlight on
-#02	environment lights on*/
-.label global_lights_state = $FEAB
-.label engine_vars = $FEAC
-
+// Costumes
+// ===========================================================
 .label room_for_costume = $FEFC
-
-
-.label active_side_id = $fe9c //This represents the desired Side ID (the ID that identifies each of the game's disk sides)
-						//Once disk_ensure_side is called, this parameter is set and execution will not resume until the proper disk side is inserted
-						
-						
+.label costume_room_idx = $fefc	 //The CURRENT room where a costume is present
+.label current_room_rsrc = $715A	//Used by draw_room_scene to ensure residence of the room resources
 .label costume_dest_y = $ff15
 .label costume_dest_x = $ff2e
 .label dest_x = $fde6
 .label dest_y = $fde7
 
-.label current_room_rsrc = $715A	//Used by draw_room_scene to ensure residence of the room resources
-
-
-/*
-===========================================================
- Actor sprites, waypoint and position variables
-===========================================================
-*/
+// ===========================================================
+// Actor-Costume bindings
+// ===========================================================
 .label costume_for_actor = $fe53		//#FF = actor not in use
 .label actor_for_costume = $fe57		//Bit 7 set - actor moving, clear - not moving
 .label active_costume = $fc30
+
 // ===========================================================
+// Actor clips
+// ===========================================================
+.label actor_current_clip = $fd02		//The current animation set for the actor
+.label actor_target_clip = $fd06		//The desired animation set for the actor
+.label actor_anim_counter = $fd93
+.label costume_clip_set = $ff47		/*The animation set for a costume, limited to the standing range of sets (#04-#07)
+										This is used by scripts to determine the direction a costume is facing 
+										See the details for "animation sets"*/
 .label active_costume_rsrc_hi = $7893
 .label active_costume_rsrc_lo = $78ac
 .label actor_gfx_base_lo = $cb42				// Base address of the graphics section, for each actor (low byte)
@@ -327,6 +365,11 @@ Values observed
 .label actor_cel_seq_tbl_lo = $cb3a				// Base address of cel sequence table, for each actor (low byte)
 .label actor_cel_seq_tbl_hi = $cb3e				// Base address of cel sequence table, for each actor (hi byte)
 .label target_clip_id            = $FDE9  // Target clip id (per-actor intent)
+.label clip_loop_cnt = $fde8 			// Current clip loop counter
+.label actor_clip_loop_cnt = $fd0a		// Clip loop counter, for actor
+
+// ===========================================================
+// Actor limbs
 // ===========================================================
 .label current_limb = $fc41
 .label actor_limbs_ofs = $fc36
@@ -342,6 +385,8 @@ Values observed
 .label limb_cur_loop_cnt = $fcc2		
 .label limb_tgt_loop_cnt = $fce2
 
+// ===========================================================
+// Costume and actor rendering states and flags
 // ===========================================================
 /*
 ------------------------------------------------
@@ -360,24 +405,6 @@ FF - No speaking animation, sound #3F played when walking
 ------------------------------------------------
 */
 .label costume_anim_attrs = $f0d9
-.label character_sprite_y = $fc37
-.label sprite_vertical_offset = $cb55
-.label actor_sprite_y_extent = $FD4F
-.label relative_sprite_index = $fd78
-.label relative_sprite_for_actor = $fd7c
-.label fifth_byte = $fc03
-.label intercel_vertical_displacement = $fc04
-.label actor_sprite_base = $fc2e						//Base address of the current sprite being drawn in memory
-.label actor_sprite_index = $fc32
-.label clip_loop_cnt = $fde8 			// Current clip loop counter
-.label actor_clip_loop_cnt = $fd0a		// Clip loop counter, for actor
-// ===========================================================
-.label actor_current_clip = $fd02		//The current animation set for the actor
-.label actor_target_clip = $fd06		//The desired animation set for the actor
-.label actor_anim_counter = $fd93
-.label costume_clip_set = $ff47		/*The animation set for a costume, limited to the standing range of sets (#04-#07)
-										This is used by scripts to determine the direction a costume is facing 
-										See the details for "animation sets"*/
 .label actor_motion_state        = $FD68  // per-actor motion state
 .label actor_visible = $fd6f
 
@@ -424,6 +451,8 @@ Possible mouth state values
 
 
 // ===========================================================
+// Actor sprites
+// ===========================================================
 .label sprite_buffer = $fd14		//Sprite buffer index (#00 or #01)
 .label actor_tile_x_coordinate            = $FD20  // Input: actor tile X column
 .label actor_tgt_sprite_x_lo = $fd1c
@@ -431,6 +460,18 @@ Possible mouth state values
 .label actor_sprite_x_hi = $fd58
 .label actor_sprite_x_lo = $fd60
 .label character_sprite_bkg_colors = $f0c0	  //Background colors for each character
+.label character_sprite_y = $fc37
+.label sprite_vertical_offset = $cb55
+.label actor_sprite_y_extent = $FD4F
+.label relative_sprite_index = $fd78
+.label relative_sprite_for_actor = $fd7c
+.label fifth_byte = $fc03
+.label intercel_vertical_displacement = $fc04
+.label actor_sprite_base = $fc2e						//Base address of the current sprite being drawn in memory
+.label actor_sprite_index = $fc32
+
+// ===========================================================
+// Actor waypoints and positions
 // ===========================================================
 .label actor_active_wpt_x = $fd25
 .label actor_active_wpt_y = $fd2d
@@ -443,31 +484,27 @@ Possible mouth state values
 .label position_to_waypoint_x_for_actor = $fd45
 .label position_to_waypoint_y_for_actor = $fd49
 
+// ===========================================================
+// Actor walkbox search and traversal
+// ===========================================================
 .label actor_box_attr = $fd18
 .label actor_box_handler_idx = $fda0
 .label actor_box_facing_override = $fda4
 .label actor_box_fg_masking = $fda8
-
-
 .label actor_destination_box = $fdd5
 .label actor_box_cur = $fdcd
 .label actor_box_prev = $fdd1
-.label actor_path_update_flag = $fde1
 .label actor_search_depth       = $FE75
 
-
-/*
-===========================================================
- Actor path variables
-===========================================================
-*/
+// ===========================================================
+// Actor path
+// ===========================================================
 .label dir_x_bit = $cb58	//#00 = left, #01 = right
 .label dir_y_bit = $cb59	//#00 = up, #01 = down	
 .label dda_dominant_axis = $cb66	//Which axis of movement is dominant, #00 = horizontal, #01 = vertical
 
 //Possible rename: actor_facing_mask
 .label path_direction_for_actor = $fdeb		//#00 = right, #01 = left, #80 = down, #81 = up
-
 .label path_delta_directions_for_actor = $fdef	//#00 = right, #01 = left, #80 = down, #81 = up
 .label actor_dda_dom_abs = $fdf3	//The dominant delta value (the largest between the deltas for the 2 axis)
 .label actor_dx_accum = $fdf7		//Value of delta x step (how much to move along this axis on each step to match the rate of motion on the other axis)
@@ -482,11 +519,9 @@ Possible mouth state values
 .label saved_actor_box_cur = $cb5e
 .label saved_actor_path_update_flag = $cb5f
 
-/*
-===========================================================
- Game script variables
-===========================================================
-*/
+// ===========================================================
+// Game script vars
+// ===========================================================
 .label current_kid_idx = $ff67
 .label game_vars = $ff67
 /*
@@ -508,7 +543,8 @@ They were definitely intended as debugging aids.
 .label kid1_costume_id = $FFC8
 .label kid2_costume_id = $FFC9
 .label kid3_costume_id = $FFCA
-.label costume_room_idx = $fefc	 //The CURRENT room where a costume is present
+.label engine_vars = $FEAC
+.label dest_var = $5f76         // Destination game-var index
 
 /*
  Actor_vars bit meanings when bit is set
@@ -521,33 +557,21 @@ They were definitely intended as debugging aids.
 */
 .label actor_vars = $fee3
 
-.label room_scene_clicked_flag = $fd77
-.label forced_sentence_trigger = $fe8e
+
+//===========================================================
+// UI 
+//===========================================================
 //Control mode values
 //#00 - cutscene
 //#01 - push only, verb forcefully set to "push" (no walking possible) - used for keypad interaction and start screen
 //#02 - normal play, disable kid change via Function keys
 //#03 - normal play, enable kid change via Function keys
 .label control_mode = $fea8
-
-
-//===========================================================
-// Interrupt handlers
-//===========================================================
-.label nmi_handler_lo = $fffa
-.label nmi_handler_hi = $fffb
-.label irq_handler = $fffe
-
-//===========================================================
-// UI 
-//===========================================================
 .label hotspot_entry_ofs = $CB88   // Current hotspot offset (in bytes) from start of hotspot table
                                     // Each hotspot entry = 6 bytes (see HOTSPOT_ENTRY_SIZE)
                                     // Used as an index into hotspot metadata for current cursor region
                                     // Valid range: 0 .. (num_hotspots * HOTSPOT_ENTRY_SIZE - 1)
                                     // Serves as cursor’s current interaction context
-.label joystick_button_pressed = $cb89
-.label button_presses = $cb8a
 
 .label talking_costume = $fe9a
 .label msg_owner_costume = $fe9b	//#FF means nobody's talking (and thus the msg bar must be cleared)
@@ -555,34 +579,26 @@ They were definitely intended as debugging aids.
 //Base address for message bar source buffers
 .label source_msg_base = $0200
 
-//.label destination_entity = $fe51
-.label sentence_bar_needs_refresh = $fe49	//#00 = don't refresh the sentence bar, #01 = refresh it
-									//By "refresh", we mean to update its contents
-.label init_sentence_ui_flag = $fe8f
+//===========================================================
+// Sentence engine
+//===========================================================
 .label sentstk_top_idx = $fe17
 .label sentstk_free_slots = $fe18	
 .label current_verb_id = $fe1f
 .label direct_object_idx_lo = $fe20
 .label direct_object_idx_hi = $fe21
 .label current_preposition = $fe22
-//Indirect object idx hi has the following meaning:
-//#02 - Can be a recipient with a "Give" instruction
 .label indirect_object_idx_lo = $fe23
 .label indirect_object_idx_hi = $fe24
-.label interrupted_pc_lo = $fea4
-.label interrupted_pc_hi = $fea5
-.label interrupted_script_index = $fea7
 .label sentence_parts = $fe1f
-
-.label sid_volfilt_reg_shadow = $476A
-
 .label inventory_objects = $7031
 .label room_obj_idx_hi = $7221
 .label room_obj_idx_lo = $723d
 
 //===================================================
-// Concurrent script engine variables
+// Script engine
 //===================================================
+.label saved_task_idx  = $FEA6    	
 .label task_cur_idx = $70B8	//Script slot of script being executed
 .label task_pc_ofs_hi_tbl = $70B9
 .label task_pc_ofs_lo_tbl = $70C9
@@ -602,14 +618,6 @@ They were definitely intended as debugging aids.
 .label task_type_tbl = $7119
 .label task_script_idx_tbl = $7129
 .label script_2_mem_attr = $7ad9
-
-.label  vic_color_ram      = $D800
-
-//Flashlight beam coordinates 
-.label flashlight_beam_x = $fe79
-.label flashlight_beam_y = $fe7a
-
-
 .label opcode = $fe8c
 .label cur_script_slot = $fe89			//Script engine's slot index for script being executed
 .label script_base_lo = $fe8a			//Resource base address of script being executed
@@ -617,11 +625,14 @@ They were definitely intended as debugging aids.
 //Read pointer of the current script
 .label task_pc_lo = $5e15
 .label task_pc_hi = $5e16
-
+.label interrupted_pc_lo = $fea4
+.label interrupted_pc_hi = $fea5
+.label interrupted_script_index = $fea7
 
 //===========================================================
-// Sound variables
+// Sound engine
 //===========================================================
+.label sid_volfilt_reg_shadow = $476A
 .label voice_adsr_attack_decay = $476c
 .label voice_adsr_sustain_release = $476f
 .label sound_id_to_start_on_voice = $4772
@@ -661,18 +672,11 @@ They were definitely intended as debugging aids.
 .label voice_instr_loop_ofs_lo = $47fe
 .label voice_instr_loop_ofs_hi = $4805
 .label voice_instr_active_mask = $480c	//Bitmask that holds which voices are currently executing sound instructions
-
 .label voice_sid_range_flags = $4811	//#00 if X < 3, #FF otherwise
-
-.label music_playback_in_progress = $4816
 .label music_voices_in_use = $4817
 .label music_voices_in_use_2 = $4818		//A bitmask used to represent which voices are being used by music
-
-.label sound_processing_disabled_flag = $4819	//#00 = false, #FF = true
 .label stop_sound_cleanup_mode = $481A				//#01 = stop, dereference sound, stop arpeggio, #FF = just stop
 .label tracked_lowest_priority_sound = $4cf1
-.label lowest_priority_sound_starting_flag = $4cf2 //#01 = True, #00 = false
-.label voice3_in_use = $4CF5				//#00 = false, #FF = true
 .label filter_control_snapshot = $4cfa
 .label total_real_voices_available = $4cff
 //Values observed: #01, #02, #07, #0A, #64, #6E, #73, #78
@@ -699,12 +703,7 @@ They were definitely intended as debugging aids.
 .label sound_to_stop = $4d08
 
 //Combine multiple notes in one voice by arpeggio
-.label arpeggio_ongoing = $5160	// #00 = disabled, #FF = enabled
-.label arpeggio_secondary_active_flag = $5161		// #00 = disabled, #FF = enabled
-.label arpeggio_primary_active_flag = $5162		// #00 = disabled, #FF = enabled
-.label filter_arpeggio_enabled_flag = $5164			// #00 = filter voice, #FF = stop filtering voice
 .label filter_mode_mask = $5166
-.label alt_voice_slots_cleared_flag = $5167	// #00 = false, #FF = true
 
 .label alt_voice_adsr_attack_decay = $5168
 .label alt_voice_adsr_sustain_release = $516a
@@ -738,13 +737,9 @@ They were definitely intended as debugging aids.
 .label music_track_offsets_hi = $5487
 .label music_track_ptrs_lo = $5490
 .label music_track_ptrs_hi = $5499
-.label new_sound_instructions_allowed = $fe71	//00 = not allowed, nonzero = allowed
 .label selected_music_idx = $fea3
-
-
-.label  voice_read_ptr            = $BA      // ZP pointer to current voice script/parameter stream
-.label  filter_control_reg_copy   = $476B    // Shadow copy of SID filter control register (software mirror)
-.label  x_saved                   = $480D    // Scratch storage for last logical voice index processed
+.label voice_read_ptr            = $BA      // ZP pointer to current voice script/parameter stream
+.label filter_control_reg_copy   = $476B    // Shadow copy of SID filter control register (software mirror)
+.label x_saved                   = $480D    // Scratch storage for last logical voice index processed
 .label voice_active_mask_snapshot = $3465
 
-.label  dest_var = $5f76         // Destination game-var index

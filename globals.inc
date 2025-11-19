@@ -3,13 +3,13 @@
 //===========================================================
 // Interrupt handlers
 //===========================================================
-.label nmi_handler_lo = $fffa
-.label nmi_handler_hi = $fffb
-.label irq_handler = $fffe
+.label nmi_handler_lo = $FFFA
+.label nmi_handler_hi = $FFFB
+.label irq_handler = $FFFE
 
-// Fill memory
+// Arguments for mem_fill_x routines (declared here so ASM modules don't use absolute addresses for these vars instead of ZP ones)
 .label fill_dest_ptr            = $19   // 16-bit destination pointer (lo at $19, hi at $1A); advanced after each store
-.label fill_byte_cnt            = $1b   // 16-bit remaining byte count (lo at $1B, hi at $1C); decremented to zero
+.label fill_byte_cnt            = $1B   // 16-bit remaining byte count (lo at $1B, hi at $1C); decremented to zero
 
 // ===========================================================
 // Video
@@ -34,7 +34,8 @@ Video memory mode values
 // ===========================================================
 // Decompressor
 // ===========================================================
-.label decomp_src_ptr 		= $27    // 16-bit pointer to compressed input stream 
+.label decomp_src_ptr_lo 	= $27    // 16-bit pointer to compressed input stream 
+.label decomp_src_ptr_hi 	= $28    // 16-bit pointer to compressed input stream 
 .label decomp_emit_mode    	= $29    // current mode flag ($00 = direct, $FF = run). Only bit 7 is tested
 .label decomp_emit_rem     	= $2A    // remaining outputs for the current operation (stores L, meaning L+1 total outputs)
 .label decomp_run_symbol   	= $2B    // byte value to output while in run mode
@@ -252,9 +253,6 @@ Values observed
 // ===========================================================
 // Disk
 // ===========================================================
-.label disk_copy_count_lo 			= $463C // 16-bit count of bytes to copy/write: low byte
-.label disk_copy_count_hi 			= $463D // 16-bit count of bytes to copy/write: high byte
-                                      // (write path rounds up to whole sectors: hi += (lo != 0))
 .label active_side_id = $fe9c //This represents the desired Side ID (the ID that identifies each of the game's disk sides)
 						//Once disk_ensure_side is called, this parameter is set and execution will not resume until the proper disk side is inserted
 									  
@@ -269,15 +267,19 @@ Values observed
 .label room_bg_colors = $713b
 .label room_tile_definitions_offset = $713f
 .label current_room = $7149
-.label room_gfx_layers_active_ptr = $FE98
+.label room_gfx_layers_active_ptr_lo = $FE98
+.label room_gfx_layers_active_ptr_hi = $FE99
 .label room_obj_count = $715c	
 .label obj_gfx_ptr_tbl = $7291
 .label room_obj_ofs_tbl = $72c9		//Offsets of objects in a room resource
 .label room_obj_id_hi_tbl = $7221	//Per-room objects ID table (mapping room object index to global Object ID)
 .label room_obj_id_lo_tbl = $723d
-.label tile_matrix_ofs   = $7141	// 16-bit offset to tile matrix section
-.label color_layer_ofs   = $7143	// 16-bit offset to color layer section
-.label mask_layer_ofs    = $7145	// 16-bit offset to mask layer section 
+.label tile_matrix_ofs_lo   = $7141	// 16-bit offset to tile matrix section
+.label tile_matrix_ofs_hi   = $7142	// 16-bit offset to tile matrix section
+.label color_layer_ofs_lo  	= $7143	// 16-bit offset to color layer section
+.label color_layer_ofs_hi	= $7144	// 16-bit offset to color layer section
+.label mask_layer_ofs_lo    = $7145	// 16-bit offset to mask layer section 
+.label mask_layer_ofs_hi    = $7146	// 16-bit offset to mask layer section 
 .label mask_indexes_ofs  = $7147	// 16-bit offset to mask indexes section
 .label room_exit_script_ptr   = $7156	// 16-bit offset to exit script within room block
 .label room_entry_script_ptr  = $7158	// 16-bit offset to entry script within room block
@@ -321,12 +323,13 @@ Values observed
 .label mask_bit_patterns_lo = $7B7A
 
 // ===========================================================
-// Resource locking, refcount, age
+// Resource liveness (locking, refcount, age)
 // ===========================================================
-.label room_liveness_tbl = $77BC
-.label costume_liveness_tbl = $77A3
-.label sound_liveness_tbl       = $7951    
-.label script_liveness_tbl = $7AD7
+// Per-resource liveness state tables; one byte per resource.
+.label room_liveness_tbl 			= $77BC
+.label costume_liveness_tbl 		= $77A3
+.label sound_liveness_tbl       	= $7951    
+.label script_liveness_tbl 			= $7AD7
 
 // ===========================================================
 // Costumes
@@ -567,11 +570,6 @@ They were definitely intended as debugging aids.
 //#02 - normal play, disable kid change via Function keys
 //#03 - normal play, enable kid change via Function keys
 .label control_mode = $fea8
-.label hotspot_entry_ofs = $CB88   // Current hotspot offset (in bytes) from start of hotspot table
-                                    // Each hotspot entry = 6 bytes (see HOTSPOT_ENTRY_SIZE)
-                                    // Used as an index into hotspot metadata for current cursor region
-                                    // Valid range: 0 .. (num_hotspots * HOTSPOT_ENTRY_SIZE - 1)
-                                    // Serves as cursor’s current interaction context
 
 .label talking_costume = $fe9a
 .label msg_owner_costume = $fe9b	//#FF means nobody's talking (and thus the msg bar must be cleared)

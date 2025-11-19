@@ -788,3 +788,170 @@ advance_or_return:
         cpy     #CMP_LEN                      
         bne     compare_next                
         rts                                 
+
+/*
+Pseudo-code
+
+function setup_room_columns_with_decode_snapshots():
+    //----------------------------------------------------------------------
+    // 1) Free any previously published gfx-layers resource
+    //----------------------------------------------------------------------
+    if room_gfx_layers_handle is not null:
+        mem_release(room_gfx_layers_handle)
+
+    //----------------------------------------------------------------------
+    // 2) Compute total size for the new resource
+    //    - payload: 12 lists × room_width bytes each
+    //    - plus resource header
+    //----------------------------------------------------------------------
+    width = room_width                     // integer
+    payload_size = width * 12              // 12 lists × width bytes
+    total_size = payload_size + MEM_HDR_LEN
+
+    //----------------------------------------------------------------------
+    // 3) Allocate new resource block and initialize header
+    //----------------------------------------------------------------------
+    alloc_base = mem_alloc(total_size)     // returns a pointer/handle
+
+    rsrc_resource_type  = RSRC_TYPE_ROOM_LAYERS
+    rsrc_resource_index = RSRC_INDEX_GFX_LAYERS
+    rsrc_hdr_init(alloc_base)              // writes 4-byte header at alloc_base
+
+    //----------------------------------------------------------------------
+    // 4) Publish handles and initialize write pointer
+    //----------------------------------------------------------------------
+    room_gfx_layers_handle       = alloc_base
+    room_gfx_layers_active_ptr   = alloc_base
+
+    write_ptr = alloc_base + MEM_HDR_LEN   // start of pointer-list payload
+
+    //----------------------------------------------------------------------
+    // 5) Lay out 12 pointer lists back-to-back, build directory + mirror
+    //    - Each list_i: width bytes, contiguous
+    //    - Directory stores list_i base addresses
+    //----------------------------------------------------------------------
+    for i from 0 to 11:
+        list_base = write_ptr
+
+        column_decode_snapshot_bases[i] = list_base
+        mirrored_bases[i]               = list_base
+
+        write_ptr = write_ptr + width   // advance to next list region
+
+    //----------------------------------------------------------------------
+    // 6) Resolve room resource base pointer for the active room
+    //----------------------------------------------------------------------
+    room_data_ptr = room_ptr_table[current_room]  // (lo/hi combined)
+
+    //----------------------------------------------------------------------
+    // 7) For each layer, bind source pointer and list bases,
+    //    then snapshot per-column decoder state
+    //----------------------------------------------------------------------
+    // --- TILE layer ---
+    decomp_src_ptr = room_data_ptr + tile_matrix_ofs
+
+    col_src_lo_list   = column_decode_snapshot_bases[ 0]
+    col_src_hi_list   = column_decode_snapshot_bases[ 1]
+    col_emit_rem_list = column_decode_snapshot_bases[ 2]   // conceptually “mode+count”
+    col_run_symbol_list = column_decode_snapshot_bases[ 3]
+
+    snapshot_column_decoder_state()
+
+    // --- COLOR layer ---
+    decomp_src_ptr = room_data_ptr + color_layer_ofs
+
+    col_src_lo_list   = column_decode_snapshot_bases[ 4]
+    col_src_hi_list   = column_decode_snapshot_bases[ 5]
+    col_emit_rem_list = column_decode_snapshot_bases[ 6]
+    col_run_symbol_list = column_decode_snapshot_bases[ 7]
+
+    snapshot_column_decoder_state()
+
+    // --- MASK layer ---
+    decomp_src_ptr = room_data_ptr + mask_layer_ofs
+
+    col_src_lo_list   = column_decode_snapshot_bases[ 8]
+    col_src_hi_list   = column_decode_snapshot_bases[ 9]
+    col_emit_rem_list = column_decode_snapshot_bases[10]
+    col_run_symbol_list = column_decode_snapshot_bases[11]
+
+    snapshot_column_decoder_state()
+
+    //----------------------------------------------------------------------
+    // 8) Return to caller
+    //----------------------------------------------------------------------
+    return
+
+
+function snapshot_column_decoder_state():
+    //----------------------------------------------------------------------
+    // Preconditions:
+    //  - decomp_src_ptr is set to the start of the layer’s compressed stream
+    //  - col_src_lo_list, col_src_hi_list, col_emit_rem_list, col_run_symbol_list
+    //    are bound to the correct list bases for this layer
+    //----------------------------------------------------------------------
+
+    //----------------------------------------------------------------------
+    // 1) Sanity check pointer-list directories
+    //----------------------------------------------------------------------
+    assert_pointer_lists_match()   // aborts on failure, returns on success
+
+    //----------------------------------------------------------------------
+    // 2) Initialize dictionary-based decompressor for this stream
+    //----------------------------------------------------------------------
+    decomp_dict4_init()            // consumes dictionary header; src now at payload
+
+    //----------------------------------------------------------------------
+    // 3) For each column, snapshot state and advance decoder one column
+    //----------------------------------------------------------------------
+    for col from 0 to room_width - 1:
+        // 3a) Snapshot source pointer
+        col_src_lo_list[col] = low_byte_of(decomp_src_ptr)
+        col_src_hi_list[col] = high_byte_of(decomp_src_ptr)
+
+        // 3b) Snapshot emission mode + remaining count
+        //     - literal vs. run mode
+        //     - remaining run/literal length
+        if decompressor_is_in_literal_mode():
+            mode_bit = 1
+        else:
+            mode_bit = 0
+
+        count = decomp_emit_rem   // remaining length from the decompressor
+        packed_mode_and_count = pack_mode_and_count(mode_bit, count)
+        col_emit_rem_list[col] = packed_mode_and_count
+
+        // 3c) Snapshot run symbol (meaningful if in run mode)
+        col_run_symbol_list[col] = decomp_run_symbol
+
+        // 3d) Consume exactly one column’s worth of decoded values (17)
+        for k from 1 to COLUMN_HEIGHT:    // COLUMN_HEIGHT = 17
+            decomp_stream_next()          // decode and discard one output byte
+
+    return
+
+
+function assert_pointer_lists_match():
+    //----------------------------------------------------------------------
+    // Compare the canonical and mirrored base-address directories.
+    // On mismatch: set a debug flag, map I/O, and spin forever changing
+    // the border color as a visual halt indicator.
+    //----------------------------------------------------------------------
+
+    length = CMP_LEN    // number of bytes (or entries) to compare
+
+    for i from 0 to length - 1:
+        a = column_decode_snapshot_bases_raw[i]   // raw byte/entry from canonical
+        b = mirrored_bases_raw[i]                // raw byte/entry from mirror
+
+        if a != b:
+            debug_error_code = 1
+            map_io_in()                          // ensure border register is visible
+
+            while true:
+                vic_border_color_reg = BORDER_WHITE
+            // never returns
+
+    // If we get here, all entries match
+    return
+*/

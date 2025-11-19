@@ -659,7 +659,7 @@ room_load_sounds_and_scripts:
 sound_next:
 		jsr     room_get_sounds_base   // compute/get base of {sounds, then scripts} index table
 		lda     (room_sounds_base),y     // fetch sound index at current Y
-		jsr     rsrc_ensure_sound_resident // load/ensure sound by index (must preserve Y)
+		jsr     rsrc_cache_sound // load/ensure sound by index (must preserve Y)
 		iny                              // advance to next subresource index
 		dec     sound_count_left         // loop exit when count reaches 0 (Z=1)
 		bne     sound_next
@@ -674,7 +674,7 @@ script_next:
 		// Re-acquire the subresource index table base; callees must preserve Y.
 		jsr     room_get_sounds_base               // base of {sounds, then scripts} index list
 		lda     (room_sounds_base),y                 // fetch script index at current Y
-		jsr     rsrc_ensure_script_resident         // ensure script is loaded/resident (must not clobber Y)
+		jsr     rsrc_cache_script         // ensure script is loaded/resident (must not clobber Y)
 		iny                                         // advance to next subresource index
 		dec     script_count_left                   // loop exit when count reaches 0 (Z=1)
 		bne     script_next
@@ -1374,7 +1374,7 @@ commit_room_attr:
  *   actor_for_costume[]        Per-costume assignment sentinel (bit7=1 ⇒ unassigned, bit7=0 ⇒ assigned).
  *   costume_room_idx[]         Per-costume current room index (dynamic location).
  *   current_room               Active room index to match against.
- *   rsrc_ensure_costume_resident (subroutine)
+ *   rsrc_cache_costume (subroutine)
  *                              Ensures the costume asset is loaded; sets rsrc_resource_index.
  *   assign_costume_to_free_actor     Binds a free actor slot; consumes X as costume/resource index.
  *
@@ -1382,7 +1382,7 @@ commit_room_attr:
  *   A, X, Y                    Clobbered.
  *   Flags                      Modified by loop/subcalls; no guarantees to callers.
  *   Globals updated            actor tables via assign_costume_to_free_actor;
- *                              rsrc_resource_index set by rsrc_ensure_costume_resident;
+ *                              rsrc_resource_index set by rsrc_cache_costume;
  *                              'unused' receives A (legacy write, no semantic effect).
  *
  * Description:
@@ -1390,7 +1390,7 @@ commit_room_attr:
  *     - If actor_for_costume[X].bit7 == 0, skip (already assigned).
  *     - If costume_room_idx[X] != current_room, skip (not present here).
  *     - Otherwise:
- *         • rsrc_ensure_costume_resident → guarantees asset availability and writes rsrc_resource_index.
+ *         • rsrc_cache_costume → guarantees asset availability and writes rsrc_resource_index.
  *         • X := rsrc_resource_index; assign_costume_to_free_actor → allocate/init actor for this costume.
  *   Loop exits once all costume slots have been considered.
  *   Notes:
@@ -1420,9 +1420,9 @@ check_costume_presence:
 
 costume_in_current_room:
         // Make sure this costume’s asset is loaded before spawning an actor.
-        // Contract: rsrc_ensure_costume_resident sets rsrc_resource_index to the
+        // Contract: rsrc_cache_costume sets rsrc_resource_index to the
         //           resource index corresponding to the costume we’re handling.
-        jsr     rsrc_ensure_costume_resident
+        jsr     rsrc_cache_costume
 
         // Bind a free actor slot to this costume.
         // Convention: assign_costume_to_free_actor consumes X as the costume/resource index,

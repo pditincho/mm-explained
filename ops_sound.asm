@@ -136,7 +136,7 @@ op_play_music:
         pha                                  // Save normalized index on stack for later
 		
         // Ensure this music resource is loaded
-		jsr     rsrc_ensure_sound_resident   
+		jsr     rsrc_cache_sound   
 		// Fix script pointers if resource load relocated memory
         jsr     refresh_script_addresses_if_moved 
 		
@@ -156,7 +156,7 @@ start_selected_music:
         pha                                  // Save script-specified index (used for loading)
 		
         // Ensure operand-specified music is resident
-		jsr     rsrc_ensure_sound_resident   
+		jsr     rsrc_cache_sound   
 
 		//Decrease refcount of music rsrc
         ldx     selected_music_idx           // Restore logical music we actually want to start into X
@@ -227,7 +227,7 @@ Description
         - Maps I/O in via cpu_port to safely call stop_sound for this index,
           ensuring any prior instance is terminated.
         - Restores the normal memory mapping, then calls
-          rsrc_ensure_sound_resident to load the sound resource if needed.
+          rsrc_cache_sound to load the sound resource if needed.
         - Maps I/O in again and calls start_sound to begin playback.
         - Restores the memory map and calls refresh_script_addresses_if_moved
           to fix up any script pointers if relocation occurred.
@@ -262,7 +262,7 @@ start_sound_with_loaded_index:
         // Ensure sound resource is resident
         // ------------------------------------------------------------
         lda     sound_index
-        jsr     rsrc_ensure_sound_resident
+        jsr     rsrc_cache_sound
 
         // ------------------------------------------------------------
         // Map I/O in again to start the sound

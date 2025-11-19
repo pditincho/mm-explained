@@ -601,7 +601,7 @@ launch_global_script:
         bne     script_ready                    // nonzero → already resident
 
         txa                                      // A := script index (argument for loader)
-        jsr     rsrc_ensure_script_resident      // load script resource into memory
+        jsr     rsrc_cache_script      // load script resource into memory
         jsr     refresh_script_addresses_if_moved // handle relocation effects if loader moved memory
 
 script_ready:

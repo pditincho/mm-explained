@@ -28,10 +28,10 @@
 .const MASK_CLEAR_BIT5				= %1101_1111
 
 // Block header layout (4-byte header + payload)
-.const MEM_HDR_SIZE_LO 				= $00   // Low byte of block size (total, including header)
-.const MEM_HDR_SIZE_HI 				= $01   // High byte of block size
-.const MEM_HDR_NEXT_LO 				= $02   // Low byte of pointer to next block
-.const MEM_HDR_NEXT_HI 				= $03   // High byte of pointer to next block
+.const MEM_HDR_OFS_SIZE_LO 			= $00   // Low byte of block size (total, including header)
+.const MEM_HDR_OFS_SIZE_HI 			= $01   // High byte of block size
+.const MEM_HDR_OFS_NEXT_LO 			= $02   // Low byte of pointer to next block
+.const MEM_HDR_OFS_NEXT_HI 			= $03   // High byte of pointer to next block
 .const MEM_HDR_LEN     				= $04   // Total header length
 
 // I/O mapping presets for $01 (cpu_port) 
@@ -49,6 +49,10 @@
 .const RSRC_TYPE_ROOM_LAYERS    	= $04   // Room layers resource (color/mask/composite data)
 .const RSRC_TYPE_SCRIPT          	= $05   // Script resource (bytecode instructions)
 .const RSRC_TYPE_SOUND           	= $06   // Sound resource (SFX or music data)
+
+// Resource locking
+.const RSRC_LOCK_MASK				= MASK_BIT7
+.const RSRC_CLEAR_LOCK_MASK			= MASK_CLEAR_BIT7
 
 // Subresource types
 .const RSRC_INDEX_GFX_LAYERS     	= $00   // Subresource index → graphics layer table

@@ -965,7 +965,7 @@ sound_sector_index = $7718
 ;	-When a room is released, its age is set to 0
 ;
 costume_mem_attrs = $77a3
-room_mem_attrs = $77bc
+room_attr_tbl = $77bc
 room_ptr_hi_tbl = $77f3		;Total rooms: 55
 room_ptr_lo_tbl = $782a
 costume_ptr_hi_tbl = $7861	;Total costumes: 25
@@ -12630,7 +12630,7 @@ room_switch_load_assets:
 ; Set room age to 1 - keep locking status unchanged (bit 7)
 ;----------------------------------------------
 ;Is the room unlocked?
-.C:34a9  B9 BC 77    LDA room_mem_attrs,Y
+.C:34a9  B9 BC 77    LDA room_attr_tbl,Y
 .C:34ac  10 05       BPL room_unlocked
 ;Room is locked - keep it locked, set age to 1
 .C:34ae  A9 81       LDA #$81
@@ -12639,7 +12639,7 @@ room_unlocked:
 ;Keep it unlocked, set age to 1
 .C:34b3  A9 01       LDA #$01
 set_result:
-.C:34b5  99 BC 77    STA room_mem_attrs,Y
+.C:34b5  99 BC 77    STA room_attr_tbl,Y
 ;----------------------------------------------
 .C:34b8  8E 49 71    STX current_room
 .C:34bb  AD 49 71    LDA current_room
@@ -12684,7 +12684,7 @@ load_room_gfx_and_objects:
 ;---------------------------
 ;Set room age to 0, keeping locked/unlocked status unchanged (bit 7)
 ;Load resource memory attribute
-.C:34fd  BD BC 77    LDA room_mem_attrs,X
+.C:34fd  BD BC 77    LDA room_attr_tbl,X
 ;If room is unlocked, set age to 00
 .C:3500  10 05       BPL room_unlocked
 ;Room is locked, set age to 00
@@ -12693,7 +12693,7 @@ load_room_gfx_and_objects:
 room_unlocked:
 .C:3507  A9 00       LDA #$00
 set_result:
-.C:3509  9D BC 77    STA room_mem_attrs,X
+.C:3509  9D BC 77    STA room_attr_tbl,X
 ;---------------------------
 .C:350c  20 32 35    JSR read_room_misc_data		
 .C:350f  20 31 36    JSR room_read_objects		
@@ -12710,13 +12710,13 @@ check_room_in_memory:
 .C:351a  BD F3 77    LDA room_ptr_hi_tbl,X
 .C:351d  F0 0C       BEQ next_room
 ;Unlock room
-.C:351f  BD BC 77    LDA room_mem_attrs,X
+.C:351f  BD BC 77    LDA room_attr_tbl,X
 .C:3522  29 7F       AND #$7F
 ;Is the room age zero? If it is, leave it as zero.
 .C:3524  C9 00       CMP #$00
 .C:3526  F0 03       BEQ next_room
 ;If not, increment by 1
-.C:3528  FE BC 77    INC room_mem_attrs,X
+.C:3528  FE BC 77    INC room_attr_tbl,X
 next_room:
 .C:352b  CA          DEX
 .C:352c  D0 EC       BNE check_room_in_memory
@@ -13362,7 +13362,7 @@ load_room_resource:
 .C:3868  AC 76 56    LDY resource_index
 set_room_age_to_1:
 ;Set room age to 1, keep bit 7 (locked/unlocked status) unchanged
-.C:386b  B9 BC 77    LDA room_mem_attrs,Y		
+.C:386b  B9 BC 77    LDA room_attr_tbl,Y		
 .C:386e  10 05       BPL room_unlocked
 room_locked:
 ;It's locked, set age to 1
@@ -13373,7 +13373,7 @@ room_unlocked:
 .C:3875  A9 01       LDA #$01
 set_memory_attribute:
 ;Write back new attribute
-.C:3877  99 BC 77    STA room_mem_attrs,Y
+.C:3877  99 BC 77    STA room_attr_tbl,Y
 .C:387a  60          RTS
 ;===========================================
 ; Load all costumes in a room
@@ -20648,9 +20648,9 @@ no_releases:
 ; Release the LRU room eligible for eviction
 ;
 ; Arguments: None
-; Reads:	room_mem_attrs
+; Reads:	room_attr_tbl
 ;			room_rsrc_ptrs
-; Updates:	room_mem_attrs
+; Updates:	room_attr_tbl
 ;			room_rsrc_ptrs
 
 ;===========================================
@@ -20670,7 +20670,7 @@ check_eligibility:
 .C:5b42  BD F3 77    LDA room_ptr_hi_tbl,X
 .C:5b45  F0 16       BEQ next_room
 ;Is the room resource locked? - if so, continue
-.C:5b47  BD BC 77    LDA room_mem_attrs,X
+.C:5b47  BD BC 77    LDA room_attr_tbl,X
 .C:5b4a  30 11       BMI next_room
 ;Check if the memory attribute is zero - if so, continue
 .C:5b4c  C9 00       CMP #$00
@@ -20705,7 +20705,7 @@ release_room:
 .C:5b76  9D 2A 78    STA room_ptr_lo_tbl,X
 ;Clear memory attributes
 .C:5b79  A9 00       LDA #$00
-.C:5b7b  9D BC 77    STA room_mem_attrs,X
+.C:5b7b  9D BC 77    STA room_attr_tbl,X
 ;Restore resource pointer lo as .X
 .C:5b7e  68          PLA
 .C:5b7f  AA          TAX
@@ -24421,18 +24421,18 @@ set_variable:
 ;===========================================
 .C:6aa9  20 14 5E    JSR script_read_byte
 .C:6aac  AA          TAX
-.C:6aad  BD BC 77    LDA room_mem_attrs,X
+.C:6aad  BD BC 77    LDA room_attr_tbl,X
 .C:6ab0  09 80       ORA #$80
-.C:6ab2  9D BC 77    STA room_mem_attrs,X
+.C:6ab2  9D BC 77    STA room_attr_tbl,X
 .C:6ab5  60          RTS
 ;===========================================
 ;Opcode #CD - unlock room
 ;===========================================
 .C:6ab6  20 14 5E    JSR script_read_byte
 .C:6ab9  AA          TAX
-.C:6aba  BD BC 77    LDA room_mem_attrs,X
+.C:6aba  BD BC 77    LDA room_attr_tbl,X
 .C:6abd  29 7F       AND #$7F
-.C:6abf  9D BC 77    STA room_mem_attrs,X
+.C:6abf  9D BC 77    STA room_attr_tbl,X
 .C:6ac2  60          RTS
 ;===========================================
 ;Opcode #98 - restart game

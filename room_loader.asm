@@ -242,7 +242,7 @@ next_costume:
  *                         unspecified.
  *   A, Y                  Clobbered.
  *   Globals               current_room, var_current_room,
- *                         room_mem_attrs[old], room_mem_attrs[new],
+ *                         room_attr_tbl[old], room_attr_tbl[new],
  *                         room_gfx_layers_hi := 0, mask_bit_patterns_hi := 0,
  *                         (if X=0) room_entry_script_ptr := 0, room_exit_script_ptr := 0.
  *   Flags                 Not preserved / undefined for callers.
@@ -250,7 +250,7 @@ next_costume:
  * Description:
  *   1) Read Y := current_room. If Y≠0, set old room’s age to 1 while preserving its
  *      lock state (bit7): if locked → write $81, else → write $01. If Y==0, skip
- *      the lock test and store whatever is already in A to room_mem_attrs[0].
+ *      the lock test and store whatever is already in A to room_attr_tbl[0].
  *   2) Publish the new active room: current_room := X and mirror to var_current_room.
  *   3) Free prior per-room resources if present:
  *        - mem_release(room_layer_ptr); then clear only hi part of the ptr.
@@ -264,11 +264,11 @@ next_costume:
  *        - room_read_metadata, room_read_objects, read_room_graphics,
  *          setup_room_columns_with_decode_snapshots.
  *   6) LRU upkeep: for all resident rooms (room_ptr_hi_tbl[x]≠0), if age!=0 then
- *      INC room_mem_attrs[x]. 
+ *      INC room_attr_tbl[x]. 
  *   7) Restore X := current_room and RTS.
  *
  *   Notes/edge cases:
- *     - Index 0 denotes “no room”; routine still writes room_mem_attrs[0] on entry.
+ *     - Index 0 denotes “no room”; routine still writes room_attr_tbl[0] on entry.
  *     - A is only semantically required when there was no previous room (Y==0) to
  *       supply the attribute for index 0/sentinel.
  *===========================================*/
@@ -281,10 +281,10 @@ room_switch_load_assets:
 
         /*---------------------------------------
          * Set age=1 while preserving the lock bit (bit7)
-         *   room_mem_attrs[Y].bit7  = lock (unchanged)
-         *   room_mem_attrs[Y].bits0..6 = age (set to 1)
+         *   room_attr_tbl[Y].bit7  = lock (unchanged)
+         *   room_attr_tbl[Y].bits0..6 = age (set to 1)
          *--------------------------------------*/
-        lda     room_mem_attrs,y
+        lda     room_attr_tbl,y
         bpl     room_attr_unlocked            // bit7 clear → unlocked → use AGE_1 only
         lda     #ROOM_ATTR_LOCKED_AGE_1         // locked + age=1
         jmp     write_room_attr_age
@@ -292,7 +292,7 @@ room_attr_unlocked:
         lda     #ROOM_ATTR_UNLOCKED_AGE_1              // unlocked + age=1
 write_room_attr_age:
         // Commit attribute byte for room Y (age=1; lock preserved per path above).
-        sta     room_mem_attrs,y
+        sta     room_attr_tbl,y
 
         /*---------------------------------------
          * Publish the active room index
@@ -366,18 +366,18 @@ room_load_assets:
 
         /*---------------------------------------
          * Mark active room as MRU (age = 0), keep lock state
-         *   - room_mem_attrs: bit7 = lock, bits0..6 = age
+         *   - room_attr_tbl: bit7 = lock, bits0..6 = age
          *   - If locked (bit7=1) → write LOCK|0
          *   - If unlocked       → write 0
          *--------------------------------------*/
-        lda     room_mem_attrs,x
+        lda     room_attr_tbl,x
         bpl     room_unlocked                  // bit7=0 → unlocked path
         lda     #ROOM_ATTR_LOCK                // locked + age=0 (bit7 set; age bits 0)
         jmp     commit_room_age
 room_unlocked:
         lda     #ROOM_ATTR_UNLOCKED_AGE_0               // unlocked + age=0 (all bits clear)
 commit_room_age:
-        sta     room_mem_attrs,x               // commit attribute byte for room X
+        sta     room_attr_tbl,x               // commit attribute byte for room X
 
         /*---------------------------------------
          * Load remaining room content, in order:
@@ -403,12 +403,12 @@ lru_age_scan:
         lda     room_ptr_hi_tbl,x
         beq     age_scan_next                 // not loaded → skip
 
-        lda     room_mem_attrs,x
+        lda     room_attr_tbl,x
         and     #ROOM_ATTR_AGE_MASK          // extract age (0..$7F)
 		cmp		#$00
         beq     age_scan_next                 // age==0 → do not age
 
-        inc     room_mem_attrs,x              // ++age; lock bit (bit7) remains as-is
+        inc     room_attr_tbl,x              // ++age; lock bit (bit7) remains as-is
 
 age_scan_next:
         dex
@@ -1278,7 +1278,7 @@ mask_dec_lo_byte:
  * 
  * Globals:
  *   		               room_ptr_lo_tbl[room_index], room_ptr_hi_tbl[room_index],
- *                         room_mem_attrs[rsrc_resource_index],
+ *                         room_attr_tbl[rsrc_resource_index],
  *                         rsrc_read_offset := 0, rsrc_sector_idx := 0,
  *                         rsrc_resource_type := RSRC_TYPE_ROOM.
  *
@@ -1294,7 +1294,7 @@ mask_dec_lo_byte:
  *				-call rsrc_load_from_disk which returns a pointer in X/Y and save it into room_data_ptr_local
  *  			-publish to room_ptr_lo_tbl/hi_tbl[y=room_index]
  *
- *   Finally, select Y := rsrc_resource_index and set room_mem_attrs[y] to:
+ *   Finally, select Y := rsrc_resource_index and set room_attr_tbl[y] to:
  *     - ROOM_ATTR_LOCKED_AGE_1 if bit7 was set
  *     - ROOM_ATTR_UNLOCKED_AGE_1 if bit7 was clear
  *===========================================*/
@@ -1345,7 +1345,7 @@ room_ensure_resident:
 room_set_age_to_1:
 		// Set age = 1 while preserving lock (bit7).
 		// Branch logic: LDA sets N from bit7; BPL (N=0) → unlocked path; otherwise locked.
-		lda     room_mem_attrs,y
+		lda     room_attr_tbl,y
 		bpl     attr_unlocked_path
 
 		// Locked case
@@ -1357,8 +1357,8 @@ attr_unlocked_path:
 		lda     #ROOM_ATTR_UNLOCKED_AGE_1
 
 commit_room_attr:
-		// Post-condition: room_mem_attrs[y] updated; lock preserved, age reset to 1.
-		sta     room_mem_attrs,y
+		// Post-condition: room_attr_tbl[y] updated; lock preserved, age reset to 1.
+		sta     room_attr_tbl,y
 		rts
 
 /*===========================================

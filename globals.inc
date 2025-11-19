@@ -323,7 +323,7 @@ Values observed
 // ===========================================================
 // Resource locking, refcount, age
 // ===========================================================
-.label room_mem_attrs = $77BC
+.label room_attr_tbl = $77BC
 .label costume_mem_attrs = $77A3
 .label sound_attr_tbl       = $7951    
 .label script_mem_attrs = $7AD7

@@ -225,7 +225,7 @@ decomp_dict4_init:
 		ldy #$03	   
 
 dict_copy_loop:
-		lda (decomp_src_ptr),Y   	// read source byte at ptr+Y
+		lda (decomp_src_ptr_lo),Y   	// read source byte at ptr+Y
 		sta decomp_dict4,Y       	// store to dictionary [$0100..$0103]
 		dey                          // next lower index
 		bpl dict_copy_loop           // loop until Y = $FF
@@ -234,12 +234,12 @@ dict_copy_loop:
 		// Advance input pointer by 4 (past the dictionary)
 		// ------------------------------------------------
 		clc
-		lda decomp_src_ptr
+		lda decomp_src_ptr_lo
 		adc #$04
-		sta decomp_src_ptr
-		lda decomp_src_ptr + 1
+		sta decomp_src_ptr_lo
+		lda decomp_src_ptr_hi
 		adc #$00
-		sta decomp_src_ptr + 1
+		sta decomp_src_ptr_hi
 
 		// ------------------------------------------------	   
 		// Reset state: no active operation, counter = 0
@@ -409,10 +409,10 @@ Description:
 */
 decomp_read_src_byte:
        ldy #$00                     // Y=0 so (ptr),Y reads at ptr
-       lda (decomp_src_ptr),Y   	// fetch byte
-       inc decomp_src_ptr       	// bump low byte
+       lda (decomp_src_ptr_lo),Y   	// fetch byte
+       inc decomp_src_ptr_lo       	// bump low byte
        bne return_read              // if not wrapped, done
-       inc decomp_src_ptr + 1   	// else bump high byte
+       inc decomp_src_ptr_hi   	// else bump high byte
 return_read:
        rts
 /*

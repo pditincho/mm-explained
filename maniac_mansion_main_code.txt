@@ -12880,7 +12880,7 @@ room_load_sounds_and_scripts:
 ;Load sounds
 .C:35f3  A0 00       LDY #$00
 .C:35f5  A5 17       LDA sound_counter
-.C:35f7  F0 0D       BEQ rsrc_ensure_script_residents
+.C:35f7  F0 0D       BEQ rsrc_cache_scripts
 next_sound:
 ;Even though the room subresource pointer is recomputed on every loop iteration,
 ;it's actually the same base pointer. The only thing that changes is the .Y index
@@ -12888,13 +12888,13 @@ next_sound:
 ;Read sound index
 .C:35fc  B1 15       LDA (room_subresources_ptr),Y
 ;Load the sound by index
-.C:35fe  20 E6 39    JSR rsrc_ensure_sound_resident
+.C:35fe  20 E6 39    JSR rsrc_cache_sound
 ;Move to the next byte, update counter, continue if needed
 .C:3601  C8          INY
 .C:3602  C6 17       DEC sound_counter
 .C:3604  D0 F3       BNE next_sound
 ;-------------------------------
-rsrc_ensure_script_residents:
+rsrc_cache_scripts:
 .C:3606  A5 18       LDA script_counter
 .C:3608  F0 0D       BEQ exit
 next_script:
@@ -12902,7 +12902,7 @@ next_script:
 ;Read script index
 .C:360d  B1 15       LDA (room_subresources_ptr),Y
 ;Load the script by index
-.C:360f  20 29 3A    JSR rsrc_ensure_script_resident
+.C:360f  20 29 3A    JSR rsrc_cache_script
 ;Move to the next byte, update counter, continue if needed
 .C:3612  C8          INY
 .C:3613  C6 18       DEC script_counter
@@ -13398,7 +13398,7 @@ check_character_in_room:
 .C:3893  4C A2 38    JMP next_character
 actor_in_current_room:
 ;Load costume resource
-.C:3896  20 A8 38    JSR rsrc_ensure_costume_resident
+.C:3896  20 A8 38    JSR rsrc_cache_costume
 ;Assign an available actor to the costume and initialize it
 .C:3899  AE 76 56    LDX resource_index
 .C:389c  20 11 39    JSR assign_costume_to_free_actor
@@ -13417,7 +13417,7 @@ temp_1 = $17
 temp_2 = $18
 temp_costume_index = $15
 
-rsrc_ensure_costume_resident:
+rsrc_cache_costume:
 ;Save resource index
 .C:38a8  8E 76 56    STX resource_index
 ;If the costume is already loaded in memory, return
@@ -13557,7 +13557,7 @@ bind_actor_to_costume_and_init:
 .C:396c  A9 00       LDA #$00
 .C:396e  99 9D FE    STA actor_mouth_state,Y
 ;Load costume (again? this seems redundant)
-.C:3971  20 A8 38    JSR rsrc_ensure_costume_resident
+.C:3971  20 A8 38    JSR rsrc_cache_costume
 ;Clear previous resource pointer for the active costume
 .C:3974  AE 30 FC    LDX active_costume
 .C:3977  A9 00       LDA #$00
@@ -13640,7 +13640,7 @@ temp_1 = $19
 temp_2 = $1A
 temp_y = $3bdc
 
-rsrc_ensure_sound_resident:
+rsrc_cache_sound:
 ;Save .Y in a local variable
 .C:39e6  8C DC 3B    STY temp_y
 ;Save resource index in .A
@@ -13698,7 +13698,7 @@ temp_1 = $19
 temp_2 = $1A
 temp_y = $3bdc
 
-rsrc_ensure_script_resident:
+rsrc_cache_script:
 ;Save .Y in a local variable
 .C:3a29  8C DC 3B    STY temp_y
 ;.A = resource index
@@ -13728,14 +13728,14 @@ script_not_in_memory:
 .C:3a48  8D 78 56    STA rsrc_read_offset
 .C:3a4b  BD 92 76    LDA room_script_disk_loc_tbl + 1,X
 .C:3a4e  8D 79 56    STA rsrc_sector_step
-.C:3a51  4C 60 3A    JMP rsrc_ensure_script_resident_from_disk
+.C:3a51  4C 60 3A    JMP rsrc_cache_script_from_disk
 global_script:
 ;Global script
 .C:3a54  BD 91 75    LDA global_script_disk_loc_tbl,X
 .C:3a57  8D 78 56    STA rsrc_read_offset
 .C:3a5a  BD 92 75    LDA global_script_disk_loc_tbl + 1,X
 .C:3a5d  8D 79 56    STA rsrc_sector_step
-rsrc_ensure_script_resident_from_disk:
+rsrc_cache_script_from_disk:
 ;Set resource type = #05 - script
 .C:3a60  A9 05       LDA #$05
 .C:3a62  8D 77 56    STA resource_type
@@ -20590,7 +20590,7 @@ switch_on_priority:
 .C:5af3  D0 06       BNE check_01
 ;------------------
 ;Case #00 - release one room
-.C:5af5  20 38 5B    JSR rsrc_release_evictable_room_lru
+.C:5af5  20 38 5B    JSR rsrc_release_one_evictable_room
 .C:5af8  4C 22 5B    JMP next_priority
 ;------------------
 check_01:
@@ -20659,7 +20659,7 @@ ROOM_MAX_INDEX = #$36
 candidate_attrs = $fd9f
 candidate_index = $fd9e
 
-rsrc_release_evictable_room_lru:
+rsrc_release_one_evictable_room:
 .C:5b38  A9 00       LDA #$00
 .C:5b3a  8D 9F FD    STA candidate_attrs
 .C:5b3d  8D 9E FD    STA candidate_index
@@ -21421,7 +21421,7 @@ launch_global_script:
 .C:5e94  D0 07       BNE script_in_memory
 ;It's not in memory, load it
 .C:5e96  8A          TXA
-.C:5e97  20 29 3A    JSR rsrc_ensure_script_resident
+.C:5e97  20 29 3A    JSR rsrc_cache_script
 .C:5e9a  20 B4 5D    JSR refresh_script_addresses_if_moved
 script_in_memory:
 ;Increment script's memory refcount
@@ -23430,7 +23430,7 @@ sound_code_ptr_hi = $6622
 .C:65da  E9 30       SBC #$30
 ;Load the music matching the disk side number
 .C:65dc  48          PHA
-.C:65dd  20 E6 39    JSR rsrc_ensure_sound_resident
+.C:65dd  20 E6 39    JSR rsrc_cache_sound
 .C:65e0  20 B4 5D    JSR refresh_script_addresses_if_moved
 .C:65e3  68          PLA
 .C:65e4  AA          TAX
@@ -23440,7 +23440,7 @@ play_music:
 ;Load music index from operand
 .C:65eb  20 98 5F    JSR script_load_operand_bit7
 .C:65ee  48          PHA
-.C:65ef  20 E6 39    JSR rsrc_ensure_sound_resident
+.C:65ef  20 E6 39    JSR rsrc_cache_sound
 .C:65f2  AE A3 FE    LDX selected_music_idx
 .C:65f5  DE 51 79    DEC sound_attr_tbl,X
 ;Setup music playback pointers
@@ -23489,7 +23489,7 @@ start_sound_with_loaded_index:
 .C:663b  84 01       STY cpu_port
 ;Load the sound
 .C:663d  A5 D0       LDA sound_index
-.C:663f  20 E6 39    JSR rsrc_ensure_sound_resident
+.C:663f  20 E6 39    JSR rsrc_cache_sound
 ;Start the sound
 .C:6642  A5 D0       LDA sound_index
 ;map_in_io
@@ -24322,7 +24322,7 @@ set_variable:
 .C:6a2d  20 98 5F    JSR script_load_operand_bit7
 .C:6a30  AA          TAX
 ;Load costume
-.C:6a31  20 A8 38    JSR rsrc_ensure_costume_resident
+.C:6a31  20 A8 38    JSR rsrc_cache_costume
 .C:6a34  20 B4 5D    JSR refresh_script_addresses_if_moved
 .C:6a37  60          RTS
 ;===========================================
@@ -24343,7 +24343,7 @@ set_variable:
 ;Read script index into .X
 .C:6a43  20 98 5F    JSR script_load_operand_bit7
 ;Load script resource
-.C:6a46  20 29 3A    JSR rsrc_ensure_script_resident
+.C:6a46  20 29 3A    JSR rsrc_cache_script
 .C:6a49  20 B4 5D    JSR refresh_script_addresses_if_moved
 .C:6a4c  60          RTS
 ;===========================================
@@ -24352,7 +24352,7 @@ set_variable:
 ;Read sound index into .X
 .C:6a4d  20 98 5F    JSR script_load_operand_bit7
 ;Load sound
-.C:6a50  20 E6 39    JSR rsrc_ensure_sound_resident
+.C:6a50  20 E6 39    JSR rsrc_cache_sound
 .C:6a53  20 B4 5D    JSR refresh_script_addresses_if_moved
 .C:6a56  60          RTS
 ;===========================================

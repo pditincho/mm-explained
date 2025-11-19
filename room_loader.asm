@@ -534,10 +534,10 @@ copy_gfx_ofs_loop:
 		// required by the decompressor for the tile matrix stream.
 		clc
 		lda     room_base
-		adc     tile_matrix_ofs
+		adc     tile_matrix_ofs_lo
 		sta     read_ptr
 		lda     room_base + 1
-		adc     tile_matrix_ofs + 1
+		adc     tile_matrix_ofs_hi
 		sta     read_ptr + 1
 
 		// Copy the symbol dictionary for the tile matrix.
@@ -555,10 +555,10 @@ copy_tile_dict_loop:
 		// for the color stream.
 		clc
 		lda     room_base
-		adc     color_layer_ofs
+		adc     color_layer_ofs_lo
 		sta     read_ptr
 		lda     room_base + 1
-		adc     color_layer_ofs + 1
+		adc     color_layer_ofs_hi
 		sta     read_ptr + 1
 
 		// Copy the symbol dictionary for the color layer.
@@ -575,10 +575,10 @@ copy_color_dict_loop:
 		// for the mask stream.
 		clc
 		lda     room_base
-		adc     mask_layer_ofs
+		adc     mask_layer_ofs_lo
 		sta     read_ptr
 		lda     room_base + 1
-		adc     mask_layer_ofs + 1
+		adc     mask_layer_ofs_hi
 		sta     read_ptr + 1
 
 		// Copy the symbol dictionary for the mask layer.
@@ -1058,10 +1058,10 @@ bkg_colors_set_loop:
         clc
         lda     room_base
         adc     room_tile_definitions_offset
-        sta     decomp_src_ptr
+        sta     decomp_src_ptr_lo
         lda     room_base + 1
         adc     room_tile_definitions_offset + 1
-        sta     decomp_src_ptr + 1
+        sta     decomp_src_ptr_hi
 
         /*---------------------------------------
          Set destination for decoded tile definitions (tile bitmap page)
@@ -1220,10 +1220,10 @@ setup_mask_patterns_load:
         clc
         lda     gfx_read_ptr
         adc     #$02
-        sta     decomp_src_ptr
+        sta     decomp_src_ptr_lo
         lda     gfx_read_ptr + 1
         adc     #$00
-        sta     decomp_src_ptr + 1
+        sta     decomp_src_ptr_hi
 
         /*---------------------------------------
 		 Decompress mask patterns

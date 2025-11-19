@@ -90,13 +90,13 @@ Vars/State
 Global Inputs
         sound_ptr_hi_tbl      Per-sound high-byte pointer table; non-zero → resident
         sound_ptr_lo_tbl      Per-sound low-byte pointer table for music resources
-        sound_attr_tbl        Attribute/refcount table for sound resources
+        sound_liveness_tbl        Attribute/refcount table for sound resources
         active_side_id        Raw disk side identifier used to derive default music
 
 Global Outputs
         music_to_start_ptr    Updated to base address of selected music resource
         music_init_code_ptr   Updated to point at music init routine (after header)
-        sound_attr_tbl        Refcount temporarily incremented/decremented for music
+        sound_liveness_tbl        Refcount temporarily incremented/decremented for music
 
 Returns
         None (starts music playback via inline initialization code)
@@ -149,7 +149,7 @@ start_selected_music:
         // and then restore it.
         // ------------------------------------------------------------
         stx     selected_music_idx           // Remember chosen music index in selected_music_idx
-        inc     sound_attr_tbl,x             // Increase refcount of music rsrc
+        inc     sound_liveness_tbl,x             // Increase refcount of music rsrc
 
         // Resolve music index operand (but keep current selected_music_idx in X)
         jsr     script_load_operand_bit7     // A := operand music index (hi from opcode bit7)
@@ -160,7 +160,7 @@ start_selected_music:
 
 		//Decrease refcount of music rsrc
         ldx     selected_music_idx           // Restore logical music we actually want to start into X
-        dec     sound_attr_tbl,x             // Dec refcount
+        dec     sound_liveness_tbl,x             // Dec refcount
 
         // ------------------------------------------------------------
         // Initialize music_to_start_ptr for this music

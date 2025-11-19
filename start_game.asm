@@ -64,7 +64,7 @@ Global Outputs
 	task_cur_idx                  set to “no active script”
 	engine_vars[...]              cleared to zero
 	game_vars[...]                cleared to zero
-	sound_attr_tbl[3,4,5,6,8,9]  bit7 set to lock resources
+	sound_liveness_tbl[3,4,5,6,8,9]  bit7 set to lock resources
 	sound_ptr_{lo,hi}_tbl[3..5]   set to embedded track pointers
 	(via calls) raster IRQ environment initialized
 	(via calls) global start-game script launched
@@ -162,14 +162,14 @@ clear_game_variables:
         dex
         bne     clear_game_variables
 
-        // Lock sounds 3,4,5,6,8,9 (set bit7 in sound_attr_tbl)
+        // Lock sounds 3,4,5,6,8,9 (set bit7 in sound_liveness_tbl)
         lda     #SOUND_LOCK_MASK
-        sta     sound_attr_tbl + 3
-        sta     sound_attr_tbl + 4
-        sta     sound_attr_tbl + 5
-        sta     sound_attr_tbl + 6
-        sta     sound_attr_tbl + 8
-        sta     sound_attr_tbl + 9
+        sta     sound_liveness_tbl + 3
+        sta     sound_liveness_tbl + 4
+        sta     sound_liveness_tbl + 5
+        sta     sound_liveness_tbl + 6
+        sta     sound_liveness_tbl + 8
+        sta     sound_liveness_tbl + 9
 
         // Embedded sound pointers for tracks 3..5
         lda     #<SOUND3_PTR

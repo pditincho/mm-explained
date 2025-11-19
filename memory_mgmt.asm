@@ -1776,7 +1776,7 @@ mem_bubble_used_left:
 		bne copy_block_data         // no → continue
 
 		// Is it in use?
-		lda sound_attr_tbl,Y    
+		lda sound_liveness_tbl,Y    
 		beq copy_block_data         // 0 → not in use → continue
 
 		// Reload sound resource pointers later

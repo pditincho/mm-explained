@@ -1085,11 +1085,11 @@ Summary:
 Reads:
 	room_ptr_lo_tbl[X]   	Room resource pointer (lo).
 	room_ptr_hi_tbl[X]     	Room resource pointer (hi); nonzero ⇒ loaded.
-	room_attr_tbl[X]       	Per-room attribute/age score; bit7=1 ⇒ locked.
+	room_liveness_tbl[X]    Per-room liveness score; bit7=1 ⇒ locked.
 
 Updates:
 	room_ptr_*_tbl[X]       Cleared for the evicted room to avoid dangling refs.
-	room_attr_tbl[X]        Cleared for the evicted room.
+	room_liveness_tbl[X]    Cleared for the evicted room.
 
 Description:
 	- Iterate X := ROOM_MAX_INDEX … 1 (index 0 is not considered).
@@ -1116,7 +1116,7 @@ scan_room:
         beq advance_room
 
 		// Room locked? If so, skip
-        lda room_attr_tbl,x              
+        lda room_liveness_tbl,x              
         bmi advance_room                  // locked (bit7=1) → ineligible
 
         // Room has nonzero age? If not, skip
@@ -1166,7 +1166,7 @@ evict_room_candidate:
 
         // Clear room age
         lda #$00
-        sta room_attr_tbl,x
+        sta room_liveness_tbl,x
 
         // Recover saved ptr.lo and place it in X for mem_release
         pla                               
@@ -1190,13 +1190,13 @@ Summary:
 Reads:
 	costume_ptr_lo_tbl[X]     	Costume resource pointer (lo).
 	costume_ptr_hi_tbl[X]     	Costume resource pointer (hi); nonzero ⇒ loaded.
-	costume_mem_attrs[X]      	Per-costume attributes; 0 ⇒ evictable.
+	costume_liveness_tbl[X]     Per-costume liveness; 0 ⇒ evictable.
 	room_for_costume[X]     	Owning room index for costume X.
 	current_room              	Index of the current room (active/in use).
 
 Updates:
 	costume_ptr_*_tbl[X]      	Cleared for the freed costume to avoid dangling refs.
-	costume_mem_attrs[X]      	Cleared for the freed costume.
+	costume_liveness_tbl[X]     Cleared for the freed costume.
 
 Description:
 	- Iterate X := COSTUME_MAX_INDEX … 0.
@@ -1224,7 +1224,7 @@ scan_costume:
         beq advance_costume
 
         // Costume in use (by refcount/locking)? If so, skip
-        lda costume_mem_attrs,x
+        lda costume_liveness_tbl,x
         bne advance_costume
 
         // Set up mem_release by copying the costume pointer to X/Y
@@ -1241,7 +1241,7 @@ scan_costume:
         sta costume_ptr_hi_tbl,x          
 		
 		// Clear refcount
-		sta costume_mem_attrs,X
+		sta costume_liveness_tbl,X
 		
         // Restore costume lo into .X
 		// mem_release expects X=lo, Y=hi
@@ -1270,7 +1270,7 @@ Summary:
 	mem_release to free the block. Protected sounds are skipped.
 
 Reads:
-	sound_attr_tbl[X]         	Per-sound attributes; 0 ⇒ evictable.
+	sound_liveness_tbl[X]       Per-sound liveness; 0 ⇒ evictable.
 	sound_ptr_lo_tbl[X]        	Sound resource pointer (lo).
 	sound_ptr_hi_tbl[X]        	Sound resource pointer (hi); nonzero ⇒ loaded.
 
@@ -1294,7 +1294,7 @@ rsrc_release_evictable_sounds:
 
 scan_sound:
         // Sound in use (by refcount/locking)? If so, skip
-        lda sound_attr_tbl,x
+        lda sound_liveness_tbl,x
         bne advance_sound              
 
         // Sound resident? If not, skip
@@ -1353,7 +1353,7 @@ Summary:
 	mem_release to free the block.
 
 Reads:
-	script_mem_attrs[X]  	Per-script memory attributes; 0 ⇒ evictable.
+	script_liveness_tbl[X]  Per-script liveness; 0 ⇒ evictable.
 	script_ptr_lo_tbl[X]    Script resource pointer (lo).
 	script_ptr_hi_tbl[X]    Script resource pointer (hi); nonzero ⇒ loaded.
 
@@ -1375,7 +1375,7 @@ rsrc_release_evictable_scripts:
 
 scan_script:
         // Script in use (by refcount/locking)? If so, skip
-        lda script_mem_attrs,x
+        lda script_liveness_tbl,x
         bne advance_script           
 
         // Script resident? If not, skip
@@ -1703,7 +1703,7 @@ function rsrc_evict_one_by_priority() -> bool:
         // Otherwise, try next priority class
 
 // Try to evict exactly one room, picking the “oldest” eligible room.
-// Uses room_attr_tbl as an age/lock field:
+// Uses room_liveness_tbl as an age/lock field:
 //   - bit7 set   ⇒ locked, never evict
 //   - 0 value    ⇒ not evictable
 //   - larger val ⇒ older/staler candidate
@@ -1714,7 +1714,7 @@ function rsrc_release_one_evictable_room():
     // Scan from highest to lowest index; index 0 is ignored
     for roomIndex from ROOM_MAX_INDEX down to 1:
         ptr = room_ptr[roomIndex]
-        attrs = room_attr_tbl[roomIndex]
+        attrs = room_liveness_tbl[roomIndex]
 
         // Not resident or not eligible
         if ptr == NULL:
@@ -1736,7 +1736,7 @@ function rsrc_release_one_evictable_room():
     // Evict chosen room
     ptr = room_ptr[bestRoomIndex]
     room_ptr[bestRoomIndex]      = NULL
-    room_attr_tbl[bestRoomIndex] = 0
+    room_liveness_tbl[bestRoomIndex] = 0
 
     mem_release(ptr)
     // mem_release should set rsrc_released_flag = true
@@ -1744,12 +1744,12 @@ function rsrc_release_one_evictable_room():
 // Try to evict exactly one costume. A costume is evictable if:
 //   - It is resident
 //   - It does NOT belong to the current room
-//   - Its costume_mem_attrs value is 0 (no locks, no references)
+//   - Its costume_liveness_tbl value is 0 (no locks, no references)
 function rsrc_release_one_evictable_costume():
     // Scan from highest to lowest index
     for costumeIndex from COSTUME_MAX_INDEX down to 0:
         ptr   = costume_ptr[costumeIndex]
-        attrs = costume_mem_attrs[costumeIndex]
+        attrs = costume_liveness_tbl[costumeIndex]
 
         if ptr == NULL:
             continue
@@ -1764,7 +1764,7 @@ function rsrc_release_one_evictable_costume():
 
         // Found a candidate: release it and stop
         costume_ptr[costumeIndex]      = NULL
-        costume_mem_attrs[costumeIndex] = 0
+        costume_liveness_tbl[costumeIndex] = 0
 
         mem_release(ptr)
         // mem_release should set rsrc_released_flag = true
@@ -1774,11 +1774,11 @@ function rsrc_release_one_evictable_costume():
 
 // Try to evict all sounds that are:
 //   - Resident
-//   - Have sound_attr_tbl[index] == 0 (no locks/references)
+//   - Have sound_liveness_tbl[index] == 0 (no locks/references)
 //   - Are NOT in the “protected” set (PROTECTED_SOUND_3/4/5)
 function rsrc_release_evictable_sounds():
     for soundIndex from SOUND_MAX_INDEX down to 0:
-        attrs = sound_attr_tbl[soundIndex]
+        attrs = sound_liveness_tbl[soundIndex]
         ptr   = sound_ptr[soundIndex]
 
         if attrs != 0:
@@ -1799,10 +1799,10 @@ function rsrc_release_evictable_sounds():
 
 // Try to evict all scripts that are:
 //   - Resident
-//   - Have script_mem_attrs[index] == 0 (no locks/references)
+//   - Have script_liveness_tbl[index] == 0 (no locks/references)
 function rsrc_release_evictable_scripts():
     for scriptIndex from SCRIPT_MAX_INDEX down to 0:
-        attrs = script_mem_attrs[scriptIndex]
+        attrs = script_liveness_tbl[scriptIndex]
         ptr   = script_ptr[scriptIndex]
 
         if attrs != 0:

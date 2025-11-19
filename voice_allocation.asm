@@ -111,10 +111,10 @@ Arguments
 	X       Sound resource ID whose memory attribute should be decremented
 
 Global Inputs
-	sound_attr_tbl     Per-sound memory attribute table (counter + sign flag)
+	sound_liveness_tbl     Per-sound memory attribute table (counter + sign flag)
 
 Global Outputs
-	sound_attr_tbl     Updated memory attribute for the selected sound
+	sound_liveness_tbl     Updated memory attribute for the selected sound
 
 Returns
 	None (updates the memory attribute in-place for sound X)
@@ -132,7 +132,7 @@ Description
 */
 * = $4CDA
 dec_sound_refcount:
-		lda     sound_attr_tbl,x           // A := current memory attribute for sound X
+		lda     sound_liveness_tbl,x           // A := current memory attribute for sound X
 		php                                 // Save original flags (keep original sign bit7)
 		and     #MSK_LOW7BITS               // Clear bit7 so we can safely decrement magnitude
 		sec                                 // Prepare for subtract
@@ -149,7 +149,7 @@ restore_original_sign:
 		ora     #LOCK_BIT                   // If original sign was set, restore bit7 on result
 
 store_final_mem_attr:
-		sta     sound_attr_tbl,x           // Commit updated attribute back to table
+		sta     sound_liveness_tbl,x           // Commit updated attribute back to table
 		rts		
 /*
 ================================================================================
@@ -665,10 +665,10 @@ Arguments
 
 Global Inputs
         music_playback_in_progress    Nonzero when music engine is active
-        sound_attr_tbl               Table of per-sound memory attributes
+        sound_liveness_tbl               Table of per-sound memory attributes
 
 Global Outputs
-        sound_attr_tbl               Entry X decremented via dec_sound_refcount
+        sound_liveness_tbl               Entry X decremented via dec_sound_refcount
                                       (only when music is not playing)
 
 Returns
@@ -691,7 +691,7 @@ dec_sound_refcount_if_no_music:
 		rts                                  // Music playing → exit with refcount unchanged
 
 do_decrease:
-		jsr     dec_sound_refcount           // Saturating decrement of sound_attr_tbl[X], preserve flags
+		jsr     dec_sound_refcount           // Saturating decrement of sound_liveness_tbl[X], preserve flags
 		rts                                  // Done updating reference count
 /*
 ================================================================================
@@ -707,10 +707,10 @@ Arguments
 
 Global Inputs
 	music_playback_in_progress    Nonzero when music engine is active
-	sound_attr_tbl               Table of per-sound memory attributes
+	sound_liveness_tbl               Table of per-sound memory attributes
 
 Global Outputs
-	sound_attr_tbl               Entry X incremented (unless music active)
+	sound_liveness_tbl               Entry X incremented (unless music active)
 
 Returns
 	None (may early-exit without updating when music is playing)
@@ -718,7 +718,7 @@ Returns
 Description
 	- If music playback is active, the increment is skipped entirely to
 	avoid interfering with music-managed resource lifetimes.
-	- Otherwise increments sound_attr_tbl[X], increasing the resource’s
+	- Otherwise increments sound_liveness_tbl[X], increasing the resource’s
 	reference count.
 	- This routine pairs with the corresponding decrement routine to
 	maintain per-sound residency and usage tracking.
@@ -731,7 +731,7 @@ inc_sound_refcount:
 		rts                                  // Music playing → exit with refcount unchanged
 
 do_increase:
-		inc     sound_attr_tbl,x            // Bump memory attribute/refcount for sound X
+		inc     sound_liveness_tbl,x            // Bump memory attribute/refcount for sound X
 		rts                                  // Done updating reference count
 /*
 ================================================================================

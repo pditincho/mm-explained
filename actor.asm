@@ -1665,7 +1665,7 @@ Summary:
 	and “parks” the costume in a holding room. If no candidate found, the code hangs.
 	
 Uses / Globals:
-	costume_mem_attrs[X]    	Attribute byte; bit7=1 ⇒ locked, bit7=0 ⇒ unlocked.
+	costume_liveness_tbl[X]    	Attribute byte; bit7=1 ⇒ locked, bit7=0 ⇒ unlocked.
 	costume_ptr_hi_tbl[X]  		Non-zero ⇒ resource resident in memory.
 	current_kid_idx      		Index of current kid; never detached.
 	costume_dest_x[X]  			Set to COSTUME_DFLT_X_DEST on unassignment.
@@ -1675,13 +1675,13 @@ Uses / Globals:
 Description:
 	1) Unlock pass:
 		-Scan all costumes downward, using X as index.
-		-If costume_mem_attrs[X].bit7 == 1 → clear with AND #$7F and exit
+		-If costume_liveness_tbl[X].bit7 == 1 → clear with AND #$7F and exit
 
 	2) Unassignment pass (only if no locks found):
 		-Scan all kids costumes downward, using X as index (X = 8..1)
 		-Skip if X == current_kid_idx, or not resident (ptr.hi==0)
 		-On hit: 
-			-costume_mem_attrs := 0
+			-costume_liveness_tbl := 0
 			-detach_actor_from_costume
 			-(dest_x,dest_y) := (COSTUME_DFLT_X_DEST,COSTUME_DFLT_Y_DEST)
 			-room_for_costume[X] := COSTUME_HOLDING_ROOM
@@ -1703,14 +1703,14 @@ scan_locked_costumes:
         //   	bit7 = 1 → locked (N=1)
 		//		bit7 = 0 → unlocked (N=0)
         // ------------------------------------------------------------
-        lda costume_mem_attrs,x
+        lda costume_liveness_tbl,x
         bpl advance_lock_scan                 
 
         // ------------------------------------------------------------
         // Costume locked - unlock it and return
         // ------------------------------------------------------------
         and #RSRC_CLEAR_LOCK_MASK                         
-        sta costume_mem_attrs,x          
+        sta costume_liveness_tbl,x          
         rts                              
 
 advance_lock_scan:
@@ -1740,7 +1740,7 @@ scan_for_evict:
 		// - Clear refcount before
 		// ------------------------------------------------------------
         lda #$00
-        sta costume_mem_attrs,x         // clear refcount
+        sta costume_liveness_tbl,x         // clear refcount
 
         // Preserve loop index
         txa                               

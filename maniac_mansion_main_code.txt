@@ -964,20 +964,20 @@ sound_sector_index = $7718
 ;	-After a room is loaded, all loaded rooms with nonzero age have their age incremented by 1
 ;	-When a room is released, its age is set to 0
 ;
-costume_mem_attrs = $77a3
-room_attr_tbl = $77bc
+costume_liveness_tbl = $77a3
+room_liveness_tbl = $77bc
 room_ptr_hi_tbl = $77f3		;Total rooms: 55
 room_ptr_lo_tbl = $782a
 costume_ptr_hi_tbl = $7861	;Total costumes: 25
 costume_ptr_lo_tbl = $787A
 sound_ptr_hi_tbl = $78C5		;Total sounds: 70
 sound_ptr_lo_tbl = $790B
-sound_attr_tbl = $7951
+sound_liveness_tbl = $7951
 sound_1_memory_attr = $7952
 sound_2_memory_attr = $7953
 script_ptr_hi_tbl = $7997		;Total scripts: 160
 script_ptr_lo_tbl = $7a37
-script_mem_attrs = $7ad7
+script_liveness_tbl = $7ad7
 script_2_mem_attr = $7ad9
 ;The room layers and the mask bit patterns resources don't have memory attributes - they are tied to the current room's lifetime
 
@@ -1935,12 +1935,12 @@ clear_game_variables:
 ; 6 is the footstep sound
 ; 8 and 9 are the door open/close sounds
 .C:04c3  A9 80       LDA #$80
-.C:04c5  8D 54 79    STA sound_attr_tbl + 3 
-.C:04c8  8D 55 79    STA sound_attr_tbl + 4
-.C:04cb  8D 56 79    STA sound_attr_tbl + 5
-.C:04ce  8D 57 79    STA sound_attr_tbl + 6
-.C:04d1  8D 59 79    STA sound_attr_tbl + 8
-.C:04d4  8D 5A 79    STA sound_attr_tbl + 9
+.C:04c5  8D 54 79    STA sound_liveness_tbl + 3 
+.C:04c8  8D 55 79    STA sound_liveness_tbl + 4
+.C:04cb  8D 56 79    STA sound_liveness_tbl + 5
+.C:04ce  8D 57 79    STA sound_liveness_tbl + 6
+.C:04d1  8D 59 79    STA sound_liveness_tbl + 8
+.C:04d4  8D 5A 79    STA sound_liveness_tbl + 9
 ;Set pointers to sounds 3, 4 and 5 (embedded in the middle of the code)
 .C:04d7  A9 CD       LDA #$CD
 .C:04d9  8D 0E 79    STA sound_ptr_lo_tbl + 3
@@ -12630,7 +12630,7 @@ room_switch_load_assets:
 ; Set room age to 1 - keep locking status unchanged (bit 7)
 ;----------------------------------------------
 ;Is the room unlocked?
-.C:34a9  B9 BC 77    LDA room_attr_tbl,Y
+.C:34a9  B9 BC 77    LDA room_liveness_tbl,Y
 .C:34ac  10 05       BPL room_unlocked
 ;Room is locked - keep it locked, set age to 1
 .C:34ae  A9 81       LDA #$81
@@ -12639,7 +12639,7 @@ room_unlocked:
 ;Keep it unlocked, set age to 1
 .C:34b3  A9 01       LDA #$01
 set_result:
-.C:34b5  99 BC 77    STA room_attr_tbl,Y
+.C:34b5  99 BC 77    STA room_liveness_tbl,Y
 ;----------------------------------------------
 .C:34b8  8E 49 71    STX current_room
 .C:34bb  AD 49 71    LDA current_room
@@ -12684,7 +12684,7 @@ load_room_gfx_and_objects:
 ;---------------------------
 ;Set room age to 0, keeping locked/unlocked status unchanged (bit 7)
 ;Load resource memory attribute
-.C:34fd  BD BC 77    LDA room_attr_tbl,X
+.C:34fd  BD BC 77    LDA room_liveness_tbl,X
 ;If room is unlocked, set age to 00
 .C:3500  10 05       BPL room_unlocked
 ;Room is locked, set age to 00
@@ -12693,7 +12693,7 @@ load_room_gfx_and_objects:
 room_unlocked:
 .C:3507  A9 00       LDA #$00
 set_result:
-.C:3509  9D BC 77    STA room_attr_tbl,X
+.C:3509  9D BC 77    STA room_liveness_tbl,X
 ;---------------------------
 .C:350c  20 32 35    JSR read_room_misc_data		
 .C:350f  20 31 36    JSR room_read_objects		
@@ -12710,13 +12710,13 @@ check_room_in_memory:
 .C:351a  BD F3 77    LDA room_ptr_hi_tbl,X
 .C:351d  F0 0C       BEQ next_room
 ;Unlock room
-.C:351f  BD BC 77    LDA room_attr_tbl,X
+.C:351f  BD BC 77    LDA room_liveness_tbl,X
 .C:3522  29 7F       AND #$7F
 ;Is the room age zero? If it is, leave it as zero.
 .C:3524  C9 00       CMP #$00
 .C:3526  F0 03       BEQ next_room
 ;If not, increment by 1
-.C:3528  FE BC 77    INC room_attr_tbl,X
+.C:3528  FE BC 77    INC room_liveness_tbl,X
 next_room:
 .C:352b  CA          DEX
 .C:352c  D0 EC       BNE check_room_in_memory
@@ -13362,7 +13362,7 @@ load_room_resource:
 .C:3868  AC 76 56    LDY resource_index
 set_room_age_to_1:
 ;Set room age to 1, keep bit 7 (locked/unlocked status) unchanged
-.C:386b  B9 BC 77    LDA room_attr_tbl,Y		
+.C:386b  B9 BC 77    LDA room_liveness_tbl,Y		
 .C:386e  10 05       BPL room_unlocked
 room_locked:
 ;It's locked, set age to 1
@@ -13373,7 +13373,7 @@ room_unlocked:
 .C:3875  A9 01       LDA #$01
 set_memory_attribute:
 ;Write back new attribute
-.C:3877  99 BC 77    STA room_attr_tbl,Y
+.C:3877  99 BC 77    STA room_liveness_tbl,Y
 .C:387a  60          RTS
 ;===========================================
 ; Load all costumes in a room
@@ -17723,7 +17723,7 @@ reset_voice_priorities:
 ;===========================================
 dec_sound_refcount:
 ;Load the memory attribute for this sound
-.C:4cda  BD 51 79    LDA sound_attr_tbl,X
+.C:4cda  BD 51 79    LDA sound_liveness_tbl,X
 ;Save flags in stack - specifically, flag N (bit 7) is relevant
 .C:4cdd  08          PHP
 ;Clear bit 7
@@ -17746,7 +17746,7 @@ restore_bit7:
 ;Otherwise set bit 7
 .C:4ceb  09 80       ORA #$80
 set_result:
-.C:4ced  9D 51 79    STA sound_attr_tbl,X
+.C:4ced  9D 51 79    STA sound_liveness_tbl,X
 .C:4cf0  60          RTS
 ;===========================================
 ; Starts a sound
@@ -18490,7 +18490,7 @@ inc_sound_refcount:
 .C:4ff7  F0 01       BEQ do_increase
 .C:4ff9  60          RTS
 do_increase:
-.C:4ffa  FE 51 79    INC sound_attr_tbl,X
+.C:4ffa  FE 51 79    INC sound_liveness_tbl,X
 .C:4ffd  60          RTS
 ;===========================================
 ; Allocate a voice
@@ -19636,12 +19636,12 @@ rsrc_unlock_or_unassign_costume:
 .C:567b  A2 18       LDX MAX_costume_index
 check_costume:
 ;Check memory attribute of costume
-.C:567d  BD A3 77    LDA costume_mem_attrs,X
+.C:567d  BD A3 77    LDA costume_liveness_tbl,X
 ;Is it unlocked? (bit 7 clear) - if so, continue
 .C:5680  10 06       BPL next_costume
 ;It's locked, unlock it (clear bit 7) and return
 .C:5682  29 7F       AND #$7F
-.C:5684  9D A3 77    STA costume_mem_attrs,X
+.C:5684  9D A3 77    STA costume_liveness_tbl,X
 .C:5687  60          RTS
 next_costume:
 .C:5688  CA          DEX
@@ -19661,7 +19661,7 @@ check_eligibility:
 ;------------------------------------------------
 ;It's loaded (and unlocked), mark it as released
 .C:5697  A9 00       LDA #$00
-.C:5699  9D A3 77    STA costume_mem_attrs,X
+.C:5699  9D A3 77    STA costume_liveness_tbl,X
 ;Save costume index in stack
 .C:569c  8A          TXA
 .C:569d  48          PHA
@@ -20395,7 +20395,7 @@ move_to_back:
 .C:5a01  C9 06       CMP #$06
 .C:5a03  D0 0A       BNE copy_block_data
 ;Is the sound in use? If not, continue
-.C:5a05  B9 51 79    LDA sound_attr_tbl,Y
+.C:5a05  B9 51 79    LDA sound_liveness_tbl,Y
 .C:5a08  F0 05       BEQ copy_block_data
 ;It's a sound possibly in use - reload sound resource pointers
 .C:5a0a  A9 01       LDA #$01
@@ -20648,9 +20648,9 @@ no_releases:
 ; Release the LRU room eligible for eviction
 ;
 ; Arguments: None
-; Reads:	room_attr_tbl
+; Reads:	room_liveness_tbl
 ;			room_rsrc_ptrs
-; Updates:	room_attr_tbl
+; Updates:	room_liveness_tbl
 ;			room_rsrc_ptrs
 
 ;===========================================
@@ -20670,7 +20670,7 @@ check_eligibility:
 .C:5b42  BD F3 77    LDA room_ptr_hi_tbl,X
 .C:5b45  F0 16       BEQ next_room
 ;Is the room resource locked? - if so, continue
-.C:5b47  BD BC 77    LDA room_attr_tbl,X
+.C:5b47  BD BC 77    LDA room_liveness_tbl,X
 .C:5b4a  30 11       BMI next_room
 ;Check if the memory attribute is zero - if so, continue
 .C:5b4c  C9 00       CMP #$00
@@ -20705,7 +20705,7 @@ release_room:
 .C:5b76  9D 2A 78    STA room_ptr_lo_tbl,X
 ;Clear memory attributes
 .C:5b79  A9 00       LDA #$00
-.C:5b7b  9D BC 77    STA room_attr_tbl,X
+.C:5b7b  9D BC 77    STA room_liveness_tbl,X
 ;Restore resource pointer lo as .X
 .C:5b7e  68          PLA
 .C:5b7f  AA          TAX
@@ -20716,9 +20716,9 @@ release_room:
 ; Release one costume eligible for eviction
 ;
 ; Arguments: None
-; Reads:	costume_mem_attrs
+; Reads:	costume_liveness_tbl
 ;			costume_rsrc_ptrs
-; Updates:	costume_mem_attrs
+; Updates:	costume_liveness_tbl
 ;			costume_rsrc_ptrs
 ;===========================================
 MAX_costume_index = #$18
@@ -20734,7 +20734,7 @@ check_eligibility:
 .C:5b8e  CD 49 71    CMP current_room
 .C:5b91  F0 1E       BEQ next_costume
 ;Check if the memory attributes are zero - if not, continue
-.C:5b93  BD A3 77    LDA costume_mem_attrs,X
+.C:5b93  BD A3 77    LDA costume_liveness_tbl,X
 .C:5b96  D0 19       BNE next_costume
 ;------------------
 ;Fetch the pointer to the resource into .A/.Y
@@ -20748,7 +20748,7 @@ check_eligibility:
 .C:5ba2  9D 7A 78    STA costume_ptr_lo_tbl,X
 .C:5ba5  9D 61 78    STA costume_ptr_hi_tbl,X
 ;Clear memory attributes
-.C:5ba8  9D A3 77    STA costume_mem_attrs,X
+.C:5ba8  9D A3 77    STA costume_liveness_tbl,X
 ;Restore resource pointer lo as .X
 .C:5bab  68          PLA
 .C:5bac  AA          TAX
@@ -20764,9 +20764,9 @@ next_costume:
 ; Release all sounds eligible for eviction
 ;
 ; Arguments: None
-; Reads:	sound_attr_tbl
+; Reads:	sound_liveness_tbl
 ;			sound_rsrc_ptrs
-; Updates:	sound_attr_tbl
+; Updates:	sound_liveness_tbl
 ;			sound_rsrc_ptrs
 ;===========================================
 SOUND_MAX_INDEX = #$45
@@ -20776,7 +20776,7 @@ release_evictable_sounds:
 check_eligibility:
 ;Check the memory attributes
 ;If non-zero, continue with next sound
-.C:5bb7  BD 51 79    LDA sound_attr_tbl,X
+.C:5bb7  BD 51 79    LDA sound_liveness_tbl,X
 .C:5bba  D0 2A       BNE next_sound
 ;Check if the sound is loaded into memory - if not, continue
 .C:5bbc  BD C5 78    LDA sound_ptr_hi_tbl,X
@@ -20820,9 +20820,9 @@ next_sound:
 ; Release all scripts eligible for eviction
 ;
 ; Arguments: None
-; Reads:	script_mem_attrs
+; Reads:	script_liveness_tbl
 ;			script_rsrc_ptrs
-; Updates:	script_mem_attrs
+; Updates:	script_liveness_tbl
 ;			script_rsrc_ptrs
 ;===========================================
 SCRIPT_MAX_INDEX = #$9F
@@ -20832,7 +20832,7 @@ rsrc_release_evictable_scripts:
 check_eligibility:
 ;Check the memory attributes
 ;If non-zero, continue with next script
-.C:5bec  BD D7 7A    LDA script_mem_attrs,X
+.C:5bec  BD D7 7A    LDA script_liveness_tbl,X
 .C:5bef  D0 1E       BNE next_script
 ;Check if the script is loaded into memory - if not, continue
 .C:5bf1  BD 97 79    LDA script_ptr_hi_tbl,X
@@ -21390,7 +21390,7 @@ check_script_resource_index:
 ;We found a matching active script
 ;Decrement script's memory reference count
 .C:5e75  BE 29 71    LDX task_script_idx_tbl,Y
-.C:5e78  DE D7 7A    DEC script_mem_attrs,X
+.C:5e78  DE D7 7A    DEC script_liveness_tbl,X
 ;Clear script resource
 .C:5e7b  A9 00       LDA #$00
 .C:5e7d  99 29 71    STA task_script_idx_tbl,Y
@@ -21426,7 +21426,7 @@ launch_global_script:
 script_in_memory:
 ;Increment script's memory refcount
 .C:5e9d  A6 15       LDX script_rsrc_index
-.C:5e9f  FE D7 7A    INC script_mem_attrs,X
+.C:5e9f  FE D7 7A    INC script_liveness_tbl,X
 ;Find an available script slot
 .C:5ea2  20 C0 5E    JSR find_free_task
 ;Store resource index for the new script
@@ -23340,7 +23340,7 @@ destination_variable = $5f76
 .C:6568  20 98 5F    JSR script_load_operand_bit7
 ;Check bits 6-0 (the sound refcount) - if they are nonzero, the sound is running
 .C:656b  AA          TAX
-.C:656c  BD 51 79    LDA sound_attr_tbl,X
+.C:656c  BD 51 79    LDA sound_liveness_tbl,X
 .C:656f  29 7F       AND #$7F
 ;Set the result into the variable
 .C:6571  AE 76 5F    LDX destination_variable
@@ -23436,13 +23436,13 @@ sound_code_ptr_hi = $6622
 .C:65e4  AA          TAX
 play_music:
 .C:65e5  8E A3 FE    STX selected_music_idx
-.C:65e8  FE 51 79    INC sound_attr_tbl,X
+.C:65e8  FE 51 79    INC sound_liveness_tbl,X
 ;Load music index from operand
 .C:65eb  20 98 5F    JSR script_load_operand_bit7
 .C:65ee  48          PHA
 .C:65ef  20 E6 39    JSR rsrc_cache_sound
 .C:65f2  AE A3 FE    LDX selected_music_idx
-.C:65f5  DE 51 79    DEC sound_attr_tbl,X
+.C:65f5  DE 51 79    DEC sound_liveness_tbl,X
 ;Setup music playback pointers
 .C:65f8  BD C5 78    LDA sound_ptr_hi_tbl,X
 .C:65fb  8D A1 FE    STA music_to_start_ptr_hi
@@ -24366,9 +24366,9 @@ set_variable:
 ;===========================================
 .C:6a5b  20 14 5E    JSR script_read_byte
 .C:6a5e  AA          TAX
-.C:6a5f  BD 51 79    LDA sound_attr_tbl,X		
+.C:6a5f  BD 51 79    LDA sound_liveness_tbl,X		
 .C:6a62  09 80       ORA #$80
-.C:6a64  9D 51 79    STA sound_attr_tbl,X
+.C:6a64  9D 51 79    STA sound_liveness_tbl,X
 .C:6a67  60          RTS
 ;===========================================
 ;Opcode #D3 - unlock sound
@@ -24376,63 +24376,63 @@ set_variable:
 ;===========================================
 .C:6a68  20 14 5E    JSR script_read_byte
 .C:6a6b  AA          TAX
-.C:6a6c  BD 51 79    LDA sound_attr_tbl,X		
+.C:6a6c  BD 51 79    LDA sound_liveness_tbl,X		
 .C:6a6f  29 7F       AND #$7F
-.C:6a71  9D 51 79    STA sound_attr_tbl,X
+.C:6a71  9D 51 79    STA sound_liveness_tbl,X
 .C:6a74  60          RTS
 ;===========================================
 ;Opcode #33 - lock script
 ;===========================================
 .C:6a75  20 14 5E    JSR script_read_byte
 .C:6a78  AA          TAX
-.C:6a79  BD D7 7A    LDA script_mem_attrs,X
+.C:6a79  BD D7 7A    LDA script_liveness_tbl,X
 .C:6a7c  09 80       ORA #$80
-.C:6a7e  9D D7 7A    STA script_mem_attrs,X
+.C:6a7e  9D D7 7A    STA script_liveness_tbl,X
 .C:6a81  60          RTS
 ;===========================================
 ;Opcode #B3 - unlock script
 ;===========================================
 .C:6a82  20 14 5E    JSR script_read_byte
 .C:6a85  AA          TAX
-.C:6a86  BD D7 7A    LDA script_mem_attrs,X
+.C:6a86  BD D7 7A    LDA script_liveness_tbl,X
 .C:6a89  29 7F       AND #$7F
-.C:6a8b  9D D7 7A    STA script_mem_attrs,X
+.C:6a8b  9D D7 7A    STA script_liveness_tbl,X
 .C:6a8e  60          RTS
 ;===========================================
 ;Opcode #13 - lock costume
 ;===========================================
 .C:6a8f  20 14 5E    JSR script_read_byte
 .C:6a92  AA          TAX
-.C:6a93  BD A3 77    LDA costume_mem_attrs,X
+.C:6a93  BD A3 77    LDA costume_liveness_tbl,X
 .C:6a96  09 80       ORA #$80
-.C:6a98  9D A3 77    STA costume_mem_attrs,X
+.C:6a98  9D A3 77    STA costume_liveness_tbl,X
 .C:6a9b  60          RTS
 ;===========================================
 ;Opcode #93 - unlock costume
 ;===========================================
 .C:6a9c  20 14 5E    JSR script_read_byte
 .C:6a9f  AA          TAX
-.C:6aa0  BD A3 77    LDA costume_mem_attrs,X
+.C:6aa0  BD A3 77    LDA costume_liveness_tbl,X
 .C:6aa3  29 7F       AND #$7F
-.C:6aa5  9D A3 77    STA costume_mem_attrs,X
+.C:6aa5  9D A3 77    STA costume_liveness_tbl,X
 .C:6aa8  60          RTS
 ;===========================================
 ;Opcode #4D - lock room
 ;===========================================
 .C:6aa9  20 14 5E    JSR script_read_byte
 .C:6aac  AA          TAX
-.C:6aad  BD BC 77    LDA room_attr_tbl,X
+.C:6aad  BD BC 77    LDA room_liveness_tbl,X
 .C:6ab0  09 80       ORA #$80
-.C:6ab2  9D BC 77    STA room_attr_tbl,X
+.C:6ab2  9D BC 77    STA room_liveness_tbl,X
 .C:6ab5  60          RTS
 ;===========================================
 ;Opcode #CD - unlock room
 ;===========================================
 .C:6ab6  20 14 5E    JSR script_read_byte
 .C:6ab9  AA          TAX
-.C:6aba  BD BC 77    LDA room_attr_tbl,X
+.C:6aba  BD BC 77    LDA room_liveness_tbl,X
 .C:6abd  29 7F       AND #$7F
-.C:6abf  9D BC 77    STA room_attr_tbl,X
+.C:6abf  9D BC 77    STA room_liveness_tbl,X
 .C:6ac2  60          RTS
 ;===========================================
 ;Opcode #98 - restart game

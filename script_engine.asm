@@ -491,12 +491,12 @@ Arguments:
 Global Inputs:
 	task_script_idx_tbl[*]  Per-task bound script index
 	task_state_tbl[*]       Per-task execution state
-	script_mem_attrs[*]     Per-script memory refcount (read before decrement)
+	script_liveness_tbl[*]     Per-script memory refcount (read before decrement)
 
 Global Outputs:
 	task_script_idx_tbl[Y]  Cleared to 0 on deactivation
 	task_state_tbl[Y]       Set to TASK_STATE_INACTIVE on deactivation
-	script_mem_attrs[A]     Decremented on deactivation
+	script_liveness_tbl[A]     Decremented on deactivation
 
 Vars/State:
 	Uses Y as descending loop index (starts at TASK_MAX_INDEX, stops before $00)
@@ -506,7 +506,7 @@ Description:
 	- Initialize Y to the highest task index.
 	- Compare A against task_script_idx_tbl[Y].
 	- If equal and task_state_tbl[Y] != INACTIVE:
-		• Decrement script_mem_attrs[ task_script_idx_tbl[Y] ].
+		• Decrement script_liveness_tbl[ task_script_idx_tbl[Y] ].
 		• Clear task_script_idx_tbl[Y].
 		• Write INACTIVE to task_state_tbl[Y], then return.
 	- Otherwise decrement Y and continue until Y becomes $00, then return.
@@ -530,7 +530,7 @@ scan_tasks_for_resource:
 		// Deactivate task, decrement script refcount
         // ------------------------------------------------------------
         ldx     task_script_idx_tbl,y           // X := script index of matching active task
-        dec     script_mem_attrs,x              // refcount[script]--
+        dec     script_liveness_tbl,x              // refcount[script]--
 
         lda     #$00                            // A := 0
         sta     task_script_idx_tbl,y           // task[Y].script_idx := 0 (unbind)
@@ -564,7 +564,7 @@ Global Inputs:
 
 Global Outputs:
     script_idx             latched copy of requested script index
-    script_mem_attrs[*]    increment reference count for this script
+    script_liveness_tbl[*]    increment reference count for this script
     task_script_idx_tbl[*] bind task to script index
     task_pc_ofs_lo_tbl[*]  reset task relative PC (lo = 0)
     task_pc_ofs_hi_tbl[*]  reset task relative PC (hi = 0)
@@ -609,7 +609,7 @@ script_ready:
         // Bump residency refcount for this script resource
         // ------------------------------------------------------------
         ldx     script_idx                      // X := script index
-        inc     script_mem_attrs,x              // refcount++
+        inc     script_liveness_tbl,x              // refcount++
 
         // ------------------------------------------------------------
         // Acquire a free execution task

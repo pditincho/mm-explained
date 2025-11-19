@@ -927,7 +927,7 @@ bind_actor_to_costume_and_init:
 		// Loads the graphics and metadata for this costume.  
 		// Clears any stale resource pointer afterward.  
 		// ------------------------------------------------------------  
-		jsr     rsrc_ensure_costume_resident     // ensure loaded  
+		jsr     rsrc_cache_costume     // ensure loaded  
 		ldx     active_costume                   // restore costume index  
 		lda     #$00  
 		sta     active_costume_rsrc_lo,x         // clear low byte of ptr  
@@ -1647,3 +1647,140 @@ set_offscreen_and_return:
 write_visibility_and_rts:
 		sta     actor_visible,x               // actor_visible[X] := A
 		rts                                   // return
+
+/*
+================================================================================
+  rsrc_unlock_or_unassign_costume
+================================================================================
+Summary:
+	Unlock one locked costume.	
+	If no costumes were locked, detach one of the kids costumes.
+   
+	This is done in two phases:
+	
+	-Phase 1 scans all costumes from highest index down and unlocks at most one.	
+	-If no locked costumes found, Phase 2 takes place.
+	It scans all kids costumes until it finds a loaded costume that is not the current kid.
+	Once found, it detaches it from its actor, resets default destination coords, 
+	and “parks” the costume in a holding room. If no candidate found, the code hangs.
+	
+Uses / Globals:
+	costume_mem_attrs[X]    	Attribute byte; bit7=1 ⇒ locked, bit7=0 ⇒ unlocked.
+	costume_ptr_hi_tbl[X]  		Non-zero ⇒ resource resident in memory.
+	current_kid_idx      		Index of current kid; never detached.
+	costume_dest_x[X]  			Set to COSTUME_DFLT_X_DEST on unassignment.
+	costume_dest_y[X]  			Set to COSTUME_DFLT_Y_DEST on unassignment.
+	room_for_costume[X]  		Set to COSTUME_HOLDING_ROOM on unassignment.
+
+Description:
+	1) Unlock pass:
+		-Scan all costumes downward, using X as index.
+		-If costume_mem_attrs[X].bit7 == 1 → clear with AND #$7F and exit
+
+	2) Unassignment pass (only if no locks found):
+		-Scan all kids costumes downward, using X as index (X = 8..1)
+		-Skip if X == current_kid_idx, or not resident (ptr.hi==0)
+		-On hit: 
+			-costume_mem_attrs := 0
+			-detach_actor_from_costume
+			-(dest_x,dest_y) := (COSTUME_DFLT_X_DEST,COSTUME_DFLT_Y_DEST)
+			-room_for_costume[X] := COSTUME_HOLDING_ROOM
+			-exit
+	3) Failure:
+		-diag_code := #$05
+		-hang
+================================================================================
+*/
+* = $567B
+rsrc_unlock_or_unassign_costume:
+		// Start at the highest costume index; scan downward one-by-one
+        ldx #COSTUME_MAX_INDEX            
+
+scan_locked_costumes:
+        // ------------------------------------------------------------
+        // Costume unlocked? If so, skip
+		//
+        //   	bit7 = 1 → locked (N=1)
+		//		bit7 = 0 → unlocked (N=0)
+        // ------------------------------------------------------------
+        lda costume_mem_attrs,x
+        bpl advance_lock_scan                 
+
+        // ------------------------------------------------------------
+        // Costume locked - unlock it and return
+        // ------------------------------------------------------------
+        and #RSRC_CLEAR_LOCK_MASK                         
+        sta costume_mem_attrs,x          
+        rts                              
+
+advance_lock_scan:
+        dex
+        bne scan_locked_costumes        // continue scan while X != 0 (note: index 0 is not checked)
+
+        // ------------------------------------------------------------		
+        // No locked costumes found - switch to detachment pass over the kids' costumes
+        // ------------------------------------------------------------
+        ldx #$08
+scan_for_evict:
+        // ------------------------------------------------------------
+        // Costume is the active kid? Then don't detach it
+        // ------------------------------------------------------------
+        cpx current_kid_idx
+        beq advance_costume_evict_scan
+
+        // ------------------------------------------------------------
+        // Costume resident in memory?
+        // costume_ptr_hi_tbl[X] == 0 ⇒ not resident → skip
+        // ------------------------------------------------------------
+        lda costume_ptr_hi_tbl,x
+        beq advance_costume_evict_scan
+
+		// ------------------------------------------------------------
+		// Costume resident - Detach it from its actor
+		// - Clear refcount before
+		// ------------------------------------------------------------
+        lda #$00
+        sta costume_mem_attrs,x         // clear refcount
+
+        // Preserve loop index
+        txa                               
+        pha                               
+
+		// Detach actor from costume
+        jsr detach_actor_from_costume               
+
+        // Restore loop index
+        pla                               
+        tax                               
+
+        // ------------------------------------------------------------
+        // Reset default destination for costume
+        // ------------------------------------------------------------
+        lda #COSTUME_DFLT_X_DEST        // default X destination
+        sta costume_dest_x,x
+        lda #COSTUME_DFLT_Y_DEST        // default Y destination
+        sta costume_dest_y,x
+
+        // ------------------------------------------------------------
+        // Park the costume in the holding room and return.
+        // This de-associates it from the active room until explicitly reloaded.
+        // ------------------------------------------------------------
+        lda #COSTUME_HOLDING_ROOM       
+        sta room_for_costume,x
+        rts                               
+
+advance_costume_evict_scan:
+        dex
+        bne scan_for_evict            	// more candidates (X != 0) → continue first-8 scan
+
+		// ------------------------------------------------------------
+		// No eligible costume among kids - hangup
+		// ------------------------------------------------------------
+        lda #$05
+        sta debug_error_code             
+
+        ldy #MAP_IO_IN                   
+        sty cpu_port      
+costume_evict_hangup:
+        sta vic_border_color_reg      	// set border color
+        jmp costume_evict_hangup        // loop forever

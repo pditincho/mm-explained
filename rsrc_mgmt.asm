@@ -1083,13 +1083,13 @@ Summary:
 	mem_release is called.
 
 Reads:
-	room_ptr_lo_tbl[X]       Room resource pointer (lo).
-	room_ptr_hi_tbl[X]       Room resource pointer (hi); nonzero ⇒ loaded.
-	room_mem_attrs[X]        Per-room attribute/age score; bit7=1 ⇒ locked.
+	room_ptr_lo_tbl[X]   	Room resource pointer (lo).
+	room_ptr_hi_tbl[X]     	Room resource pointer (hi); nonzero ⇒ loaded.
+	room_attr_tbl[X]       	Per-room attribute/age score; bit7=1 ⇒ locked.
 
 Updates:
-	room_ptr_*_tbl[X]        Cleared for the evicted room to avoid dangling refs.
-	room_mem_attrs[X]        Cleared for the evicted room.
+	room_ptr_*_tbl[X]       Cleared for the evicted room to avoid dangling refs.
+	room_attr_tbl[X]        Cleared for the evicted room.
 
 Description:
 	- Iterate X := ROOM_MAX_INDEX … 1 (index 0 is not considered).
@@ -1116,7 +1116,7 @@ scan_room:
         beq advance_room
 
 		// Room locked? If so, skip
-        lda room_mem_attrs,x              
+        lda room_attr_tbl,x              
         bmi advance_room                  // locked (bit7=1) → ineligible
 
         // Room has nonzero age? If not, skip
@@ -1166,7 +1166,7 @@ evict_room_candidate:
 
         // Clear room age
         lda #$00
-        sta room_mem_attrs,x
+        sta room_attr_tbl,x
 
         // Recover saved ptr.lo and place it in X for mem_release
         pla                               
@@ -1703,7 +1703,7 @@ function rsrc_evict_one_by_priority() -> bool:
         // Otherwise, try next priority class
 
 // Try to evict exactly one room, picking the “oldest” eligible room.
-// Uses room_mem_attrs as an age/lock field:
+// Uses room_attr_tbl as an age/lock field:
 //   - bit7 set   ⇒ locked, never evict
 //   - 0 value    ⇒ not evictable
 //   - larger val ⇒ older/staler candidate
@@ -1714,7 +1714,7 @@ function rsrc_release_one_evictable_room():
     // Scan from highest to lowest index; index 0 is ignored
     for roomIndex from ROOM_MAX_INDEX down to 1:
         ptr = room_ptr[roomIndex]
-        attrs = room_mem_attrs[roomIndex]
+        attrs = room_attr_tbl[roomIndex]
 
         // Not resident or not eligible
         if ptr == NULL:
@@ -1736,7 +1736,7 @@ function rsrc_release_one_evictable_room():
     // Evict chosen room
     ptr = room_ptr[bestRoomIndex]
     room_ptr[bestRoomIndex]      = NULL
-    room_mem_attrs[bestRoomIndex] = 0
+    room_attr_tbl[bestRoomIndex] = 0
 
     mem_release(ptr)
     // mem_release should set rsrc_released_flag = true

@@ -590,10 +590,10 @@ decode_object_gfx:
 		clc                                 
 		lda     room_rsrc_base            // A := room_rsrc_base.lo
 		adc     obj_gfx_ptr_tbl,y         // A := lo(base) + lo(offset)
-		sta     decomp_src_ptr           // decomp_src_ptr.lo := result
+		sta     decomp_src_ptr_lo           // decomp_src_ptr.lo := result
 		lda     room_rsrc_base + 1            // A := room_rsrc_base.hi
 		adc     obj_gfx_ptr_tbl+1,y       // A := hi(base) + hi(offset) + C
-		sta     decomp_src_ptr + 1           // decomp_src_ptr.hi := result
+		sta     decomp_src_ptr_hi           // decomp_src_ptr.hi := result
 
         // ------------------------------------------------------------
         // Compute left trim: max(0, viewport_left_col - obj_left_col)           

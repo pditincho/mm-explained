@@ -178,10 +178,10 @@ render_room_view:
         bne     refresh_room_resources_and_snapshots // mismatch → resource stale/missing → rebuild
 
         lda     room_gfx_layers_lo            // verify published gfx-layers pointer (low) matches active_ptr.low
-        cmp     room_gfx_layers_active_ptr
+        cmp     room_gfx_layers_active_ptr_lo
         bne     refresh_room_resources_and_snapshots // mismatch → layers resource not the current one → rebuild
         lda     room_gfx_layers_hi            // verify published gfx-layers pointer (high) matches active_ptr.high
-        cmp     room_gfx_layers_active_ptr + 1
+        cmp     room_gfx_layers_active_ptr_hi
         bne     refresh_room_resources_and_snapshots // mismatch → layers resource not the current one → rebuild
 
 		// Resources are resident, proceed to check scroll flag
@@ -394,9 +394,9 @@ decode_visible_window:
         sta     dict4_base_ptr + 1
 
         lda     (tile_src_tbl_lo),y // load per-column src pointer (lo) from snapshot[Y]
-        sta     decomp_src_ptr
+        sta     decomp_src_ptr_lo
         lda     (tile_src_tbl_hi),y // ...src pointer (hi)
-        sta     decomp_src_ptr + 1
+        sta     decomp_src_ptr_hi
 
         lda     (tile_run_symbol_tbl),y   // per-column run symbol (byte to emit in run mode)
         sta     decomp_run_symbol                   // seed decoder’s repeat value
@@ -418,9 +418,9 @@ decode_visible_window:
         sta     dict4_base_ptr + 1
 
         lda     (color_src_tbl_lo),y   // load per-column src pointer (low) from snapshot[Y]
-        sta     decomp_src_ptr
+        sta     decomp_src_ptr_lo
         lda     (color_src_tbl_hi),y   // ...and high byte of src pointer
-        sta     decomp_src_ptr + 1
+        sta     decomp_src_ptr_hi
 
         lda     (color_run_symbol_tbl),y   // per-column run symbol for COLOR (byte repeated in run mode)
         sta     decomp_run_symbol                   // seed decoder’s repeat value
@@ -442,9 +442,9 @@ decode_visible_window:
         sta     dict4_base_ptr + 1
 
         lda     (mask_src_tbl_lo),y   // per-column src pointer (low) from snapshot[Y]
-        sta     decomp_src_ptr
+        sta     decomp_src_ptr_lo
         lda     (mask_src_tbl_hi),y   // ...src pointer (high)
-        sta     decomp_src_ptr + 1
+        sta     decomp_src_ptr_hi
 
         lda     (mask_run_symbol_tbl),y // per-column run symbol for MASK
         sta     decomp_run_symbol					// seed decoder’s repeat value

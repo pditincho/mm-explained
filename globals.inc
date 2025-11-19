@@ -293,7 +293,7 @@ Values observed
 .label global_lights_state = $FEAB
 .label engine_vars = $FEAC
 
-.label room_for_character = $FEFC
+.label room_for_costume = $FEFC
 
 
 .label active_side_id = $fe9c //This represents the desired Side ID (the ID that identifies each of the game's disk sides)

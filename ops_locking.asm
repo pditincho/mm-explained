@@ -54,102 +54,102 @@ Limitations
 op_lock_sound:
 		// ------------------------------------------------------------
 		// Opcode #$53  Lock sound
-		// Sets bit7 of sound_attr_tbl[index] to lock the resource.
+		// Sets bit7 of sound_liveness_tbl[index] to lock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte  	// A := sound index
 		tax                         // X := index
-		lda     sound_attr_tbl,x   // A := attrs[index]
+		lda     sound_liveness_tbl,x   // A := attrs[index]
 		ora     #MASK_BIT7          // set bit7
-		sta     sound_attr_tbl,x   // commit lock
+		sta     sound_liveness_tbl,x   // commit lock
 		rts                           
 
 * = $6A68
 op_unlock_sound:
 		// ------------------------------------------------------------
 		// Opcode #$D3  Unlock sound
-		// Clears bit7 of sound_attr_tbl[index] to unlock the resource.
+		// Clears bit7 of sound_liveness_tbl[index] to unlock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte	// A := sound index
 		tax                         // X := index
-		lda     sound_attr_tbl,x   // A := attrs[index]
+		lda     sound_liveness_tbl,x   // A := attrs[index]
 		and     #MASK_CLEAR_BIT7    // clear bit7
-		sta     sound_attr_tbl,x   // commit unlock
+		sta     sound_liveness_tbl,x   // commit unlock
 		rts                         
 
 * = $6A75
 op_lock_script:
 		// ------------------------------------------------------------
 		// Opcode #$33  Lock script
-		// Sets bit7 of script_mem_attrs[index] to lock the resource.
+		// Sets bit7 of script_liveness_tbl[index] to lock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte	// A := script index
 		tax                         // X := index
-		lda     script_mem_attrs,x  // A := attrs[index]
+		lda     script_liveness_tbl,x  // A := attrs[index]
 		ora     #MASK_BIT7          // set bit7
-		sta     script_mem_attrs,x  // commit lock
+		sta     script_liveness_tbl,x  // commit lock
 		rts                         
 
 * = $6A82
 op_unlock_script:
 		// ------------------------------------------------------------
 		// Opcode #$B3  Unlock script
-		// Clears bit7 of script_mem_attrs[index] to unlock the resource.
+		// Clears bit7 of script_liveness_tbl[index] to unlock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte	// A := script index
 		tax                         // X := index
-		lda     script_mem_attrs,x  // A := attrs[index]
+		lda     script_liveness_tbl,x  // A := attrs[index]
 		and     #MASK_CLEAR_BIT7    // clear bit7
-		sta     script_mem_attrs,x  // commit unlock
+		sta     script_liveness_tbl,x  // commit unlock
 		rts                         
 
 * = $6A8F
 op_lock_costume:
 		// ------------------------------------------------------------
 		// Opcode #$13  Lock costume
-		// Sets bit7 of costume_mem_attrs[index] to lock the resource.
+		// Sets bit7 of costume_liveness_tbl[index] to lock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte    // A := costume index
 		tax                         // X := index
-		lda     costume_mem_attrs,x // A := attrs[index]
+		lda     costume_liveness_tbl,x // A := attrs[index]
 		ora     #MASK_BIT7          // set bit7
-		sta     costume_mem_attrs,x // commit lock
+		sta     costume_liveness_tbl,x // commit lock
 		rts                         
 
 * = $6A9C
 op_unlock_costume:
 		// ------------------------------------------------------------
 		// Opcode #$93  Unlock costume
-		// Clears bit7 of costume_mem_attrs[index] to unlock the resource.
+		// Clears bit7 of costume_liveness_tbl[index] to unlock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte		// A := costume index
 		tax                             // X := index
-		lda     costume_mem_attrs,x     // A := attrs[index]
+		lda     costume_liveness_tbl,x     // A := attrs[index]
 		and     #MASK_CLEAR_BIT7        // clear bit7
-		sta     costume_mem_attrs,x     // commit unlock
+		sta     costume_liveness_tbl,x     // commit unlock
 		rts                             
 
 * = $6AA9
 op_lock_room:
 		// ------------------------------------------------------------
 		// Opcode #$4D  Lock room
-		// Sets bit7 of room_mem_attrs[index] to lock the resource.
+		// Sets bit7 of room_liveness_tbl[index] to lock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte	// A := room index
 		tax                         // X := index
-		lda     room_mem_attrs,x    // A := attrs[index]
+		lda     room_liveness_tbl,x    // A := attrs[index]
 		ora     #MASK_BIT7          // set bit7
-		sta     room_mem_attrs,x    // commit lock
+		sta     room_liveness_tbl,x    // commit lock
 		rts                         
 
 * = $6AB6
 op_unlock_room:
 		// ------------------------------------------------------------
 		// Opcode #$CD  Unlock room
-		// Clears bit7 of room_mem_attrs[index] to unlock the resource.
+		// Clears bit7 of room_liveness_tbl[index] to unlock the resource.
 		// ------------------------------------------------------------
 		jsr     script_read_byte    // A := room index
 		tax                         // X := index
-		lda     room_mem_attrs,x    // A := attrs[index]
+		lda     room_liveness_tbl,x    // A := attrs[index]
 		and     #MASK_CLEAR_BIT7    // clear bit7
-		sta     room_mem_attrs,x    // commit unlock
+		sta     room_liveness_tbl,x    // commit unlock
 		rts                         

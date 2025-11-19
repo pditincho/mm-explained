@@ -2,6 +2,7 @@
 #import "globals.inc"
 #import "constants.inc"
 #import "actor_animation.asm"
+#import "voice_primitives.asm"
 
 * = $25EA
 unused_routine_1:

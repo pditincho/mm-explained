@@ -1,3 +1,15 @@
+===========================================================
+Resource liveness (locking, refcount, age)
+===========================================================
+Encodes:
+ - Lock status (resource cannot be evicted while locked).
+ - Reference count/usage flags (resource is actively in use).
+ - For rooms only: age / staleness metric used by room eviction (larger = older).
+bit:  7   6   5   4   3   2   1   0
+      |   \--- refcount/age    ---/ 
+      |
+      +-- set = LOCKED, clear = UNLOCKED
+
 ================================================================================
  Room resource layout
 ================================================================================

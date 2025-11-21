@@ -8,14 +8,8 @@
       - pause_game:   Enters paused mode, switches cursor to a “snail” shape,
                       and forces cursor color to white for clear visual feedback.
       - unpause_game: Leaves paused mode and restores the normal cursor shape.
- 
- 
-  Interfaces & Globals:
-    Inputs:    (none)
-    Outputs:   game_paused_flag              // 1 = paused, 0 = running
-               sprite_shape_cursor      // cursor sprite shape selector
-               cursor_sprite_color      // cursor sprite color (set to white on pause)
- ==============================================================================
+  
+==============================================================================
 */
 #importonce
 #import "globals.inc"
@@ -52,7 +46,7 @@ pause_game:
 
         // Set paused flag (game_paused_flag := 1).
         // NOTE: We intentionally reuse A=$01 below for the cursor color write.
-        lda #$01
+        lda #TRUE
         sta game_paused_flag
 
         // Force cursor color to white ($01) while paused for clarity/contrast.
@@ -86,6 +80,6 @@ unpause_game:
         sta sprite_shape_cursor
 
         // Clear paused flag (game_paused_flag := 0). Cursor color left as-is.
-        lda #$00
+        lda #FALSE
         sta game_paused_flag
         rts

@@ -395,7 +395,7 @@ op_restart_game:
         // ------------------------------------------------------------
         jsr     prepare_video_for_new_room
         ldx     #ROOM_IDX_START
-        jsr     load_room
+        jsr     switch_to_room
 
         // ------------------------------------------------------------
         // Reset stack pointer to #$FF

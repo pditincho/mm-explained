@@ -228,7 +228,7 @@ op_exit_cutscene:
 		sta     control_mode                     // restore control mode
 		jsr     prepare_video_for_new_room
 		ldx     saved_room_id
-		jsr     load_room
+		jsr     switch_to_room
 		jsr     resume_suspended_tasks
 		jmp     exit_return_cutscene
 

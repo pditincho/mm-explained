@@ -16,7 +16,7 @@ Room loaders
 	* Load room 
 		  Reads room index and compares it with current_room.
 		  If it’s the same, it skips the heavy load.
-		  Otherwise it prepares the display, calls load_room, refreshes script
+		  Otherwise it prepares the display, calls switch_to_room, refreshes script
 		  relocation tables, and resets cam_current_pos to its default.
 
 	* Load room with ego 
@@ -124,7 +124,7 @@ op_load_room:
 		// ------------------------------------------------------------
 		jsr     prepare_video_for_new_room  // prepare display for transition
 		ldx     room_idx                    // X := room index
-		jsr     load_room                   // load room resources
+		jsr     switch_to_room                   // load room resources
 
 		// ------------------------------------------------------------
 		// Finalize after room load or skip
@@ -212,11 +212,11 @@ start_load_path:
 		// ------------------------------------------------------------
 		// Load destination room and prepare entry-object lookup
 		//
-		// X := room index for loader; load_room updates current_room.
+		// X := room index for loader; switch_to_room updates current_room.
 		// Restore entry object id before lookup.
 		// ------------------------------------------------------------
         tax                                     // X := room index (for loader dispatch)
-        jsr     load_room                       // Load destination room resources; updates current_room
+        jsr     switch_to_room                       // Load destination room resources; updates current_room
 
         pla                                     // Pop saved entry object index from stack → A
         sta     obj_idx_lo                    	// obj_idx_lo := entry object id		
@@ -344,7 +344,7 @@ op_load_room_for_subresource:
 		// ------------------------------------------------------------
 		jsr     script_load_operand_bit7       		// A := room index 
 		tax                                     	// X := room index
-		jsr     room_ensure_resident   				// load room into cache
+		jsr     cache_room   				// load room into cache
 		jsr     refresh_script_addresses_if_moved   // adjust relocated script pointers
 		rts                                     
 /*

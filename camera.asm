@@ -264,7 +264,7 @@ update_visible_span:
  *   A, X, Y               Clobbered.
  *   Flags                 Updated per last loads/stores/branches (no contract).
  *   Globals updated       cam_follow_costume_id, cam_mode, cam_current_pos;
- *                         cam_pan_goal (via cam_seek_to); may change current_room (via load_room);
+ *                         cam_pan_goal (via cam_seek_to); may change current_room (via switch_to_room);
  *                         actor_render_flags[0..3] bit0 set for assigned actors.
  *
  * Description:
@@ -311,7 +311,7 @@ switch_to_costume_room:
         jsr     prepare_video_for_new_room      // ready display/IO/memory banking for a room switch
         pla                                     // restore target room index
         tax                                     // loader ABI: room index must be in X
-        jsr     load_room                       // perform the actual room load/switch
+        jsr     switch_to_room                       // perform the actual room load/switch
 
 room_is_current:
         /*---------------------------------------

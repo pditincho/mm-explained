@@ -12607,11 +12607,11 @@ next_costume:
 ;Initialize sprites and sound
 .C:348c  20 E0 33    JSR init_raster_and_sound_state
 ;Load new room's assets
-.C:348f  20 A4 34    JSR room_switch_load_assets
+.C:348f  20 A4 34    JSR load_room_gfx_and_objects
 ;Execute the room's entry script
 .C:3492  20 7D 3A    JSR execute_room_entry_script
 ;Load the room's sounds and scripts
-.C:3495  20 D5 35    JSR room_load_sounds_and_scripts
+.C:3495  20 D5 35    JSR load_room_sounds_and_scripts
 ;Load actors in the room
 .C:3498  20 81 38    JSR load_actors_in_room
 ;As we just loaded a new room, signal that we need to do the "open shutter" effect
@@ -12623,7 +12623,7 @@ next_costume:
 ;===========================================
 ; Set up resources for loading a room's graphics and objects
 ;===========================================
-room_switch_load_assets:
+load_room_gfx_and_objects:
 .C:34a4  AC 49 71    LDY current_room
 .C:34a7  F0 0C       BEQ set_result
 ;----------------------------------------------
@@ -12696,7 +12696,7 @@ set_result:
 .C:3509  9D BC 77    STA room_liveness_tbl,X
 ;---------------------------
 .C:350c  20 32 35    JSR read_room_misc_data		
-.C:350f  20 31 36    JSR room_read_objects		
+.C:350f  20 31 36    JSR load_room_objects		
 .C:3512  20 10 37    JSR read_room_graphics
 .C:3515  20 12 43    JSR setup_room_columns_with_decode_snapshots
 ;----------------------------------------------
@@ -12859,7 +12859,7 @@ sound_counter = $17
 script_counter = $18
 data_start = $19
 
-room_load_sounds_and_scripts:
+load_room_sounds_and_scripts:
 ;Compute the actual data start address (skip the header - 4 bytes)
 .C:35d5  AE 49 71    LDX current_room
 .C:35d8  BD 2A 78    LDA room_ptr_lo_tbl,X
@@ -12951,7 +12951,7 @@ read_ptr_hi = $16
 total_objects_copy = $1d
 object_counter = $1b
 
-room_read_objects:
+load_room_objects:
 ;Get pointer to current room's resource
 .C:3631  AE 49 71    LDX current_room
 .C:3634  BD F3 77    LDA room_ptr_hi_tbl,X

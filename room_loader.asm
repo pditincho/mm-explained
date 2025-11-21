@@ -89,6 +89,37 @@ Invariants and conventions:
 	are reserved and the first actual object entry starts at pair index 2.
 	- Compressed graphic layers share a small dict-4 stream format with a
 	4-byte symbol dictionary stored at the beginning of each stream.
+
+================================================================================
+  Techniques used in this module
+================================================================================
+
+	- Residency tracking, locking, and approximate LRU:
+	  - Per-room liveness byte: bit7 = lock flag, bits0..6 = age counter.
+	  - cache_room implements a two-path loader:
+		  • Fast path: if room already resident, skip disk I/O and only
+			update age to “1”.
+		  • Cold path: prime disk chain, load the room, publish its base
+			pointer, then set age to “1”.
+	  - load_room_gfx_and_objects:
+		  • Ages the outgoing room once on switch.
+		  • Marks the active room as “most recently used” (age = 0).
+		  • Performs a scan over all resident rooms to increment non-zero
+			ages, yielding a simple, bounded-cost LRU-like ordering while
+			respecting locked rooms.
+
+	- Compressed graphics streams with shared dict-4 decoder:
+	  - All compressed layers (tile matrix, color, mask) begin with a
+		4-byte symbol dictionary; load_room_metadata copies these into
+		tile_dict, color_dict, and mask_dict.
+	  - read_room_graphics:
+		  • Uses a dictionary-based “dict4” stream decoder that reads from a
+			source pointer (decomp_src_ptr) and writes sequentially into a
+			destination pointer, driven by a byte countdown.
+		  • Separates room-resident, header-prefixed “resource blocks”
+			(e.g., mask bit-patterns) from the raw compressed streams to
+			keep heap objects self-describing.
+
 ================================================================================
 */
 
@@ -1728,3 +1759,471 @@ next_costume_2:
         cpx     #COSTUME_MAX_INDEX + 1
         bne     check_costume_presence
         rts
+
+/*
+function switch_to_room(targetRoomIndex):
+    // Save target room index across teardown
+    savedRoomIndex = targetRoomIndex
+
+    // 1) Teardown current room
+    init_sentence_ui_and_stack()          // clear pending UI/sentence state
+    execute_room_exit_script()            // run EXIT script for current room
+    hide_all_actors_and_release_sprites() // hide actors and release sprites
+
+    // 2) Release any actor→costume bindings (slots 1..COSTUME_MAX_INDEX)
+    for costumeIndex from COSTUME_MAX_INDEX downTo 1:
+        if actor_for_costume[costumeIndex].bit7 == 0:   // slot used
+            detach_actor_from_costume(costumeIndex)
+
+    // 3) Switch to new room index and seed camera
+    targetRoomIndex = savedRoomIndex
+    var_current_room = targetRoomIndex
+
+    cam_target_pos = CAM_DEFAULT_POS
+
+    // Re-init raster / sound state before loading new room resources
+    init_raster_and_sound_state()
+
+    // 4) Load room data (metadata, objects, graphics, ages, etc.)
+    X = targetRoomIndex
+    load_room_gfx_and_objects()          // uses X as new room index
+
+    // 5) Bring up new room behavior
+    execute_room_entry_script()
+    load_room_sounds_and_scripts()
+    spawn_actors_for_room_costumes()
+
+    // 6) Request visual transition and refresh IRQ handlers
+    open_shutter_flag = SHUTTER_OPEN
+    init_raster_irq_env()
+end function
+
+
+function load_room_gfx_and_objects():
+    oldRoomIndex = current_room
+
+    // 1) Age outgoing room
+    if oldRoomIndex != 0:
+        // Set age=1, preserve lock bit
+        attr = room_liveness_tbl[oldRoomIndex]
+        if attr.lockBit == 1:
+            room_liveness_tbl[oldRoomIndex] = ROOM_ATTR_LOCKED_AGE_1
+        else:
+            room_liveness_tbl[oldRoomIndex] = ROOM_ATTR_UNLOCKED_AGE_1
+    else:
+        // Special: liveness[0] gets whatever attribute caller put in A
+        room_liveness_tbl[0] = A
+
+    // 2) Publish new current_room (X contains new room index)
+    current_room = X
+    var_current_room = current_room
+
+    // 3) Release old room’s graphics layers (if any)
+    if room_gfx_layers_hi != 0:
+        mem_release(room_gfx_layers_lo, room_gfx_layers_hi)
+        room_gfx_layers_hi = 0
+
+    // 4) Release old room’s mask bit-patterns block (if any)
+    if mask_bit_patterns_hi != 0:
+        mem_release(mask_bit_patterns_lo, mask_bit_patterns_hi)
+        mask_bit_patterns_hi = 0
+
+    // 5) If new room index is 0, clear script pointers and abort caller
+    if current_room == 0:
+        room_exit_script_ptr  = 0
+        room_entry_script_ptr = 0
+        discard_caller_return_address()   // pop return address off stack
+        return
+
+    // 6) Ensure new room is resident
+    cache_room()   // X = current_room
+
+    // 7) Mark active room as MRU (age=0, lock preserved)
+    attr = room_liveness_tbl[current_room]
+    if attr.lockBit == 1:
+        room_liveness_tbl[current_room] = ROOM_ATTR_LOCK   // lock + age 0
+    else:
+        room_liveness_tbl[current_room] = ROOM_ATTR_UNLOCKED_AGE_0
+
+    // 8) Load room content in order
+    load_room_metadata()
+    load_room_objects()
+    read_room_graphics()
+    setup_room_columns_with_decode_snapshots()
+
+    // 9) LRU upkeep – age other resident rooms
+    for roomIndex from ROOM_MAX_INDEX downTo 1:
+        if room_ptr_hi_tbl[roomIndex] == 0:
+            continue                            // not resident
+
+        attr = room_liveness_tbl[roomIndex]
+        age = attr & ROOM_ATTR_AGE_MASK
+        if age == 0:
+            continue                            // MRU or just touched
+
+        room_liveness_tbl[roomIndex] = attr + 1 // increment age; lock preserved
+
+    // Return with X = current_room
+    X = current_room
+end function
+
+
+function load_room_metadata():
+    idx = current_room
+
+    // 1) Resolve room base and publish it
+    room_base = (room_ptr_lo_tbl[idx], room_ptr_hi_tbl[idx])
+    current_room_rsrc = room_base
+
+    // 2) read_ptr := room_base + MEM_HDR_LEN (start of metadata)
+    read_ptr = room_base + MEM_HDR_LEN
+
+    // 3) Copy 8-bit metadata fields into room_metadata_base
+    for offset from ROOM_META_8_START_OFS to ROOM_META_8_END_EXCL - 1:
+        room_metadata_base[offset] = read_ptr[offset]
+
+    // 4) Copy 16-bit offset fields (tile defs, tile matrix, color, mask, mask-index)
+    offset = ROOM_META_16_START_OFS
+    while offset < ROOM_META_16_END_EXCL:
+        room_metadata_base[offset]     = read_ptr[offset]       // lo
+        room_metadata_base[offset + 1] = read_ptr[offset + 1]   // hi
+        offset += 2
+
+    // 5) Copy exit and entry script pointers
+    exitLo  = read_ptr[ROOM_EXIT_SCRIPT_OFS + 0]
+    exitHi  = read_ptr[ROOM_EXIT_SCRIPT_OFS + 1]
+    entryLo = read_ptr[ROOM_ENTRY_SCRIPT_OFS + 0]
+    entryHi = read_ptr[ROOM_ENTRY_SCRIPT_OFS + 1]
+
+    room_exit_script_ptr  = make16(exitLo, exitHi)
+    room_entry_script_ptr = make16(entryLo, entryHi)
+
+    // 6) Copy 4-byte dict for tile matrix stream
+    tileMatrixOfs = make16(tile_matrix_ofs_lo, tile_matrix_ofs_hi)
+    read_ptr = room_base + tileMatrixOfs
+    for i in [0..3]:
+        tile_dict[i] = read_ptr[i]
+
+    // 7) Copy 4-byte dict for color stream
+    colorOfs = make16(color_layer_ofs_lo, color_layer_ofs_hi)
+    read_ptr = room_base + colorOfs
+    for i in [0..3]:
+        color_dict[i] = read_ptr[i]
+
+    // 8) Copy 4-byte dict for mask stream
+    maskOfs = make16(mask_layer_ofs_lo, mask_layer_ofs_hi)
+    read_ptr = room_base + maskOfs
+    for i in [0..3]:
+        mask_dict[i] = read_ptr[i]
+end function
+
+
+function load_room_sounds_and_scripts():
+    idx = current_room
+
+    // 1) meta_ptr := room_base + MEM_HDR_LEN
+    room_base = (room_ptr_lo_tbl[idx], room_ptr_hi_tbl[idx])
+    meta_ptr = room_base + MEM_HDR_LEN
+
+    // 2) Read counts from metadata
+    sound_count_left  = meta_ptr[ROOM_META_SOUND_COUNT_OFS]
+    script_count_left = meta_ptr[ROOM_META_SCRIPT_COUNT_OFS]
+
+    // 3) Sounds: Y is running index into {sounds+scripts} table
+    tableIndex = 0
+
+    while sound_count_left > 0:
+        base = get_room_sounds_base_address()
+        soundIndex = base[tableIndex]
+        rsrc_cache_sound(soundIndex)
+        tableIndex += 1
+        sound_count_left -= 1
+
+    // 4) Scripts: continue at same tableIndex
+    while script_count_left > 0:
+        base = get_room_sounds_base_address()
+        scriptIndex = base[tableIndex]
+        rsrc_cache_script(scriptIndex)
+        tableIndex += 1
+        script_count_left -= 1
+
+    // Done: all room-linked sounds and scripts ensured resident
+end function
+
+
+function get_room_sounds_base_address() -> pointer:
+    idx = current_room
+    N = room_obj_count    // number of objects
+
+    // Two per-object tables: gfxOffsets[N] + recordOffsets[N] = 4*N bytes total
+    bytesForTables = 4 * N
+
+    // ROOM_OBJ_ABS_START = base offset of first table from room_base
+    relOffset = ROOM_OBJ_ABS_START + bytesForTables
+
+    room_base = (room_ptr_lo_tbl[idx], room_ptr_hi_tbl[idx])
+    room_sounds_base = room_base + relOffset
+
+    return room_sounds_base
+end function
+
+
+function load_room_objects():
+    idx = current_room
+
+    // 1) Resolve room base and metadata pointer
+    room_base = (room_ptr_lo_tbl[idx], room_ptr_hi_tbl[idx])
+    read_ptr = room_base + MEM_HDR_LEN
+
+    // 2) Read object count
+    objCount = read_ptr[ROOM_META_OBJ_COUNT_OFS]
+    obj_count_remaining = objCount
+    room_obj_count = objCount
+
+    if objCount == 0:
+        return
+
+    // 3) Build per-object compressed-gfx offset table
+    //    - metadata has N 16-bit entries starting at ROOM_META_OBJ_GFX_OFS
+    srcOffset = ROOM_META_OBJ_GFX_OFS
+    destPairIndex = 2     // pair index 0..1 reserved
+
+    for i from 0 to objCount - 1:
+        lo = read_ptr[srcOffset + 0]
+        hi = read_ptr[srcOffset + 1]
+        obj_gfx_ptr_tbl[destPairIndex + 0] = lo
+        obj_gfx_ptr_tbl[destPairIndex + 1] = hi
+
+        srcOffset += 2
+        destPairIndex += 2
+
+    // 4) Build per-object record-offset table (same N, immediately after)
+    remaining = obj_count_remaining
+    destPairIndex = 2
+
+    // (The code copies some unknown scratch at $1E->$1C, preserved here as “ignored”.)
+
+    while remaining > 0:
+        lo = read_ptr[srcOffset + 0]
+        hi = read_ptr[srcOffset + 1]
+        room_obj_ofs_tbl[destPairIndex + 0] = lo
+        room_obj_ofs_tbl[destPairIndex + 1] = hi
+
+        srcOffset += 2
+        destPairIndex += 2
+        remaining -= 1
+
+    // 5) Walk each object record and scatter attributes
+    object_idx = 1
+    obj_count_remaining = objCount
+
+    while obj_count_remaining > 0:
+        // Compute index into offset table (pair index = object_idx * 2)
+        pairIndex = object_idx * 2
+
+        // Resolve record base pointer
+        recordOffset = make16(room_obj_ofs_tbl[pairIndex],
+                              room_obj_ofs_tbl[pairIndex + 1])
+        recordPtr = room_base + recordOffset
+
+        // For table writes we use object_idx as the index
+        i = object_idx
+
+        // Object ID (hi/lo)
+        idHi = recordPtr[OBJ_META_IDX_HI_OFS]
+        idLo = recordPtr[OBJ_META_IDX_LO_OFS]
+        room_obj_id_hi_tbl[i] = idHi
+        room_obj_id_lo_tbl[i] = idLo
+
+        // Width
+        width = recordPtr[OBJ_META_WIDTH_OFS]
+        obj_width_tbl[i] = width
+
+        // Left column (X start)
+        xStart = recordPtr[OBJ_META_X_START_OFS]
+        obj_left_col_tbl[i] = xStart
+
+        // Packed top row / ancestor overlay requirement
+        yStartPacked = recordPtr[OBJ_META_Y_START_OFS]
+        if (yStartPacked & $80) != 0:
+            ancestor_overlay_req_tbl[i] = 0x80
+        else:
+            ancestor_overlay_req_tbl[i] = 0x00
+
+        obj_top_row_tbl[i] = yStartPacked & $7F   // bits 0..6
+
+        // Parent room-object index
+        parent = recordPtr[OBJ_META_PARENT_IDX_OFS]
+        parent_idx_tbl[i] = parent
+
+        // X destination
+        xDest = recordPtr[OBJ_META_X_DEST_OFS]
+        object_x_destination[i] = xDest
+
+        // Y destination (lower 5 bits)
+        yDestPacked = recordPtr[OBJ_META_Y_DEST_OFS]
+        object_y_destination[i] = yDestPacked & $1F   // bits 0..4
+
+        // Height and destination_active (packed)
+        heightAndActive = recordPtr[OBJ_META_HEIGHT_OFS]
+        destinationActive = heightAndActive & $07      // bits 0..2
+        height = heightAndActive >> 3                  // bits 3..7
+
+        object_destination_active[i] = destinationActive
+        obj_height_tbl[i]             = height
+
+        // Advance to next object
+        object_idx += 1
+        obj_count_remaining -= 1
+    end while
+end function
+
+
+function read_room_graphics():
+    // 1) Snapshot dimensions into debug mirrors
+    dbg_room_width  = room_width
+    dbg_room_height = room_height
+
+    idx = current_room
+    room_base = (room_ptr_lo_tbl[idx], room_ptr_hi_tbl[idx])
+
+    // 2) Program VIC background colors
+    map_io_in()
+    for i in [3, 2, 1, 0]:
+        vic_bg_reg[i] = room_bg_colors[i]
+    room_bg0_shadow = room_bg0
+    map_io_out()
+
+    // 3) Decompress tile definitions into TILE_DEFS_ADDR..+TILE_DEFS_SIZE-1
+    bytes_left = TILE_DEFS_SIZE
+    srcOffset  = room_tile_definitions_offset
+    decomp_src_ptr = room_base + srcOffset
+    dstPtr = TILE_DEFS_ADDR
+
+    decomp_dict4_init()   // sets up dictionary from stream header
+
+    while bytes_left > 0:
+        b = decomp_stream_next()       // returns one decoded byte
+        *dstPtr = b
+        dstPtr += 1
+        bytes_left -= 1
+
+    // 4) If an old mask-patterns block exists, free it
+    if mask_bit_patterns_hi != 0:
+        mem_release(mask_bit_patterns_lo, mask_bit_patterns_hi)
+
+    // 5) Locate mask-index block and read payload size
+    maskOffset = make16(mask_indexes_ofs, mask_indexes_ofs+1)
+    gfx_read_ptr = room_base + maskOffset
+
+    payload_len_lo = gfx_read_ptr[0]
+    payload_len_hi = gfx_read_ptr[1]
+    payload_len = make16(payload_len_lo, payload_len_hi)
+
+    // 6) Allocate memory for payload + resource header
+    totalBytes = payload_len + MEM_HDR_LEN
+    (blockBaseLo, blockBaseHi) = mem_alloc(totalBytes)
+    gfx_alloc_base = (blockBaseLo, blockBaseHi)
+
+    // 7) Initialize resource header and publish pointer
+    rsrc_resource_type  = RSRC_TYPE_ROOM_LAYERS
+    rsrc_resource_index = RSRC_INDEX_MASK_LAYER
+    rsrc_hdr_init()
+
+    mask_bit_patterns_lo = blockBaseLo
+    mask_bit_patterns_hi = blockBaseHi
+
+    // Destination pointer: start at block base + header
+    gfx_write_ptr = gfx_alloc_base + MEM_HDR_LEN
+
+    // 8) Set up decompression byte count for mask payload
+    bytes_left = payload_len
+
+    // Recompute room_base and gfx_read_ptr (paranoia, but same result)
+    room_base = (room_ptr_lo_tbl[idx], room_ptr_hi_tbl[idx])
+    gfx_read_ptr = room_base + maskOffset
+
+    // decomp_src_ptr := gfx_read_ptr + 2 (skip size prefix)
+    decomp_src_ptr = gfx_read_ptr + 2
+
+    decomp_dict4_init()   // initialize dictionary for this stream
+
+    // 9) Decompress mask payload into allocated block
+    while bytes_left > 0:
+        b = decomp_stream_next()
+        *gfx_write_ptr = b
+        gfx_write_ptr += 1
+        bytes_left -= 1
+end function
+
+
+function cache_room():
+    // X holds the target room index
+
+    // 1) Fast path: already resident?
+    if room_ptr_hi_tbl[X] != 0:
+        // Skip disk load; just set age=1 (lock preserved)
+        idx = X   // intended; code actually uses Y precondition
+        attr = room_liveness_tbl[idx]
+        if attr.lockBit == 1:
+            room_liveness_tbl[idx] = ROOM_ATTR_LOCKED_AGE_1
+        else:
+            room_liveness_tbl[idx] = ROOM_ATTR_UNLOCKED_AGE_1
+        return
+
+    // 2) Cold path: room not resident → load from disk
+    rsrc_resource_index = X
+    room_index = X
+
+    room_disk_chain_prepare(room_index)
+
+    // configure loader for start-of-chain read
+    rsrc_read_offset = 0
+    rsrc_sector_idx  = 0
+    rsrc_resource_type = RSRC_TYPE_ROOM
+
+    // perform load; returns room base pointer in X/Y
+    (room_data_ptr_local_lo, room_data_ptr_local_hi) = rsrc_load_from_disk()
+
+    // publish pointer into residency tables
+    idx = room_index
+    room_ptr_lo_tbl[idx] = room_data_ptr_local_lo
+    room_ptr_hi_tbl[idx] = room_data_ptr_local_hi
+
+    // 3) Age update: set age=1, preserve lock bit
+    idx = rsrc_resource_index   // should equal room_index
+    attr = room_liveness_tbl[idx]
+    if attr.lockBit == 1:
+        room_liveness_tbl[idx] = ROOM_ATTR_LOCKED_AGE_1
+    else:
+        room_liveness_tbl[idx] = ROOM_ATTR_UNLOCKED_AGE_1
+end function
+
+
+function spawn_actors_for_room_costumes():
+    // Legacy side-effect: store A into unused (no semantics)
+    unused = A
+
+    for costumeIndex from 0 to COSTUME_MAX_INDEX:
+        // Skip if costume already has a bound actor
+        if actor_for_costume[costumeIndex].bit7 == 0:
+            continue
+
+        // Skip if this costume is not in the active room
+        if costume_room_idx[costumeIndex] != current_room:
+            continue
+
+        // Ensure costume resource is resident
+        rsrc_cache_costume(costumeIndex)
+
+        // rsrc_cache_costume sets rsrc_resource_index to this costume's resource index
+        resourceIndex = rsrc_resource_index
+
+        // Bind a free actor to this costume
+        assign_costume_to_free_actor(resourceIndex)
+
+        // Restore X from rsrc_resource_index for the outer loop
+        // (loop continues via costumeIndex increment)
+    end for
+end function
+*/

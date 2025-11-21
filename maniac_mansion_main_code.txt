@@ -6161,7 +6161,7 @@ start_index_for_list_element = $cad2
 target_element_index = $cad3
 target_offset = $cad7
 
-setup_adjacency_list:
+restore_adjacency_list:
 ;Get the last box index discovered
 .C:198b  AC D8 CA    LDY current_search_depth
 .C:198e  B9 D9 CA    LDA actor_discovered_boxes,Y
@@ -6186,7 +6186,7 @@ destination_box = $cad1
 target_offset = $cad7
 
 is_destination_box_adjacent:
-.C:199e  20 8B 19    JSR setup_adjacency_list
+.C:199e  20 8B 19    JSR restore_adjacency_list
 .C:19a1  A6 D8       LDX actor
 ;Load the list offset into .Y
 .C:19a3  AC D7 CA    LDY target_offset
@@ -6222,7 +6222,7 @@ start_index_for_list_element = $cad2
 
 are_adjacents_known:
 .C:19b6  AE D8 CA    LDX current_search_depth
-.C:19b9  20 8B 19    JSR setup_adjacency_list
+.C:19b9  20 8B 19    JSR restore_adjacency_list
 ;Add the starting index to the target_offset 
 ; to resume the search from the exact previous point in this list element
 .C:19bc  AD D2 CA    LDA start_index_for_list_element

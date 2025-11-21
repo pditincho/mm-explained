@@ -1,89 +1,153 @@
 /*
- * ===============================================================================
- * Disk I/O high-level helpers (C64 ⇄ 1541-style drive over IEC): sector read/write,
- * streaming, and physical geometry stepping with robust retry + diagnostics.
- *
- * Summary:
- *   High-level wrapper layer around low-level IEC byte I/O. 
- *
- * 	Provides routines to:
- *     • seed and advance a physical “sector chain” (track/sector cursor)
- *     • read a chosen sector into a fixed buffer ($0300)
- *     • stream bytes across sector boundaries with automatic refills
- *     • copy streamed data into RAM
- *     • write one or more sectors from a linear memory buffer
- *
- *   The on-wire read protocol uses 0x01-prefixed escape/control sequences for EOD,
- *   sync requests, and error signaling. Writes stream an exact 256-byte payload.
- *
- * Hardware / Memory Map:
- *   • cpu_port ($0001): maps I/O in/out around IEC calls.
- *   • vic_border_color_reg ($D020): set green on fatal protocol error (debug).
- *   • SECTOR_BUFFER ($0300..$03FF): fixed 256-byte read buffer (page-aligned).
- *   • Must execute from RAM: routines rely on self-modifying code (patch abs operands).
- *
- * Protocol (drive → host, during reads):
- *   01 01  = literal 0x01 (escaped, store and continue)
- *   01 81  = end-of-data (success → C=0)
- *   01 11  = error (failure → C=1)
- *   01 21  = sync request (resynchronize, then continue)
- *   other  = fatal: border=green, infinite hang (debug visibility)
- *
- * Calling Conventions (registers / globals):
- *   • Track/Sector inputs: X=track, Y=sector for single-sector ops.
- *   • Pointers: disk_dest_ptr/disk_src_ptr are (lo/hi) globals
- * 	• Routines patch abs operands inline:
- *       - disk_store_abs / disk_load_abs / disk_dest_store_abs labels.
- *   • Streaming state: current_track/current_sector, disk_buf_off advance across sectors.
- *   • Geometry: max_sector_index_by_track holds 0-based max sector index per track.
- *   • Mapping $01: set to MAP_IO_IN only for the duration of low-level IEC calls.
- *
- * Error Handling & Diagnostics:
- *   • Reads/writes with wrappers retry indefinitely on failure, showing DISK_ERROR_MSG
- *     via print_message_wait_for_button until the operation succeeds.
- *   • disk_read_sector_into_buffer records last_track_loaded/last_sector_loaded on success.
- *   • Fatal/unknown read control code → green border + hang (debug).
- *
- * Self-Modifying Code (SMC) Sites:
- *   • disk_read_sector: patches STA $FFFF,X (disk_store_abs) to disk_dest_ptr.
- *   • disk_write_sector: patches LDA $FFFF,X (disk_load_abs) to disk_src_ptr.
- *   • disk_stream_copy: patches STA $FFFF (disk_dest_store_abs) to destination,
- *     then increments the inlined operand to walk memory.
- *
- * Public routines:
- *   disk_init_chain                 Seed start_track/start_sector and clear chain state.
- *   disk_init_chain_and_read        Init chain, load (X=offset,Y=step), fall through to seek+read.
- *   disk_seek_read               	Step Y sectors from start_*, set disk_buf_off=X, read into $0300.
- *   disk_stream_copy          		Copy N streamed bytes to RAM using inlined STA operand.
- *   disk_stream_next_byte           Return next byte from stream; auto-refill on $FF→$00 wrap.
- *   disk_write_linear  				Write ceil(N/256) sectors from a linear buffer with retries.
- *   disk_reset                      Send DISK_CMD_RESET to the drive (no params).
- *
- * Private routines:
- *   disk_read_sector_into_buffer    Read (current_*) with retry; update last_*_loaded on success.
- *   disk_write_sector               Send DISK_CMD_WRITE and stream 256 bytes from disk_src_ptr.
- *   disk_next_sector_phys    		++sector; wrap to 0 and ++track when beyond per-track max.
- *
- * Table:
- *   max_sector_index_by_track       Table of per-track **max sector index** (0-based).
- *
- * Arguments / Returns (conventions used across routines):
- *   • Unless stated otherwise, A/X/Y are clobbered by low-level I/O; flags are not a contract.
- *   • Carry is used for read/write status in leaf protocol routines (C=0 success, C=1 error).
- *   • Globals updated: current_track/current_sector, disk_buf_off, last_*_loaded, disk_src_ptr/disk_dest_ptr.
- *
- * Edge Cases & Preconditions:
- *   • disk_stream_copy requires non-zero 16-bit count; zero would underflow/loop forever.
- *   • disk_write_linear rounds byte count up to whole sectors:
- *       sectors_to_write = hi + (lo != 0).
- *   • disk_next_sector_phys does not clamp at end-of-disk; caller policy applies.
- *
- * External Dependencies (entry addresses expected to be linked/provided):
- *   print_message_wait_for_button, iec_send_cmd, iec_sync,
- *   iec_recv_byte, iec_send_byte, disk_read_sector (internal leaf),
- *   disk_write_sector (internal leaf) — see individual routine headers below.
- * ===============================================================================
- */
+================================================================================
+  Disk I/O high-level helpers – file overview
+================================================================================
+
+Summary
+        High-level disk I/O layer for a C64 talking to a 1541-style drive over
+        the serial bus. It wraps the low-level byte-at-a-time protocol with 
+		routines for physical sector chaining, buffered streaming, and robust 
+		retry/diagnostic behavior, using a fixed sector buffer at $0300 and 
+		several small SMC helpers to keep the tight loops efficient.
+
+Responsibilities
+	- Geometry and chaining:
+		- Track/sector “chain” seeding via (start_track,start_sector).
+		- Physical stepping across sectors and tracks using
+		max_sector_index_by_track and disk_next_phys_sector.
+		
+	- Buffered reads:
+		- Read a chosen sector into SECTOR_BUFFER via
+		disk_read_sector_into_buffer with retry and UI error reporting.
+		- Provide a byte-at-a-time streaming API (disk_stream_next_byte) that
+		automatically advances geometry and refills the buffer at sector
+		boundaries.
+		
+	- Bulk transfers:
+		- Copy arbitrary-length streams from disk into RAM via
+		disk_stream_copy, using a self-modified STA absolute store.
+		- Write linear memory buffers out as a sequence of whole sectors via
+		disk_write_linear, rounding up the byte count and retrying failed
+		writes until they succeed.
+		
+	- Protocol framing:
+		- Implement the 0x01-prefixed escape protocol for reads
+		(disk_read_sector), decoding literal-0x01, EOD, error, and sync
+		requests, with a visual hang on unknown control codes.
+		- Provide a low-level 256-byte write primitive (disk_write_sector)
+		that uses a self-modified LDA absolute,X loop for throughput.
+		
+	- Disk-side management:
+		- Offer a simple “ensure correct side inserted” helper
+		(disk_ensure_correct_side) that patches a UI message, pauses
+		gameplay, and loops until the side-ID sector matches the requested
+		digit.
+		- Provide a minimal drive-reset wrapper (disk_reset_drive) that
+		sends DISK_CMD_RESET over IEC.
+
+Core concepts
+	- Physical sector chain:
+		The file treats the disk as a purely physical sequence of
+		(track,sector) tuples. The chain head (start_track,start_sector) is
+		seeded once, and disk_next_phys_sector walks the 1541 geometry:
+		increment sector, wrap to 0 and increment track when the per-track
+		max index is exceeded. There is no notion of filesystem or linked
+		allocation here; callers are responsible for any higher-level mapping.
+	- Fixed sector buffer:
+		All “high-level” reads land in SECTOR_BUFFER at $0300 via
+		disk_read_sector_into_buffer. Streaming routines maintain a
+		per-sector byte offset (disk_buf_off) and use it as an index into
+		that buffer, refilling and advancing geometry when the offset wraps.
+	- Streaming API:
+		disk_stream_next_byte hides sector boundaries from callers:
+		they see a flat byte stream, while the routine manages
+		(current_track,current_sector), refilling the buffer and updating
+		disk_buf_off and the geometry as needed. disk_stream_copy builds on
+		this to transfer a fixed-length slice into linear RAM.
+	- Self-modifying code:
+		Several routines patch 16-bit operands in place so hot loops use
+		absolute or absolute,X addressing:
+			- disk_read_sector patches an STA absolute,X (disk_store_abs) so
+			  data bytes store to disk_dest_ptr+X.
+			- disk_write_sector patches an LDA absolute,X (disk_load_abs) so it
+			  reads from disk_src_ptr+X.
+			- disk_stream_copy patches an STA absolute (disk_dest_store_abs),
+			  then increments the inlined operand to walk the destination as a
+			  16-bit pointer.
+		This requires the code to execute from RAM, but keeps inner loops as
+		tight as possible.
+
+Error handling and UI
+	- Read and write wrappers (disk_read_sector_into_buffer,
+	  disk_write_linear) treat the low-level protocol’s flag/escape
+	  signals as recoverable events. They:
+		- On error, print an error message, wait for a button press
+		  and retry the same sector until success.
+		- On success, update bookkeeping (e.g., last_track_loaded /
+		  last_sector_loaded) and return.
+	- A truly unexpected escape discriminator causes disk_read_sector to
+	  paint the VIC border green (DISK_FAULT_BORDER) and spin in a hang
+	  loop. This is intentionally intrusive for debugging bad drive code
+	  or media.
+
+Preconditions and invariants
+	- disk_stream_copy requires a non-zero 16-bit byte count; a zero count
+	  will underflow the counter and copy 64 KiB before terminating.
+	- disk_write_linear assumes the total byte count is non-zero; if both
+	  counter bytes are zero it will still attempt to write and then loop
+	  forever.
+	- disk_next_phys_sector does not clamp at end-of-disk; callers decide
+	  when to stop advancing.
+	- All protocol interactions assume the drive-side code understands the
+	  DISK_CMD_* opcodes and the 0x01-prefixed escape format described in
+	  the header above.
+
+Integration points
+	- Relies on disk_low_level.asm for the raw IEC transactions:
+	  iec_send_cmd, iec_sync, iec_recv_byte, iec_send_byte, and the
+	  associated global command parameters.
+	- Uses pause.asm and ui_messages.asm to coordinate with the game loop
+	  and to display blocking UI prompts (disk errors and disk side
+	  instructions).
+	- Exposes a small, consistent ABI to higher-level systems:
+	  “point me at a track/sector, read into $0300, then stream or copy
+	  bytes; or, write N bytes as whole sectors from this linear buffer.”
+
+================================================================================
+  Techniques and algorithms used in this module
+================================================================================
+
+This module combines several low-level and high-level techniques to provide a
+robust, efficient disk-I/O abstraction for a 1541-style drive:
+
+• Physical geometry stepping  
+  Uses max_sector_index_by_track to walk real disk layout (advance sector, wrap
+  to sector 0 and next track). No filesystem semantics; purely physical order.
+
+• Fixed-buffer sector caching + byte-stream abstraction  
+  All reads land in SECTOR_BUFFER ($0300). disk_stream_next_byte presents a
+  continuous byte stream by auto-advancing geometry and refilling the buffer
+  when the per-sector offset wraps.
+
+• Self-modifying code for tight loops  
+  Patches 16-bit operands of STA absolute, STA absolute,X, and LDA absolute,X so
+  hot loops read/write directly from caller buffers with minimal overhead.
+
+• Escape-coded read protocol  
+  Interprets 0x01-prefixed sequences for literal-0x01, EOD, error, and sync.  
+  Unknown sequences trigger a visual fault (green border) and hang for debugging.
+
+• Linear-buffer → multi-sector write  
+  Converts a byte count into whole-sector writes, advancing physical geometry
+  and the source pointer page-by-page until all sectors are transmitted.
+
+• Streaming copy with inlined pointer walking  
+  disk_stream_copy auto-increments a self-modified absolute operand to walk a
+  16-bit destination pointer while pulling bytes from the streaming reader.
+
+================================================================================
+*/
+
 #importonce
 #import "globals.inc"
 #import "constants.inc"
@@ -91,53 +155,44 @@
 #import "pause.asm"
 #import "ui_messages.asm"
 
-/*
- * ===========================================
- * Constants
- * ===========================================
- * --- Protocol opcodes (to drive) ---
- */
-.const DISK_CMD_RESET             	= $20     // Operation: reset the drive
-.const DISK_CMD_READ             	= $30     // Operation: request a sector read
-.const DISK_CMD_WRITE            	= $40     // Operation: request a sector write
+.const DISK_CMD_RESET      = $20    // Drive opcode: reset the disk drive
+.const DISK_CMD_READ       = $30    // Drive opcode: request a sector read
+.const DISK_CMD_WRITE      = $40    // Drive opcode: request a sector write
 
 // --- Stream control markers (drive → host) ---
-.const DISK_RX_ESC  				= $01     // 0x01 prefix indicates a control sequence follows
-.const DISK_RX_ESC_ESC             = $01     // 01 01 = literal 0x01 data byte
-.const DISK_RX_ERR                	= $11     // 01 11 = error condition signaled by drive
-.const DISK_RX_SYNC                = $21     // 01 21 = host should resynchronize (iec_sync)
-.const DISK_RX_EOD          		= $81     // 01 81 = end-of-data for the current read
+.const DISK_RX_ESC         = $01    // Escape prefix: signals that a control discriminator byte follows
+.const DISK_RX_ESC_ESC     = $01    // 01 01 → literal 0x01 data byte (escaped)
+.const DISK_RX_ERR         = $11    // 01 11 → error marker from drive (C=1 on return)
+.const DISK_RX_SYNC        = $21    // 01 21 → host should call iec_sync and continue
+.const DISK_RX_EOD         = $81    // 01 81 → end-of-data marker for the current read (C=0)
 
-// --- UI / diagnostics ---
-.const DISK_FAULT_BORDER           = $05     // Green - Border color used by hang loop (visual fault signal)
+.const DISK_FAULT_BORDER   = $05    // VIC border color used by hang_loop to signal a fatal protocol fault (green)
 
-// --- Static buffers / tables ---
-.const SECTOR_BUFFER               = $0300   // 256-byte sector buffer (page-aligned)
+.const SECTOR_BUFFER       = $0300  // Fixed 256-byte sector buffer page used by high-level readers
 
-//  disk_ensure_side
-.const  SIDE_ID_DIGIT_OFF = $0C        // Byte offset of the '#' placeholder digit within the message
-.const  SIDE_ID_TRACK     = $01        // Location of the on-disk ID byte: Track 1…
-.const  SIDE_ID_SECTOR    = $00        // …Sector 0
+.const SIDE_ID_DIGIT_OFF   = $0C    // Offset of the '#' digit placeholder inside SIDE_ID_MSG
+.const SIDE_ID_TRACK       = $01    // Track number that stores the side-ID byte (Track 1)
+.const SIDE_ID_SECTOR      = $00    // Sector number that stores the side-ID byte (Sector 0)
 
 /*
- * ===========================================
- * max_sector_index_by_track — max sector index per track (0-based)
- *
- * Summary:
- *   Lookup table indexed by track number. 
- * 	Each entry stores the **maximum valid sector index** for that track (0-based), not the count.
- *
- *   Encodings (1541-style zones):
- *     $14 = 20 → 21 sectors (0..20)    ; tracks 1–17
- *     $12 = 18 → 19 sectors (0..18)    ; tracks 18–24
- *     $11 = 17 → 18 sectors (0..17)    ; tracks 25–30
- *     $10 = 16 → 17 sectors (0..16)    ; tracks 31–35
- *
- * Notes:
- *   • Entry 0 is a placeholder for “track 0” (unused on 1541).
- *   • If you need the count, add 1 to the table value.
- * ===========================================
- */
+===========================================
+  max_sector_index_by_track — max sector index per track (0-based)
+ 
+  Summary:
+    Lookup table indexed by track number. 
+  	Each entry stores the maximum valid sector index for that track (0-based), not the count.
+ 
+    Encodings (1541-style zones):
+      $14 = 20 → 21 sectors (0..20)    // tracks 1–17
+      $12 = 18 → 19 sectors (0..18)    // tracks 18–24
+      $11 = 17 → 18 sectors (0..17)    // tracks 25–30
+      $10 = 16 → 17 sectors (0..16)    // tracks 31–35
+ 
+  Notes:
+    • Entry 0 is a placeholder for “track 0” (unused on 1541).
+    • If the count is needed, add 1 to the table value.
+===========================================
+*/
 * = $45C7
 max_sector_index_by_track:
         .byte $00                          //  0: unused placeholder
@@ -146,91 +201,66 @@ max_sector_index_by_track:
         .byte $12,$12,$12,$12,$11,$11,$11,$11,$11,$11  // 21–30: 19 (21–24), then 18 (25–30)
         .byte $10,$10,$10,$10,$10                      // 31–35: 17 sectors/track (max idx 16)
 		
-/*
- * ===========================================
- * Public variables
- * ===========================================
- * --- Streaming offsets (per-byte and per-sector) ---
- */
-.label disk_buf_off                = $4639   // 0..255 index within SECTOR_BUFFER (auto-wrap triggers refill)
-.label disk_start_off            	= $463A   // Initial intra-sector byte offset (for first read)
-.label disk_chain_step          	= $463B   // How many physical sectors to step from (start_track,start_sector)
+.label disk_buf_off        = $4639   // Current 0..255 byte offset into SECTOR_BUFFER; wrap triggers next-sector refill
+.label disk_start_off      = $463A   // Seed intra-sector byte offset for the next disk_seek_and_read_sector/disk_init_chain_and_read
+.label disk_chain_step     = $463B   // Number of physical sectors to step from (start_track,start_sector) in disk_seek_and_read_sector
 
+.label start_sector        = $4633   // Seed 0-based sector index at the head of the physical sector chain
+.label start_track         = $4634   // Seed track number at the head of the physical sector chain
 
-// --- “Start” geometry for a physical sector chain (seed) ---
-.label start_sector                = $4633   // First sector index (0-based) of the chain
-.label start_track                 = $4634   // First track number of the chain
+.label disk_y_save         = $462F   // Saved copy of Y across disk_read_sector_into_buffer
+.label disk_x_save         = $4630   // Saved copy of X across disk_read_sector_into_buffer
 
-/*
- * ===========================================
- * Private variables
- * ===========================================
- * --- Scratch saves for register preservation around I/O ---
- */
-.label disk_y_save                 = $462F   // Save area for Y during disk_read_sector_into_buffer
-.label disk_x_save                 = $4630   // Save area for X during disk_read_sector_into_buffer
+.label disk_src_ptr        = $4631   // (lo/hi) shared buffer pointer; 256-byte source page for writes
+.label disk_dest_ptr       = $4631   // (lo/hi) shared buffer pointer; base destination for reads (aliases disk_src_ptr)
 
-// --- High-level read/write shared pointer (alias used by different phases) ---
-.label disk_src_ptr                = $4631   // (lo/hi) base of 256-byte page to WRITE from
-.label disk_dest_ptr               = $4631   // (lo/hi) base of destination to READ into (aliases disk_src_ptr)
+.label current_sector      = $4635   // Current 0-based sector index for streaming/read/write operations
+.label current_track       = $4636   // Current track number for streaming/read/write operations
 
-// --- “Current” physical geometry (cursor advanced by helpers) ---
-.label current_sector              = $4635   // Sector index (0-based) currently targeted
-.label current_track               = $4636   // Track number currently targeted
+.label last_sector_loaded  = $4637   // 0-based sector index of the last sector successfully read into SECTOR_BUFFER
+.label last_track_loaded   = $4638   // Track number of the last sector successfully read into SECTOR_BUFFER
 
-// --- “Last loaded” bookkeeping (filled after a successful read into $0300) ---
-.label last_sector_loaded          = $4637   // Sector index last read into SECTOR_BUFFER
-.label last_track_loaded           = $4638   // Track number last read into SECTOR_BUFFER
-
-.label disk_copy_count_lo 			= $463C // 16-bit count of bytes to copy/write: low byte
-.label disk_copy_count_hi 			= $463D // 16-bit count of bytes to copy/write: high byte
+.label disk_copy_count_lo  = $463C   // Low byte of remaining byte count for stream copy/write
+.label disk_copy_count_hi  = $463D   // High byte of remaining byte count; reused as sector countdown in disk_write_linear
 
 
 /*
- * ===========================================
- * disk_init_chain — seed start geometry and reset chain state
- *
- * Summary:
- *   Captures the starting (sector, track) for a physical sector chain and clears
- *   related bookkeeping so subsequent readers begin at byte 0 of the first sector.
- *
- * Arguments:
- *   sector (X)                     Starting sector index (0-based).
- *   track  (Y)                     Starting track number.
- *
- * Returns / Updates:
- *   start_sector                   	← sector (from X).
- *   start_track                    	← track  (from Y).
- *   last_sector_loaded             	← 0 (no sector read yet).
- *   last_track_loaded              	← 0.
- *   disk_start_off               	← 0 (begin at byte 0 within the sector).
- *   disk_chain_step             	← 0 (first sector in the chain).
- *
- * Flags:
- *   A/Z/N modified by zero stores; no defined flag contract.
- *
- * Clobbers:
- *   A                              Used to write zeros.
- *   X, Y                           Preserved.
- *
- * Description:
- *   Initializes the chain cursor and clears “last loaded” state so a subsequent
- *   call to disk_init_chain_and_read / disk_seek_read will position
- *   to (start_track, start_sector) and begin reading from offset 0. 
- *
- * 	This routine does not validate geometry; callers should ensure inputs are in-range.
- * ===========================================
- */
+================================================================================
+  disk_init_chain
+================================================================================
+Summary
+		Seed the start of a physical sector chain from (X=sector,Y=track) and 
+		clear chain/bookkeeping state.
+
+Arguments
+        X  					Starting sector index (0-based).
+        Y  					Starting track number.
+
+Global Outputs
+        start_sector        Seeded from X as the first sector in the chain.
+        start_track         Seeded from Y as the first track in the chain.
+        last_sector_loaded  Cleared to 0 to indicate no sector is currently cached.
+        last_track_loaded   Cleared to 0 to indicate no sector is currently cached.
+        disk_start_off      Cleared to 0 so reads begin at byte 0 in the sector.
+        disk_chain_step     Cleared to 0 so no sector stepping is pending.
+
+Description
+        - Capture the caller-provided (sector,track) pair as the physical head
+          of a physical sector chain.
+        - Reset the “last loaded” bookkeeping so code can detect that no sector
+          has yet been read into the fixed buffer.
+        - Initialize per-sector offset and chain index so the next seek/read
+          naturally targets byte 0 of the head sector.
+================================================================================
+*/
 * = $44D3
 disk_init_chain:
-        /*
-         * Initialize chain start from caller registers
-         * NOTE: This routine expects X=sector, Y=track
-         */
+        // Initialize chain start from caller registers
+        // NOTE: This routine expects X=sector, Y=track
         stx start_sector                  
         sty start_track                   
 
-        // Clear “last loaded” bookkeeping (no sector read yet)
+        // Clear “last T/S loaded” bookkeeping (no sector read yet)
         lda #$00
         sta last_sector_loaded            
         lda #$00
@@ -240,107 +270,92 @@ disk_init_chain:
         lda #$00
         sta disk_start_off                
 
-        // Begin at the first sector in the chain (index 0)
+        // Begin at the first sector in the chain (chain step 0)
         lda #$00
         sta disk_chain_step            	  
 		
         rts                               
 /*
- * ===========================================
- * disk_init_chain_and_read — initialize chain defaults, then tail-call reader
- *
- * Summary:
- *   Initializes the sector “chain” starting point (via disk_init_chain),
- *   loads X = disk_start_off and Y = disk_chain_step, and then deliberately
- *   falls through into disk_seek_read, which performs
- *   the actual positioning and sector load.
- *
- * Arguments:
- *   (implicit)                Uses disk_start_off (intra-sector byte offset) and
- *                             disk_chain_step (how many sectors to step forward).
- *
- * Returns:
- *   (control-flow)            No RTS here. Execution continues in
- *                             disk_seek_read, which reads the
- *                             resolved sector into $0300 and returns from there.
- *
- * Flags:
- *   Modified by disk_init_chain and by the fall-through callee; no flag contract.
- *
- * Description:
- *   1) Call disk_init_chain to seed start_track/start_sector (and any defaults).
- *   2) Move disk_start_off → X and disk_chain_step → Y to satisfy the callee’s ABI.
- *   3) Fall through (no jump/return) to disk_seek_read(X=offset, Y=index).
- *      That routine advances in physical order, sets disk_buf_off, and loads the sector.
- * ===========================================
- */
+================================================================================
+  disk_init_chain_and_read
+================================================================================
+Summary
+		Initialize the chain from (X,Y) and immediately read that seed sector 
+		at offset 0 into SECTOR_BUFFER.
+		
+Arguments
+        X  					Starting sector index (0-based) to seed the chain.
+        Y  					Starting track number to seed the chain.
+
+Global Outputs
+        last_sector_loaded  Updated to the successfully loaded sector index.
+        last_track_loaded   Updated to the successfully loaded track number.
+        current_sector      Set to the resolved sector (same as start_* here).
+        current_track       Set to the resolved track (same as start_* here).
+
+Description
+        - Call disk_init_chain so the seed (start_sector,start_track) comes
+          from the caller’s X/Y, with all chain state zeroed.
+        - Load X and Y from disk_start_off and disk_chain_step (both 0 after
+          initialization).
+        - Fall through into disk_seek_and_read_sector, which resolves the physical cursor,
+          loads the selected sector into SECTOR_BUFFER, and returns to the
+          original caller.
+================================================================================
+*/
 * = $44EE
 disk_init_chain_and_read:
-        /*
-         * Initialize chain defaults (e.g., start_track/start_sector,
-         * optional disk_start_off/disk_chain_step as set by disk_init_chain)
-         */
+         // Initialize chain defaults
         jsr disk_init_chain
 
-        /*
-         * Prepare arguments for the next routine:
-         *   X = intra-sector byte offset (0..255)
-         */
+        // Prepare arguments for the next routine:
+		//
+        //   X = intra-sector byte offset (0..255)
+        //   Y = sector-chain step (how many sectors to step forward from start)
         ldx disk_start_off
-        //   Y = sector-chain index (how many sectors to step forward from start)
         ldy disk_chain_step
 
-        /*
-         * Fall through intentionally:
-         *   next label is disk_seek_read
-         *   which expects X=offset and Y=index (no RTS/JMP here by design)
-         */
+        // Fall through intentionally to disk_seek_and_read_sector
+        //   which expects X=start offset and Y=chain step
 /*
- * ===========================================
- * disk_seek_read — position to Nth sector (physical) and load it
- *
- * Summary:
- *   Sets the physical cursor to the sector that is N steps after the starting
- *   (track,sector) in simple physical order (sector++ with wrap to next track),
- *   programs the intra-sector byte offset, then reads that sector into $0300.
- *
- * Arguments:
- *   X                          Intra-sector byte offset (0..255) at which subsequent reads begin.
- *   Y                          Sector chain index (number of physical sectors to step forward).
- *   start_track                Base track of the chain.
- *   start_sector               Base sector (0-based) of the chain.
- *
- * Updates:
- *   current_track              Set to the resolved track after stepping Y sectors.
- *   current_sector             Set to the resolved sector after stepping Y sectors.
- *   disk_buf_off               Set to X (starting byte within the loaded sector).
- *   SECTOR_BUFFER ($0300)      Filled with the resolved sector’s data.
- *
- * Flags:
- *   Modified by subroutines; no flag contract on return.
- *
- * Clobbers:
- *   A, X                       Not preserved. Y is consumed via STY (not restored).
- *
- * Description:
- *   1) Initialize (current_track,current_sector) ← (start_track,start_sector).
- *   2) If Y > 0, call disk_next_sector_phys Y times to advance in physical order:
- *        sector ← sector+1; if beyond per-track max, sector ← 0 and track ← track+1.
- *   3) Set disk_buf_off ← X to select the starting byte within the sector.
- *   4) Call disk_read_sector_into_buffer to load that sector into $0300; this may retry until success.
- *
- *   Notes:
- *     • “Sector chain” here is purely physical sequencing, not a filesystem link chain.
- *     • Caller must handle end-of-disk policy (disk_next_sector_phys does not clamp globally).
- * ===========================================
- */
+================================================================================
+  disk_seek_and_read_sector
+================================================================================
+Summary
+		Step Y physical sectors from the start geometry, apply intra-sector 
+		offset X, and read the resolved sector into SECTOR_BUFFER.
+		
+Arguments
+        X  Intra-sector byte offset (0..255) to start reading from.
+        Y  Sector-chain index: how many physical sectors to step forward from
+           (start_sector,start_track).
+
+Global Inputs
+        start_sector        Base sector index (0-based) of the chain.
+        start_track         Base track number of the chain.
+
+Global Outputs
+        disk_start_off      Updated to X (remembered intra-sector offset).
+        disk_chain_step     Updated to Y (remembered physical step count).
+        current_sector      Set to the resolved sector after applying Y steps.
+        current_track       Set to the resolved track after applying Y steps.
+        last_sector_loaded  Updated to current_sector on successful read.
+        last_track_loaded   Updated to current_track on successful read.
+
+Description
+        - Copy the caller’s requested offset and chain index into persistent
+          globals for later use or inspection.
+        - Initialize the geometry cursor from (start_sector,start_track), then
+          advance it by disk_chain_step sectors using disk_next_phys_sector
+          with wrap across tracks.
+        - Program disk_buf_off with the desired starting byte offset and invoke
+          disk_read_sector_into_buffer to pull that sector into SECTOR_BUFFER
+          with retry-on-error semantics.
+================================================================================
+*/
 * = $44F7
-disk_seek_read:
-        /*
-         * Capture caller inputs:
-         *   X = byte offset within target sector (0..255)
-         *   Y = sector-chain index (how many sectors to step forward, 0-based)
-         */
+disk_seek_and_read_sector:
+		// Stash arguments X/Y into local vars
         stx disk_start_off                  // stash intra-sector byte offset
         sty disk_chain_step             	// stash physical sector step count
 
@@ -350,17 +365,14 @@ disk_seek_read:
         lda start_track
         sta current_track
 
-        // If index == 0, we want the first sector: skip advancement
+        // If step == 0, we want the first sector: skip advancement
         lda disk_chain_step
         beq sector_chain_index_reached
 
-        /*
-         * Advance forward 'disk_chain_step' sectors in physical order:
-         * each step: sector++ ; wrap → sector=0, track++
-         */
+        // Advance forward 'disk_chain_step' sectors in physical order
         tax                                 // X ← steps remaining
 next_sector_in_chain:
-        jsr disk_next_sector_phys       	// current_(track,sector) ← next physical sector
+        jsr disk_next_phys_sector       	
         dex
         bne next_sector_in_chain
 
@@ -369,91 +381,75 @@ sector_chain_index_reached:
         lda disk_start_off
         sta disk_buf_off
 
-        // Load the selected sector into SECTOR_BUFFER ($0300); may retry on I/O errors
+        // Load the selected sector into SECTOR_BUFFER; may retry on I/O errors
         jsr disk_read_sector_into_buffer
         rts
 /*
- * ===========================================
- * disk_stream_copy — stream N bytes from sector reader to dest
- *
- * Summary:
- *   Copies a linear stream of N bytes into RAM starting at the destination
- *   address provided in X/Y. Each byte is fetched via disk_stream_next_byte
- *   (which transparently refills the sector buffer on page wrap). The routine
- *   self-modifies the operand of an STA absolute to walk the destination.
- *
- * Arguments:
- *   X                         	Destination address low byte.
- *   Y                         	Destination address high byte.
- *   disk_copy_count_lo			16-bit byte count to copy (lo/hi). Must be > 0.
- *   disk_copy_count_hi
- *                             
- *
- * Updates:
- *   Memory at (X:Y) .. (X:Y)+N-1  	Filled with N bytes from the stream.
- *   disk_copy_count_*   			Decremented to 0 on completion.
- *
- * Flags:
- *   Z                           Set on return (last ORA yields 0) — not a formal contract.
- *   Others                      Unspecified.
- *
- * Clobbers:
- *   A                           Modified.
- *   X, Y                        Preserved (reader preserves Y; this routine does not alter X/Y).
- *
- * Description:
- *   1) Patch the low/high operand bytes of `STA $FFFF` (SMC) using X/Y so writes
- *      land at the caller’s destination.
- *   2) Loop:
- *        • A ← disk_stream_next_byte()   	; may trigger a sector refill.
- *        • STA (dest)                       ; store to current destination.
- *        • Increment the SMC operand (lo then hi) to advance dest by +1.
- *        • Decrement the 16-bit byte counter by 1 (borrow from hi when lo is 0).
- *        • Continue until the counter becomes 0.
- *
- * Notes:
- *   • **Precondition:** byte count must be non-zero. If both counter bytes are 0,
- *     this loop would underflow and not terminate.
- * ===========================================
- */
+================================================================================
+  disk_stream_copy
+================================================================================
+Summary
+		Copy a disk-backed byte stream from disk_stream_next_byte into a 
+		linear RAM destination.
+		
+Arguments
+        X  					Destination base address low byte.
+        Y  					Destination base address high byte.
+        disk_copy_count_lo  Low byte of total byte count to copy; must not be 0
+							together with disk_copy_count_hi.
+        disk_copy_count_hi  High byte of total byte count to copy.
+
+Global Outputs
+        current_sector      Advanced as needed when wrapping beyond the last
+                            byte of a sector.
+        current_track       Advanced when sectors wrap across tracks according
+                            to disk_next_phys_sector.
+        Destination memory  The range [X:Y] .. [X:Y] + (byte_count - 1) is
+                            filled from the disk-backed stream.
+
+Description
+        - Patch the operand of an STA absolute instruction so that each store
+          lands at the caller’s requested destination address.
+        - In a loop, fetch bytes via disk_stream_next_byte so that crossing a
+          sector boundary automatically advances geometry and refills
+          SECTOR_BUFFER.
+        - Store each byte through the SMC-patched STA, bump the inlined
+          low/high operand to advance the destination by 1, and decrement the
+          16-bit copy counter until it reaches zero.
+        - Rely on the precondition that the counter is non-zero; otherwise the
+          underflow behavior will cause a full 64 KiB copy before terminating.
+================================================================================
+*/
 * = $451F
 disk_stream_copy:
-        /*
-         * Patch the absolute STA operand with destination address:
-         *   STA $FFFF  ← ($FFFF is self-modified below via disk_dest_store_abs)
-         * Low/high bytes come from X/Y so caller sets the initial dest.
-         */
+        // Destination address comes in X/Y
+        // Patch the absolute STA operand with destination address:
+        //   STA $FFFF  ← ($FFFF is self-modified below via disk_dest_store_abs)
         stx disk_dest_store_abs              
         sty disk_dest_store_abs + 1          
 
-        /*
-         * NOTE: This routine assumes the 16-bit byte counter > 0.
-         * If both bytes are 0, the first iteration would underflow and loop forever.
-         */
+        // NOTE: This routine assumes the 16-bit byte counter > 0.
+        // If both bytes are 0, the first iteration would underflow and loop forever.
 read_loop:
-        /*
-         * Get next byte from the disk-backed stream.
-         * This may refill SECTOR_BUFFER when the per-sector offset wraps.
-         */
+        // Get next byte from the disk-backed stream.
         jsr disk_stream_next_byte
 
         // Store to the current destination (absolute operand is SMC-patched above).
         sta $FFFF                           // write A → [disk_dest_ptr]
-.label disk_dest_store_abs = * - 2                  // points at the STA operand (lo/hi)
+.label disk_dest_store_abs = * - 2      	// points at the STA operand (lo/hi)
 
-        // Advance destination pointer (16-bit: lo then hi on wrap).
-        inc disk_dest_store_abs              // ++dest.lo
-        bne decrement_counters              // no wrap → skip hi
-        inc disk_dest_store_abs + 1          // wrapped → ++dest.hi
+        // Advance destination pointer
+        inc disk_dest_store_abs             
+        bne decrement_counters              
+        inc disk_dest_store_abs + 1         
 		
+        // Decrement remaining byte count
 decrement_counters:
-        // Decrement remaining byte count by 1 (16-bit borrow semantics).
-        lda disk_copy_count_lo   			// check low first
-        bne decrement_counter_lo            // if lo != 0, just dec lo
-        dec disk_copy_count_hi   			// borrow: --hi
-		
+        lda disk_copy_count_lo   			
+        bne decrement_counter_lo            
+        dec disk_copy_count_hi   					
 decrement_counter_lo:
-        dec disk_copy_count_lo   			// --lo
+        dec disk_copy_count_lo   			
 
         // Loop while (hi|lo) != 0 (i.e., bytes remain to copy).
         lda disk_copy_count_lo
@@ -462,64 +458,55 @@ decrement_counter_lo:
 
         rts
 /*
- * ===========================================
- * disk_write_linear — write N sectors from a linear buffer (retries on error)
- *
- * Summary:
- *   Writes a sequence of sectors starting at (start_track, start_sector), sourcing
- *   each 256-byte payload from successive pages of a linear buffer beginning at disk_src_ptr.
- *
- *   For each sector: map I/O in, call disk_write_sector.
- * 	On failure, print DISK_ERROR_MSG and retry the same sector until it succeeds. 
- * 	After each successful write, advance to the next valid (track, sector), 
- * 	bump disk_src_ptr by +256, and continue until all sectors have been written.
- *
- * Arguments:
- *   X / Y                         disk_src_ptr (lo/hi): base of the first 256-byte page to write.
- *   start_track                   Starting track number.
- *   start_sector                  Starting sector index (0-based).
- *   disk_copy_count_hi			  Total byte count; sectors_to_write is computed as:
- *   disk_copy_count_lo 			  hi + (lo != 0). The hi byte is then used as the loop counter.
- *                                 
- * Uses / Updates:
- *   current_track                 Working track cursor; set from start_track, advanced per sector.
- *   current_sector                Working sector cursor; set from start_sector, advanced per sector.
- *   disk_src_ptr                  Advanced by +256 after each successful sector.
- *   disk_copy_count_hi 			  Countdown of sectors remaining; 0 on completion.
- *
- * Returns:
- *   current_track/current_sector  Positioned at the sector immediately **after** the last one written.
- *   (no status flags)             This wrapper does not define a carry/flag contract on return.
- *
- * Flags:
- *   Modified by subroutines and internal ops; callers must not rely on flags after return.
- *
- * Clobbers:
- *   A, X, Y                       Not preserved. Calls disk_write_sector, disk_next_sector_phys,
- *                                 print_message_wait_for_button.
- *
- * Description:
- *   1) Initialize disk_src_ptr from X/Y; seed current_track/current_sector from start_*.
- *   2) Compute sectors_to_write = hi + (lo != 0); reuse the hi byte as the sector countdown.
- *   3) Loop:
- *        • Map I/O in ($01 ← MAP_IO_IN).
- *        • LDX current_track, LDY current_sector, JSR disk_write_sector.
- *        • On C=1 (error): set print_msg_ptr to DISK_ERROR_MSG, print, and retry same sector.
- *        • On C=0 (success):
- *            – Map I/O out ($01 ← MAP_IO_OUT).
- *            – JSR disk_next_sector_phys (advance geometry).
- *            – INC disk_src_ptr+1 (advance buffer by +256).
- *            – DEC disk_copy_count_hi; if not zero, repeat.
- *   Note:
- *     • This routine can block indefinitely if a sector persistently fails (retries until success).
- *     • Preconditions: if both counter bytes are 0, no sectors should be written
- * ===========================================
- */
+================================================================================
+  disk_write_linear
+================================================================================
+Summary
+		Write a rounded-up sequence of sectors from a linear 256-byte–paged buffer 
+		starting at (start_track,start_sector), retrying on errors.
+		
+Arguments
+        X                     Low byte of disk_src_ptr, the base of the first
+                              256-byte page to write.
+        Y                     High byte of disk_src_ptr.
+        disk_copy_count_lo    Low byte of total byte count to write.
+        disk_copy_count_hi    High byte of total byte count to write.
+        start_sector          Starting sector index (0-based) for the write
+                              chain.
+        start_track           Starting track number for the write chain.
+
+Global Outputs
+        current_sector        Advanced for each successful sector, ending at
+                              the sector immediately after the last one written.
+        current_track         Advanced across tracks as sectors roll over.
+        disk_src_ptr          Updated to point one page beyond the last sector
+                              written.
+        disk_copy_count_hi    Used as a countdown of sectors remaining; reaches
+                              0 when the loop terminates.
+
+Description
+        - Initialize disk_src_ptr from X/Y and seed the working geometry
+          cursors (current_sector,current_track) from start_sector/start_track.
+        - Round the total byte count up to an integral number of sectors by
+          adding 1 to disk_copy_count_hi if any low-byte remainder exists.
+        - For each sector:
+          - Map I/O in, call disk_write_sector for the current geometry and
+            source page, and loop on error while showing DISK_ERROR_MSG via
+            print_message_wait_for_button.
+          - On success, map I/O out, advance to the next physical sector via
+            disk_next_phys_sector, bump disk_src_ptr by +256 bytes, and
+            decrement the sector countdown.
+        - Stop once all counted sectors have been written; callers must avoid
+          passing a zero total byte count, which would otherwise produce an
+          infinite loop.
+================================================================================
+*/
 * = $4547
 disk_write_linear:
+		// Source pointer comes in X/Y
         // Initialize source base pointer for this batch (256-byte pages)
-        stx disk_src_ptr                         // disk_src_ptr.lo  ← X
-        sty disk_src_ptr + 1                     // disk_src_ptr.hi  ← Y
+        stx disk_src_ptr                         
+        sty disk_src_ptr + 1                     
 
         // Seed write cursor with starting geometry
         lda start_sector
@@ -527,30 +514,26 @@ disk_write_linear:
         lda start_track
         sta current_track
 
-        /*
-         * Round total byte count up to whole sectors:
-         * sectors_to_write = hi + (lo != 0 ? 1 : 0)
-         * NOTE: disk_copy_count_hi is used as the loop counter after this.
-         */
+        // Round total byte count up to whole sectors:
+        // sectors_to_write = hi + (lo != 0 ? 1 : 0)
+        // NOTE: disk_copy_count_hi is used as the loop counter after this.
         lda disk_copy_count_lo
         beq try_write
         inc disk_copy_count_hi
 
 try_write:
-        // Map I/O visible (CIA/IEC at $D000–$DFFF) for the low-level write
+        // Map I/O in
         ldy #MAP_IO_IN
         sty cpu_port
 
-        /*
-         * Write one sector from disk_src_ptr .. disk_src_ptr+$00FF to (current_track,current_sector)
-         * Contract: disk_write_sector returns C=0 on success, C=1 on error
-         */
+        // Write one full sector from disk_src_ptr .. disk_src_ptr+$00FF to (current_track,current_sector)
+        // disk_write_sector returns C=0 on success, C=1 on error
         ldx current_track
         ldy current_sector
         jsr disk_write_sector
         bcc write_succeeded                // success → advance to next sector
 
-        // Error path: show message and retry the same sector (I/O still mapped)
+        // Error path: show error message and retry the same sector
         lda #<DISK_ERROR_MSG
         sta print_msg_ptr
         lda #>DISK_ERROR_MSG
@@ -559,81 +542,73 @@ try_write:
         jmp try_write
 
 write_succeeded:
-        // Restore memory map (hide I/O window) before bookkeeping
+        // Map I/O out
         ldy #MAP_IO_OUT
         sty cpu_port
 
-        // Advance geometry cursor to the next valid sector (wraps across tracks)
-        jsr disk_next_sector_phys
+        // Advance geometry cursor to the next physical sector
+        jsr disk_next_phys_sector
 
-        // Advance source pointer by +256 bytes (next page of the linear buffer)
+        // Advance source pointer by +256 bytes (next page of the buffer)
         inc disk_src_ptr + 1
 
-        // One fewer sector remains; loop until all have been written
+        // Loop until all pages have been written
         dec disk_copy_count_hi
         bne try_write
 
         rts
 /*
- * ===========================================
- * disk_stream_next_byte — stream next byte, auto-advance & refill
- *
- * Summary:
- *   Returns the next byte from the current sector buffer at SECTOR_BUFFER+$offset,
- *   then post-increments the per-sector offset. When the offset wraps ($FF→$00),
- *   advances (track,sector) to the next valid sector and reloads the buffer
- *   at $0300 before returning the originally fetched byte.
- *
- * Arguments:
- *   disk_buf_off            0..255 index into SECTOR_BUFFER (post-incremented).
- *
- * Vars/State:
- *   track/sector state      Variables updated by disk_next_sector_phys and
- *                           consumed by disk_read_sector_into_buffer (must refer to the
- *                           same track/sector pair).
- *
- * Returns:
- *   A                       The next byte from the stream.
- *   disk_buf_off            Advanced by 1; wraps to 0 and triggers refill.
- *
- * Flags:
- *   Z, N                    Reflect the returned byte (from PLA).
- *   C, V                    Unspecified (callees may alter; this routine does not set).
- *
- * Clobbers:
- *   A                       Holds the returned byte on exit.
- *   Y                       Preserved (saved/restored internally).
- *   X                       May be clobbered by callees.
- *
- * Description:
- *   1) Save Y, load A ← SECTOR_BUFFER[disk_buf_off], push A.
- *   2) Increment disk_buf_off; if it != 0, restore Y, pull A, RTS.
- *   3) On wrap (disk_buf_off==0): call disk_next_sector_phys to advance geometry,
- *      then disk_read_sector_into_buffer to refill SECTOR_BUFFER. Ensure the track/sector
- *      variables used by both routines are the same symbols.
- *   4) Reassert disk_buf_off=0 for clarity, restore Y, pull A, RTS.
- *
- *   Note: This routine can block at page boundaries while the next sector is read.
- * ===========================================
- */
+================================================================================
+  disk_stream_next_byte
+================================================================================
+Summary
+		Return the next byte from SECTOR_BUFFER, advancing disk_buf_off and 
+		auto-refilling on sector boundaries.
+
+Returns
+        A  				Next byte from SECTOR_BUFFER at the current stream position.
+        disk_buf_off	Incremented by 1; wraps to 0 after $FF and triggers a sector
+						advance/refill.
+
+Global Inputs
+        disk_buf_off          Current byte offset into SECTOR_BUFFER.
+        current_sector        Current sector index driving the stream.
+        current_track         Current track index driving the stream.
+
+Global Outputs
+        disk_buf_off          Updated to the next byte position, or reset to 0
+                              after loading the next sector.
+        current_sector        Advanced when crossing the end of a sector.
+        current_track         Advanced by disk_next_phys_sector as sectors wrap
+                              across tracks.
+
+Description
+        - Use disk_buf_off as an index into SECTOR_BUFFER to fetch the next
+          byte, and push that byte on the stack so it can be returned in A
+          regardless of refills.
+        - Increment disk_buf_off; if it does not wrap, restore Y, pull A, and
+          return immediately.
+        - On wrap from $FF to $00, advance the geometry via
+          disk_next_phys_sector and load the next sector into SECTOR_BUFFER
+          with disk_read_sector_into_buffer, then reassert disk_buf_off = 0.
+        - Restore Y and pull the previously fetched byte into A so that Z/N
+          reflect the returned data value.
+================================================================================
+*/
 * = $458E
 disk_stream_next_byte:
-        // Save caller's Y (used as index and clobbered by callees)
+        // Save caller's Y
         sty disk_y_saved_2
 
         // Use current per-sector offset as index into the sector buffer
         ldy disk_buf_off
 
-        /*
-         * Fetch the byte at SECTOR_BUFFER + offset
-         * (We’ll return this byte in A even if we need to refill the buffer.)
-         */
+        // Fetch the byte at SECTOR_BUFFER + offset
+        // (We’ll return this byte in A even if we need to refill the buffer.)
         lda SECTOR_BUFFER,Y
 
-        /*
-         * Preserve the fetched byte while we potentially advance/refill
-         * PLA later will restore A and set N/Z to the returned value.
-         */
+        // Preserve the fetched byte while we potentially advance/refill
+        // PLA later will restore A and set N/Z to the returned value.
         pha
 
         // Post-increment the offset; wrap to $00 after $FF
@@ -642,19 +617,17 @@ disk_stream_next_byte:
         // If no wrap (offset != 0), we’re still within the same sector → done
         bne publish_byte
 
-        /*
-         * Offset wrapped to 0 → we just consumed the last byte of this sector.
-         * Advance to the next valid (track,sector) and load it into SECTOR_BUFFER ($0300).
-         */
-        jsr disk_next_sector_phys     			// updates current track/sector (0-based sector index)
-        jsr disk_read_sector_into_buffer        // blocking: retries until the next sector is loaded
+        // Offset wrapped to 0 → we just consumed the last byte of this sector
+        // Advance to the next valid (track,sector) and load it into the read buffer
+        jsr disk_next_phys_sector     			
+        jsr disk_read_sector_into_buffer        
 
-        // Be explicit: start at the beginning of the freshly loaded sector
+        // Start at the beginning of the freshly loaded sector
         lda #$00
         sta disk_buf_off
 
 publish_byte:
-        // Restore caller’s Y, then restore A = fetched byte (N/Z reflect A)
+        // Restore caller’s Y, then restore A = fetched byte
         ldy disk_y_saved_2
         pla
         rts
@@ -662,114 +635,92 @@ publish_byte:
 disk_y_saved_2:
         .byte $00                         // one-byte save area for Y
 /*
- * ===========================================
- * disk_next_sector_phys — advance sector index, wrap across tracks
- *
- * Summary:
- *   Increments the current sector index (0-based). If the new index exceeds the
- *   track’s maximum valid sector index from max_sector_index_by_track[track], wraps the
- *   sector to 0 and advances to the next track. Does not clamp at end-of-disk.
- *
- * Arguments:
- *   current_sector              0-based sector index; incremented and possibly wrapped to 0.
- *   current_track               Track number; incremented when sector wraps.
- *
- * Returns / Updates:
- *   current_sector              → sector+1 if within track bounds; else 0 on wrap.
- *   current_track               → unchanged if in-bounds; else +1 on wrap.
- *
- * Flags:
- *   Z/N/C                       Updated per last operations (no defined contract for caller).
- *
- * Clobbers:
- *   A, Y                        Used for compare/index; X preserved.
- *
- * Description:
- *   1) current_sector ← current_sector + 1.
- *   2) Load max_index ← max_sector_index_by_track[current_track].
- *   3) If current_sector ≤ max_index, keep track/sector and return.
- *   4) Otherwise, set current_sector ← 0 and increment current_track.
- *
- *   Note: Caller is responsible for handling end-of-disk (e.g., when current_track
- *   passes the last valid track for the medium).
- * ===========================================
- */
+================================================================================
+  disk_next_phys_sector
+================================================================================
+Summary
+		Increment current_sector. Wrap to (next track, sector 0) when the 
+		per-track maximum index is exceeded.
+
+Global Inputs
+        current_sector        		0-based sector index prior to increment.
+        current_track         		Track number prior to increment.
+        max_sector_index_by_track	Lookup table of per-track maximum sector index
+									(0-based) for the medium.
+
+Global Outputs
+        current_sector        Incremented by one if still within the track’s
+                              maximum index; otherwise reset to 0 on wrap.
+        current_track         Unchanged if the new sector index is in range;
+                              incremented by one when a wrap occurs.
+
+Description
+        - Increment the 0-based sector index and fetch the track’s maximum
+          sector index from max_sector_index_by_track.
+        - If the new index is less than or equal to the maximum, keep the
+          current track and use the updated sector.
+        - If the new index exceeded the maximum, wrap the sector back to 0 and
+          advance the track, leaving end-of-disk policy to the caller.
+================================================================================
+*/
 * = $45AE
-disk_next_sector_phys:
+disk_next_phys_sector:
         // Advance to the next sector index (0-based)
         inc current_sector
 
-        /*
-         * Geometry check: compare the new sector index (A) against the
-         * track’s MAX valid sector index from the table (0-based):
-         *   A = current_sector
-         *   Y = current_track (table index)
-         */
+        // Geometry check: compare the new sector index (A) against the
+        // track’s MAX valid sector index from the table (0-based):
+        //   A = current_sector
+        //   Y = current_track (table index)
         lda current_sector
         ldy current_track
-        cmp max_sector_index_by_track,Y          // A ?= max_sector_index[track]
+        cmp max_sector_index_by_track,Y          
 
-        /*
-         * In range if A ≤ max:
-         *   BCC → A < max  → ok
-         *   BEQ → A == max → ok (exactly the last valid sector)
-         */
-        bcc exit_1
-        beq exit_1
+        // In range if A ≤ max:
+        //   BCC → A < max  → ok
+        //   BEQ → A == max → ok (exactly the last valid sector)
+        bcc exit_dnsp
+        beq exit_dnsp
 
-        /*
-         * Overflowed past last sector on this track → wrap to sector 0
-         * and advance to the next track (no clamp at end-of-disk here).
-         */
+        // Overflowed past last sector on this track
+		// Advance to next track, sector 0
         lda #$00
         sta current_sector
         inc current_track
 
-exit_1:
+exit_dnsp:
         rts
 /*
- * ===========================================
- * disk_read_sector_into_buffer — fetch one sector into $0300 with retry
- *
- * Summary:
- *   Sets disk_dest_ptr to SECTOR_BUFFER ($0300) and attempts to read the sector
- *   identified by current_track / current_sector using disk_read_sector. 
- * 	I/O space is mapped in only for the call, then unmapped. 
- * 	On failure, prints DISK_ERROR_MSG and retries until the read succeeds. 
- * 	On success, records the loaded track/sector and restores caller registers.
- *
- * Arguments:
- *   current_track            Track number of the sector to read (input).
- *   current_sector           Sector number of the sector to read (input).
- *
- * Vars/State:
- *   disk_dest_ptr            Destination pointer; set to SECTOR_BUFFER before read.
- *
- * Returns:
- *   SECTOR_BUFFER..+$00FF    Filled with the sector just read.
- *   last_track_loaded        Updated to current_track.
- *   last_sector_loaded       Updated to current_sector.
- *
- * Flags:
- *   Carry/Z/N                Used internally for flow control; no defined flag
- *                            contract on return from this wrapper.
- *
- * Clobbers:
- *   A, X, Y                  X/Y preserved across the routine; originals restored.
- *
- * Description:
- *   1) Save X/Y to disk_x_save/disk_y_save.
- *   2) Set disk_dest_ptr = SECTOR_BUFFER ($0300) so disk_read_sector’s SMC store targets $0300.
- *   3) Loop:
- *        • Map I/O in (write MAP_IO_IN to $01).
- *        • Load X=current_track, Y=current_sector; JSR disk_read_sector.
- *        • Map I/O out (write MAP_IO_OUT to $01).
- *        • If C=0, success → break; else point print_msg_ptr at DISK_ERROR_MSG,
- *          print message, and retry.
- *   4) On success, copy current_track/current_sector into last_*_loaded.
- *   5) Restore X/Y and RTS.
- * ===========================================
- */
+================================================================================
+  disk_read_sector_into_buffer
+================================================================================
+Summary
+		Read (current_track,current_sector) into SECTOR_BUFFER 
+		with retry and UI error reporting until successful.
+
+Global Inputs
+        current_sector        Sector index (0-based) to read.
+        current_track         Track number to read.
+
+Global Outputs
+        disk_dest_ptr         Set to SECTOR_BUFFER so disk_read_sector stores
+                              into it.
+        last_sector_loaded    Updated to current_sector after a successful read.
+        last_track_loaded     Updated to current_track after a successful read.
+
+Description
+        - Save caller X/Y into dedicated scratch bytes so they can be
+          restored later.
+        - Initialize disk_dest_ptr so disk_read_sector’s self-modifying store
+          targets SECTOR_BUFFER.
+        - In a loop, map I/O in, invoke disk_read_sector for the current
+          (track,sector), and map I/O out afterward.
+        - On error (C=1), point print_msg_ptr at DISK_ERROR_MSG, call
+          print_message_wait_for_button, and retry the same sector.
+        - On success (C=0), record the loaded geometry in last_*_loaded,
+          restore caller X/Y, and return.
+================================================================================
+*/
 * = $45EB
 disk_read_sector_into_buffer:
         // Preserve caller registers used as temporary scratch by this routine
@@ -787,10 +738,8 @@ attempt_read_sector:
         ldy #MAP_IO_IN
         sty cpu_port
 
-        /*
-         * Kick off a sector read with current track/sector
-         * Contract: disk_read_sector returns C=0 on success, C=1 on error/special-fail
-         */
+        // Kick off a sector read with current track/sector
+        // Contract: disk_read_sector returns C=0 on success, C=1 on error/special-fail
         ldx current_track
         ldy current_sector
         jsr disk_read_sector
@@ -799,7 +748,7 @@ attempt_read_sector:
         ldy #MAP_IO_OUT
         sty cpu_port
 
-        // Success? (Carry clear means the sector was received into disk_dest_ptr)
+        // Success (carry clear)?
         bcc read_succeeded
 
         // Failure path: set message pointer → print → retry indefinitely
@@ -822,210 +771,168 @@ read_succeeded:
         // Restore caller’s X/Y and return (A/flags reflect last ops)
         ldx disk_x_save
         ldy disk_y_save
-		// buffer at $0300 filled; flags undefined
         rts
 /*
- * ===========================================
- * disk_write_sector — transmit 256-byte buffer to drive (SMC + abs,X stream)
- *
- * Summary:
- *   Sends DISK_CMD_WRITE for (track=X, sector=Y), synchronizes on the IEC bus,
- *   then streams exactly 256 bytes from disk_src_ptr..disk_src_ptr+$00FF to the drive.
- *   Uses self-modifying code to patch an absolute LDA operand, enabling a tight
- *   abs,X read → send loop for throughput.
- *
- * Arguments:
- *   X       		           Track number to write.
- *   Y 		                   Sector number to write.
- *   disk_src_ptr               Source base address (lo/hi) of 256-byte buffer.
- *
- * Returns:
- *   Carry                      C=0 on completion of the 256-byte transmit.
- *   Registers                  A, X, Y clobbered; flags updated.
- *
- * Flags:
- *   Carry                      Explicitly cleared on exit (success path).
- *   Z/N                        From last loop ops (no defined contract).
- *
- * Description:
- *   1) Latches (X,Y) into iec_cmd_track/iec_cmd_sector.
- *   2) Patches the two-byte absolute operand used by `LDA $FFFF,X`
- *      (label: disk_load_abs) with disk_src_ptr (self-modifying code in RAM).
- *   3) Issues DISK_CMD_WRITE via iec_send_cmd, then calls
- *      iec_sync to align bus timing.
- *   4) Loops X=0..$FF:
- *        LDA abs(disk_src_ptr)+X  → JSR iec_send_byte → INX
- *      When X wraps after $FF, the loop terminates and the routine returns C=0.
- *
- * Notes:
- *   • Routine must execute from RAM (SMC).
- *   • Caller should ensure I/O mapping and any broader protocol framing are set
- *     appropriately before/after this routine; this routine only sends the sector.
- * ===========================================
- */
+================================================================================
+  disk_write_sector
+================================================================================
+Summary
+		Stream exactly 256 bytes from disk_src_ptr to the drive at (X=track,Y=sector).
+
+Arguments
+        X  					Track number of the target sector.
+        Y  					Sector number of the target sector.
+        disk_src_ptr		Base address (lo/hi) of a 256-byte buffer to transmit.
+
+Returns
+        Carry  				0 to signal successful transmission of 256 bytes.
+
+Global Inputs
+        disk_src_ptr        Base address of the sector payload in RAM.
+
+Description
+        - Latch the caller’s track and sector into the IEC command parameter
+          globals for later use by the drive code.
+        - Patch the operand of an LDA absolute,X instruction so it reads from
+          disk_src_ptr, enabling a tight 256-byte streaming loop over the
+          caller’s buffer.
+        - Send the DISK_CMD_WRITE opcode with iec_send_cmd and align bus timing
+          with iec_sync.
+        - Loop X from 0 to $FF, loading from the patched absolute,X source and
+          sending each byte via iec_send_byte.
+        - When X wraps after 256 bytes, clear carry and return to the caller,
+          leaving protocol-level completion and error detection to the higher
+          layers.
+================================================================================
+*/
 * = $4641
 disk_write_sector:
         // Stash target location for the drive to write to
-        stx iec_cmd_track                    // track  ← X
-        sty iec_cmd_sector                   // sector ← Y
+		// X = track, Y = sector
+        stx iec_cmd_track       
+        sty iec_cmd_sector      
 
-        /*
-         * Self-modify the absolute LDA used in the data loop so it reads from disk_src_ptr
-         *   LDA $4000,X  ; operand ($4000) is patched below with disk_src_ptr (lo/hi)
-         */
+        // Self-modify the absolute LDA used in the data loop so it reads from disk_src_ptr
+        //   LDA $4000,X  ; operand ($4000) is patched below with disk_src_ptr (lo/hi)
         lda disk_src_ptr
-        sta disk_load_abs                // set low  byte of source base
+        sta disk_load_abs                
         lda disk_src_ptr + 1
-        sta disk_load_abs + 1            // set high byte of source base
+        sta disk_load_abs + 1            
 
         // Issue the “write sector” command, then synchronize bus state before data phase
         lda #DISK_CMD_WRITE
-        jsr iec_send_cmd            		// transmits opcode to drive (IEC framing/handshake inside)
-        jsr iec_sync                  		// waits for ready timing on the serial bus
+        jsr iec_send_cmd            		
+        jsr iec_sync                  		
 
         // Stream exactly 256 bytes: X is the byte index (0..255). When X wraps to 0, we’re done.
         ldx #$00
 send_next_byte:
         // Read next data byte from the caller’s buffer (absolute operand patched above)
-        lda $4000,X                         // A ← *(disk_load_abs + X)  (absolute operand SMC-patched above)
+		// Put data byte in .A
+        lda $4000,X                         
 .label disk_load_abs = * - 2
 
         // Send the byte over the serial bus to the drive
         jsr iec_send_byte
 
         // Advance to next byte; continue until X wraps ($FF→$00) after 256 sends
-        inx									// X: 00..FF → wraps to 00 after 256 bytes
-        bne send_next_byte					// loop until wrap
+        inx									
+        bne send_next_byte					
 
         // Success path (no error signalling from the inner loop): return C=0
         clc
         rts
 /*
- * ===========================================
- * disk_reset — issue drive reset opcode over IEC
- *
- * Summary:
- *   Sends DISK_CMD_RESET to the disk drive using the low-level transmit
- *   routine. No track/sector parameters are used; the command is a single
- *   operation byte that instructs the drive to reset itself.
- *
- * Arguments:
- *   (none)                    The routine loads A with DISK_CMD_RESET internally.
- *
- * Returns:
- *   (none)                    No success/failure code is returned by this wrapper.
- *   Registers                 A/X/Y clobbered by callees; condition flags updated.
- *
- * Description:
- *   Loads A with DISK_CMD_RESET and calls iec_send_cmd, which performs
- *   the IEC handshake and byte framing. 
- *
- * 	After the command is sent, the routine returns immediately; the drive completes 
- * 	its own reset/initialization.
- *
- *   Callers should re-synchronize with the bus and/or reinitialize any cached
- *   drive state as needed after invoking this routine.
- * ===========================================
- */
+================================================================================
+  disk_reset_drive
+================================================================================
+Summary
+		Send DISK_CMD_RESET over the serial bus to request that the drive 
+		perform its own reset sequence.
+
+Description
+        - Load the drive-reset opcode into A and call iec_send_cmd so that the
+          command is framed and transmitted over IEC.
+        - Return immediately after queuing the command; any required bus
+          resynchronization or drive-state reinitialization is the caller’s
+          responsibility.
+================================================================================
+*/
 * = $4668
-disk_reset:
-        /*
-         * Load the protocol opcode for a drive reset.
-         * (This command ignores track/sector; only the operation byte matters.)
-         */
+disk_reset_drive:
+		// Load the protocol opcode for a drive reset.
+		// (This command ignores track/sector; only the operation byte matters.)
         lda #DISK_CMD_RESET              
 
-        /*
-         * Transmit the reset command to the drive over IEC.
-         * iec_send_cmd handles the bus handshake and byte framing.
-         */
+		// Send the reset command to the drive
         jsr iec_send_cmd
-
-        // Return to caller. The drive will proceed with its own reset/init.
         rts
 /*
- * ===========================================
- * disk_read_sector — receive a sector into caller buffer (handles escapes & EOD)
- *
- * Summary:
- *
- *   Sends a DISK_CMD_READ for (track=X, sector=Y), synchronizes with the drive,
- *   then streams the sector payload into the caller-provided buffer at disk_dest_ptr.
- *
- *   Bytes are received one-by-one; a prefix 0x01 introduces special sequences:
- *     01 01 → literal 0x01 (escaped)          	→ store and continue
- *     01 81 → end-of-data (success)          	→ C=0, RTS
- *     01 11 → error                            	→ C=1, RTS
- *     01 21 → sync request                     	→ resync, continue
- *   Any other 01 xx causes a deliberate hang (border=green) for debugging.
- *
- * Arguments:
- *   X 		                      Track number to read.
- *   Y 		                      Sector number to read.
- *   disk_dest_ptr 		          Destination base address (lo/hi). The routine
- *                                 self-modifies an absolute STA $FFFF,X to target disk_dest_ptr.
- *
- * Returns:
- *   Caller must ensure the destination region is large enough; the routine
- *   continues writing beyond the first page if EOD is delayed.
- *
- *   Carry                         C=0 on success (EOD seen), C=1 on error marker.
- * 	disk_dest_ptr onward               Data stored starting at disk_dest_ptr; if X wraps, the
- *                                 patched high byte is incremented and writes continue
- *                                 into the next page until EOD.
- *
- * Flags:
- *   Z/N                           From the last data CMP/STA path (undefined contract).
- *
- * Clobbers:
- *   A, X, Y, C                    X is used as the running byte offset (0..255).
- *
- * Description:
- *
- *   1) Latches track/sector into iec_cmd_track/iec_cmd_sector.
- *
- *   2) Patches the absolute store operand (disk_store_abs) with disk_dest_ptr, so
- *      each data byte is stored via STA abs(disk_dest_ptr)+X (self-modified). When X wraps ($FF→$00), the
- *      patched high byte is incremented to advance to the next page.
- *
- *   3) Issues the command via iec_send_cmd, then calls iec_sync.
- *
- *   4) Receives bytes with iec_recv_byte, interpreting 0x01-prefixed
- *      sequences as protocol control. On SYNC request (01 21), performs a sync and
- *      resumes the stream without losing position.
- *
- *   5) On DISK_RX_EOD returns C=0; on DISK_RX_ERR returns C=1. Any unknown
- *      01 xx pattern enters hang_loop after painting the border green.
- * ===========================================
- */
+================================================================================
+  disk_read_sector
+================================================================================
+Summary
+		Read a sector into disk_dest_ptr using an escape-coded stream that 
+		handles EOD, errors, sync requests, and fatal protocol faults.
+
+Arguments
+        X  				Track number to read.
+        Y  				Sector number to read.
+        disk_dest_ptr	Base address (lo/hi) of the destination buffer
+
+Returns
+        Carry  			0 on end-of-data (success)
+						1 if an error marker was seen.
+
+Global Inputs
+        disk_dest_ptr   Base destination address for received bytes.
+
+Global Outputs
+        disk_dest_ptr 	Destination memory filled with the received
+                        sector payload until EOD or error.
+
+Description
+        - Latch the caller’s track and sector into disk command globals and
+          patch the operand of a STA absolute,X instruction so that each data
+          byte is stored at disk_dest_ptr+X, spilling into subsequent pages
+          when X wraps.
+        - Send DISK_CMD_READ and synchronize the serial bus before starting the
+          data phase.
+        - In a loop, receive bytes with iec_recv_byte and interpret a leading
+          DISK_RX_ESC (0x01) as the start of a control sequence:
+			  - ESC_ESC → treat as literal 0x01 data and store it.
+			  - EOD     → set C=0 and return (successful end-of-data).
+			  - ERR     → set C=1 and return (error reported by drive).
+			  - SYNC    → call iec_sync and continue receiving.
+			  - Any other discriminator → paint the border with DISK_FAULT_BORDER
+				and enter an infinite hang for debugging.
+        - For ordinary data bytes, store via the SMC-patched STA absolute,X,
+          increment X, and on wrap increment the high byte of the store
+          operand to continue into the next page.
+================================================================================
+*/
 * = $466E
 disk_read_sector:
-        // Set command parameters for low-level I/O
+        // Track and sector come in X/Y
+		// Stash them into command parameters
         stx iec_cmd_track                  // track ← X
         sty iec_cmd_sector                 // sector ← Y
 
-        /*
-         * Patch the absolute store used below (self-modifying)
-         *   STA $FFFF,X  ; operand ($FFFF) is replaced with disk_dest_ptr
-         */
+        // Patch the absolute store used below (self-modifying)
+        //   STA $FFFF,X  ; operand ($FFFF) is replaced with disk_dest_ptr
         lda disk_dest_ptr
-        sta disk_store_abs            		// set low byte of target address
+        sta disk_store_abs            		
         lda disk_dest_ptr + 1
-        sta disk_store_abs + 1        		// set high byte of target address
+        sta disk_store_abs + 1        		
 
-        // Select the “read sector” operation
+        // Issue "read sector" command to the drive, then synchronize bus state
         lda #DISK_CMD_READ
-
-        // Issue command to the drive, then synchronize bus state
         jsr iec_send_cmd
         jsr iec_sync
 
-        /*
-         * Use X as the running offset into the destination page
-         * (X will wrap after $FF → $00; we detect that to bump the high byte)
-         */
+        // Use X as the running offset into the destination page
+        // (X will wrap after $FF → $00; we detect that to bump the high byte)
         ldx #$00
-
 next_byte:
         // Receive one byte from the serial bus
         jsr iec_recv_byte
@@ -1053,23 +960,20 @@ next_byte:
         cmp #DISK_RX_SYNC
         bne hang_loop                      	// unknown 01 xx ⇒ fatal: hang for debugging
 
-        // Perform requested sync then resume the stream
+        // Perform sync then resume the stream
         jsr iec_sync
         jmp next_byte
 
 store_in_buffer:
-        /*
-         * Store byte at inlined destination + X
-         * (absolute address below is patched at entry via disk_store_abs)
-         */
+        // Store byte at inlined destination + X
+        // (absolute address below is patched at entry via disk_store_abs)
         sta $FFFF,X                        	// write to disk_dest_ptr + X
 .label disk_store_abs = * - 2
 
         // Advance offset; if X wrapped ($FF→$00), bump the high byte of dest
         inx
-        bne next_byte_2                    	// no wrap → keep filling same page
-        inc disk_store_abs + 1        		// wrapped → advance to next page
-
+        bne next_byte_2                    	
+        inc disk_store_abs + 1        		
 next_byte_2:
         jmp next_byte
 
@@ -1082,39 +986,54 @@ command_success:
         rts
 
 hang_loop:
-        // Fatal/unknown sequence: mark screen border, spin forever
+        // Fatal/unknown sequence: mark screen border, loop forever
         lda #DISK_FAULT_BORDER
         sta vic_border_color_reg
         jmp hang_loop
+/*
+================================================================================
+  disk_ensure_correct_side
+================================================================================
+Summary
+		Block gameplay and repeatedly read the disk side-ID until it matches 
+		the requested side digit, prompting the user as needed.
+		
+        The desired ID is a digit character code ('1' or '2') that is also 
+		displayed in an on-screen prompt.
 
-/*===========================================
- * disk_ensure_side — ensure the correct disk side is inserted
- *
- * Summary:
- *   Blocks the game loop until the inserted disk’s side ID matches the
- *   desired side. The caller passes the desired ID as a digit character
- *   ('1' = $31, '2' = $32). The routine patches that digit into an on-screen
- *   prompt, reads the ID byte from Track 1 / Sector 0, and loops until equal.
- *
- * Arguments:
- *   A                         Desired side ID as a character code ($31/$32).
- *
- * Reads/Writes:
- *   active_side_id           Stores the desired digit for later compare.
- *
- * Returns:
- *   On success:               RTS after unpausing; A holds the matching ID.
- *   Clobbers:                 A, X, Y; ZP print_msg_ptr ($DA/$DB).
- *
- * Notes:
- *   - The ID on media is stored as the same digit character used for display.
- *   - No timeout/cancel path: the user must insert the correct side.
- *===========================================*/
+Arguments
+        A  		Desired side ID as an ASCII digit code (e.g., $31 for '1').
+
+Returns
+        A  		Holds the matching side ID read from media when the routine returns.
+
+Global Outputs
+        active_side_id        Updated to the requested digit and used for
+                              subsequent comparisons.
+							  
+Description
+        - Patch the SIDE_ID_MSG string so that its placeholder digit displays
+          the desired side ID, and remember that digit in active_side_id.
+        - Call pause_game to suspend normal gameplay while the disk side is
+          being verified.
+        - In a loop:
+          - Use disk_init_chain_and_read with (sector=SIDE_ID_SECTOR,
+            track=SIDE_ID_TRACK) to read the side-ID sector into
+            SECTOR_BUFFER.
+          - Call disk_stream_next_byte to fetch the first byte from that
+            sector, which is treated as the side ID on media.
+          - If it matches active_side_id, call unpause_game and return with A
+            holding the matching ID.
+          - If it does not match, update print_msg_ptr to SIDE_ID_MSG, show the
+            prompt via print_message_wait_for_button, and retry until the user
+            inserts the correct disk side.
+================================================================================
+*/
 * = $3AEB
-disk_ensure_side:
+disk_ensure_correct_side:
         // Patch the prompt with the requested digit and remember it for compare.
-        sta SIDE_ID_MSG + SIDE_ID_DIGIT_OFF   // display the desired side in the message
-        sta active_side_id                   // keep for CMP below
+        sta SIDE_ID_MSG + SIDE_ID_DIGIT_OFF   	// display the desired side in the message
+        sta active_side_id            			// keep for CMP below
 		
         // Suspend gameplay while waiting for user to insert the correct side.
         jsr pause_game
@@ -1123,10 +1042,10 @@ read_side_id:
         // Seek and read the very first byte on disk (T=1,S=0) - this is the side ID.
         ldx #SIDE_ID_SECTOR
         ldy #SIDE_ID_TRACK
-        jsr disk_init_chain_and_read          // position stream at T1/S0 and prime read
-        jsr disk_stream_next_byte             // A := first byte (side ID from media)
+        jsr disk_init_chain_and_read          	
+        jsr disk_stream_next_byte             	
 
-        // Match the desired digit? If yes, resume gameplay and return.
+        // Matches the desired digit? If yes, resume gameplay and return.
         cmp active_side_id
         bne side_id_mismatch
         jsr unpause_game
@@ -1142,3 +1061,264 @@ side_id_mismatch:
 
         // Retry reading the side ID until it matches the desired digit.
         jmp read_side_id
+
+/*
+Pseudo-code
+
+function disk_init_chain(sector, track):
+    // Called with X=sector, Y=track in the real code
+    start_sector      = sector
+    start_track       = track
+
+    last_sector_loaded = 0   // mark “no cached sector yet”
+    last_track_loaded  = 0
+
+    disk_start_off    = 0    // start at byte 0 of sector
+    disk_chain_step   = 0    // first sector in chain
+
+
+function disk_init_chain_and_read(sector, track):
+    // ABI: X=sector, Y=track
+    disk_init_chain(sector, track)
+
+    offset    = disk_start_off   // always 0 after init
+    step      = disk_chain_step  // always 0 after init
+
+    // Fall through to “seek and read” using offset/step
+    disk_seek_and_read_sector(offset, step)
+    // Returns when disk_seek_and_read_sector completes
+
+
+function disk_seek_and_read_sector(offset, step):
+    // Persist caller’s parameters
+    disk_start_off  = offset
+    disk_chain_step = step
+
+    // Initialize cursor from seed
+    current_sector = start_sector
+    current_track  = start_track
+
+    // Advance “step” sectors in physical order
+    for i in 1 .. step:
+        disk_next_phys_sector()
+
+    // Set initial byte offset inside the selected sector
+    disk_buf_off = disk_start_off
+
+    // Load (current_track,current_sector) into SECTOR_BUFFER with retry
+    disk_read_sector_into_buffer()
+
+
+function disk_stream_copy(dest_ptr, byte_count):
+    // Precondition: byte_count > 0 (16-bit non-zero)
+    // SMC: internally patches an inlined destination pointer to dest_ptr
+
+    dst = dest_ptr
+    remaining = byte_count
+
+    while remaining > 0:
+        byte = disk_stream_next_byte()   // abstract stream source
+        *dst = byte                      // store to current destination
+        dst = dst + 1                    // advance destination pointer
+
+        remaining = remaining - 1
+
+
+function disk_write_linear(src_ptr, byte_count):
+    // src_ptr: base of linear buffer
+    // byte_count: total bytes (16-bit)
+    // Precondition: byte_count > 0 (file warns: zero ⇒ bad behavior)
+
+    disk_src_ptr = src_ptr
+
+    current_sector = start_sector
+    current_track  = start_track
+
+    // Convert bytes → sectors: ceil(byte_count / 256)
+    sectors_to_write = byte_count / 256
+    if (byte_count % 256) != 0:
+        sectors_to_write += 1
+
+    while sectors_to_write > 0:
+        // Try to write one 256-byte page to (current_track,current_sector)
+        success = disk_write_sector(current_track, current_sector, disk_src_ptr)
+
+        if not success:
+            // Show UI error and retry same sector
+            print_msg_ptr = &DISK_ERROR_MSG
+            print_message_wait_for_button()
+            // Do not advance geometry or buffer; loop repeats
+            continue
+
+        // Successful sector write:
+        //  - advance physical geometry
+        //  - advance source pointer by 256 bytes
+        disk_next_phys_sector()
+        disk_src_ptr = disk_src_ptr + 256
+
+        sectors_to_write -= 1
+
+
+function disk_stream_next_byte() -> byte:
+    // Fetch byte from current sector buffer
+    index = disk_buf_off
+    byte  = SECTOR_BUFFER[index]
+
+    // Increment offset within sector
+    disk_buf_off = (disk_buf_off + 1) & 0xFF
+
+    if disk_buf_off != 0:
+        // Still within same sector; no refill needed
+        return byte
+
+    // Wrapped past last byte in sector: advance geometry + refill buffer
+    disk_next_phys_sector()
+    disk_read_sector_into_buffer()
+    disk_buf_off = 0   // start at beginning of new sector
+
+    return byte
+
+
+function disk_next_phys_sector():
+    current_sector += 1
+
+    max_index = max_sector_index_by_track[current_track]
+
+    if current_sector <= max_index:
+        // Still within this track
+        return
+
+    // Wrapped beyond last sector of this track
+    current_sector = 0
+    current_track  += 1
+    // No global clamp: caller must enforce end-of-disk policy
+
+
+function disk_read_sector_into_buffer():
+    // Configure low-level destination
+    disk_dest_ptr = &SECTOR_BUFFER[0]
+
+    loop:
+        // Low-level read of (current_track,current_sector) into disk_dest_ptr
+        success = disk_read_sector(current_track, current_sector, disk_dest_ptr)
+
+        if success:
+            break
+
+        // On error: show message and retry indefinitely
+        print_msg_ptr = &DISK_ERROR_MSG
+        print_message_wait_for_button()
+        // Loop retries same (track,sector)
+
+    // Bookkeeping: remember which sector is cached
+    last_sector_loaded = current_sector
+    last_track_loaded  = current_track
+
+
+
+function disk_write_sector(track, sector, src_ptr) -> bool:
+    // Latch command parameters for drive-side code
+    iec_cmd_track  = track
+    iec_cmd_sector = sector
+
+    // Send “write sector” opcode and sync bus
+    iec_send_cmd(DISK_CMD_WRITE)
+    iec_sync()
+
+    // Stream exactly 256 bytes: X = 0..255
+    for i in 0 .. 255:
+        byte = *(src_ptr + i)
+        iec_send_byte(byte)
+
+    // No error path signaled from here; carry=0 in real code
+    return true
+
+
+function disk_reset_drive():
+    // Send single reset opcode; drive performs internal reset
+    iec_send_cmd(DISK_CMD_RESET)
+
+
+function disk_read_sector(track, sector, dest_ptr) -> bool:
+    // Latch command parameters
+    iec_cmd_track  = track
+    iec_cmd_sector = sector
+
+    // Send “read sector” opcode and sync
+    iec_send_cmd(DISK_CMD_READ)
+    iec_sync()
+
+    offset = 0    // X in real code
+    high_page_adjust = 0   // modeled by incrementing patched hi-byte
+
+    loop:
+        byte = iec_recv_byte()
+
+        if byte != DISK_RX_ESC:
+            // Ordinary data byte: store and advance offset
+            *(dest_ptr + high_page_adjust + offset) = byte
+            offset = (offset + 1) & 0xFF
+            if offset == 0:
+                // Crossed a page boundary; adjust destination high byte
+                high_page_adjust += 256
+            goto loop
+
+        // Escape prefix: read discriminator
+        code = iec_recv_byte()
+
+        if code == DISK_RX_ESC_ESC:
+            // Literal 0x01 data
+            literal = 0x01
+            *(dest_ptr + high_page_adjust + offset) = literal
+            offset = (offset + 1) & 0xFF
+            if offset == 0:
+                high_page_adjust += 256
+            goto loop
+
+        if code == DISK_RX_EOD:
+            // End-of-data: success
+            return true
+
+        if code == DISK_RX_ERR:
+            // Error reported by drive
+            return false
+
+        if code == DISK_RX_SYNC:
+            // Resync bus and continue
+            iec_sync()
+            goto loop
+
+        // Unknown control code: fatal debug path
+        set_vic_border_color(DISK_FAULT_BORDER)
+        while true:
+            ; // hang
+
+
+function disk_ensure_correct_side(desired_digit_char):
+    // desired_digit_char = '1' or '2' (ASCII)
+    // Patch prompt and remember requested side
+    SIDE_ID_MSG[SIDE_ID_DIGIT_OFF] = desired_digit_char
+    active_side_id = desired_digit_char
+
+    pause_game()
+
+    loop:
+        // Read side-ID sector: Track=SIDE_ID_TRACK, Sector=SIDE_ID_SECTOR
+        disk_init_chain_and_read(sector = SIDE_ID_SECTOR,
+                                 track  = SIDE_ID_TRACK)
+
+        // First byte of that sector is the side ID on media
+        side_id_from_disk = disk_stream_next_byte()
+
+        if side_id_from_disk == active_side_id:
+            // Correct side inserted
+            unpause_game()
+            return
+
+        // Wrong side: show prompt and wait for user to swap disks
+        print_msg_ptr = &SIDE_ID_MSG
+        print_message_wait_for_button()
+
+        // Try again (loop)
+
+*/

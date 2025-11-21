@@ -1,3 +1,97 @@
+/*
+================================================================================
+  Room Loader / Scene Switcher
+================================================================================
+
+Overview
+	Orchestrates the full lifecycle of a room (scene) in memory, from
+	disk-backed resource loading to per-frame-ready in-RAM structures.
+	It bridges the low-level resource manager and the higher-level script,
+	actor, and rendering systems.
+
+Responsibilities:
+	- Room switching:
+		- Tear down the current room (UI, actors, sprites, EXIT script).
+		- Switch current_room to a new index or to “no room”.
+		- Bring up the new room (ENTRY script, sounds, scripts, costumes).
+	- Residency and caching:
+		- Ensure a room resource is resident in RAM on demand.
+		- Maintain room pointers (room_ptr_*_tbl) and a combined lock/age
+		attribute (room_liveness_tbl) for LRU-style management.
+		- Age the previous room, mark the active room as most-recently used,
+		and increment ages for other resident rooms.
+
+Data layout:
+	- Per-room metadata block:
+		- Fixed 8-bit fields (width, height, video flag, background colors).
+		- Fixed 16-bit offsets to compressed graphics layers (tile matrix,
+		color, mask, mask indexes).
+		- Object_count, sounds_count, scripts_count, and script entry/exit
+		pointers.
+	- Per-object tables:
+		- N×16-bit table of per-object compressed gfx offsets.
+		- N×16-bit table of per-object record offsets.
+		- Object records with packed fields for IDs, geometry, parent links,
+		destinations, and flags; scattered into per-field arrays.
+
+	Major routines:
+	- switch_to_room:
+		- High-level entry point for switching scenes; handles teardown of
+		current room, calls load_room_gfx_and_objects, then runs ENTRY
+		script, loads sounds/scripts, spawns actors for present costumes,
+		and requests the open-shutter transition.
+	- load_room_gfx_and_objects:
+		- Switches current_room to X, ages the old room in
+		room_liveness_tbl, releases room-layer resources, handles the
+		“no room” sentinel case, and, for a non-zero room, ensures
+		residency, reads metadata/objects/graphics, and performs an LRU
+		age pass across all resident rooms.
+	- cache_room:
+		- Fast path skips disk if room_ptr_hi_tbl[X] is non-zero and only
+		updates liveness; cold path primes the disk chain, loads the room
+		via the resource manager, publishes its base pointer, and then
+		sets its age to 1 while preserving the lock bit.
+	- load_room_metadata:
+		- Uses current_room to locate room_base, skips the 4-byte header,
+		copies the 8-bit and 16-bit metadata fields into a local buffer,
+		installs room EXIT/ENTRY script pointers, and reads the 4-byte
+		symbol dictionaries for tile, color, and mask compressed streams.
+	- load_room_objects:
+		- Reads object_count from metadata, builds the per-object gfx-offset
+		and record-offset tables, then walks each object record to scatter
+		IDs, geometry, parent indices, destinations, and destination flags
+		into the engine’s attribute arrays.
+	- read_room_graphics:
+		- Programs VIC background colors for the active room, then decodes
+		the tile-definition stream into the tile bitmap page and loads the
+		mask-pattern block: size-prefixed, heap-allocated, tagged as a
+		ROOM_LAYERS resource, and filled via the shared dict-4 decoder.
+	- load_room_sounds_and_scripts:
+		- Reads sound/script counts from metadata and walks a single
+		subresource index table (sounds first, scripts second) to ensure
+		each referenced sound and script resource is resident.
+	- get_room_sounds_base_address:
+		- Computes the base pointer to the shared subresource index table
+		for the active room, located after the two N×2 per-object offset
+		tables (gfx offsets and record offsets).
+	- spawn_actors_for_room_costumes:
+		- Scans all costume slots; for any slot whose actor_for_costume
+		sentinel indicates “unassigned” and whose costume_room_idx matches
+		current_room, ensures its costume resource is resident and binds a
+		free actor slot to it.
+
+Invariants and conventions:
+	- Index 0 is used as a “no room” sentinel in the liveness table and
+	room switching logic.
+	- room_liveness_tbl encodes lock and age in a single byte: bit7 is the
+	lock bit, bits0..6 form an age counter (0 = most recent).
+	- Per-object offset tables are effectively 1-based: table index 0..1
+	are reserved and the first actual object entry starts at pair index 2.
+	- Compressed graphic layers share a small dict-4 stream format with a
+	4-byte symbol dictionary stored at the beginning of each stream.
+================================================================================
+*/
+
 #importonce
 
 #import "constants.inc"
@@ -12,11 +106,13 @@
 
 
 // ---------------------------------------------------------
-// Room meta layout (offsets from start of metadata, or from room_base + 4)
+// Room metadata layout (offsets from start of metadata, or from room_base + 4)
 // ---------------------------------------------------------
+// - 16-bit fields are little-endian: lo at base+ofs, hi at base+ofs+1.
+// - All offsets are byte offsets from (room_base + 4), i.e., past the 4-byte header.
 .const ROOM_META_WIDTH_OFS          = $00  // room width in tiles
-.const ROOM_META_HEIGHT_OFS         = $01  // room height in tiles (always $11)
-.const ROOM_META_VIDEO_FLAG_OFS     = $02  // video/render flag (observed $00)
+.const ROOM_META_HEIGHT_OFS         = $01  // room height in tiles
+.const ROOM_META_VIDEO_FLAG_OFS     = $02  // video/render flag
 .const ROOM_META_BG0_OFS            = $03  // background color 0
 .const ROOM_META_BG1_OFS            = $04  // background color 1
 .const ROOM_META_BG2_OFS            = $05  // background color 2
@@ -32,25 +128,21 @@
 .const ROOM_EXIT_SCRIPT_OFS         = $14   // +$14..+$15 = exit script offset (16-bit)
 .const ROOM_ENTRY_SCRIPT_OFS        = $16   // +$16..+$17 = entry script offset (16-bit)
 .const ROOM_META_OBJ_GFX_OFS        = $18   // +$18..+$19 = offsets for objects' compressed gfx layers (16-bit)
+
 /* ROOM_OBJ_ABS_START
  * Absolute byte offset (from room_base) to the start of the per-object
  * compressed-graphics offsets table.
+ 
  * Defined as: ROOM_META_OBJ_GFX_OFS (relative to room_base+MEM_HDR_LEN) + MEM_HDR_LEN,
  * so typically $18 + $04 = $1C.
- * Usage: the subresource index table begins at
- *   room_base + ROOM_OBJ_ABS_START + (4 * object_count)
- * because two N×2 tables (gfx_ofs, record_ofs) precede it.
+ 
  */
 .const ROOM_OBJ_ABS_START  = ROOM_META_OBJ_GFX_OFS + MEM_HDR_LEN
-
-// Notes:
-// - 16-bit fields above are little-endian: lo at base+ofs, hi at base+ofs+1.
-// - All offsets are byte offsets from (room_base + 4), i.e., past the 4-byte header.
 
 /* ---------------------------------------------------------
  * Object metadata field offsets (relative to object record base), bytes
  * Notes:
- *   - These offsets are read by room_read_objects when scattering fields.
+ *   - These offsets are read by load_room_objects when scattering fields.
  *   - Packed fields:
  *       +$07: bit7 = parent_possible, bits0..6 = y_start
  *       +$0B: bits7..5 = prep_index (unused here), bits4..0 = y_destination
@@ -92,112 +184,154 @@
 
 
 // symbol dictionaries for decompression (copied before stream)
-.label tile_dict         = $714A
-.label color_dict        = $714E
-.label mask_dict         = $7152
+.label tile_dict              = $714A    // 4-byte symbol dictionary for the tile stream
+.label color_dict             = $714E    // 4-byte symbol dictionary for the color stream
+.label mask_dict              = $7152    // 4-byte symbol dictionary for the mask-index stream
 
-// room_read_metadata vars
-.label room_base = $c3
-.label read_ptr = $15
+// load_room_metadata vars
+.label room_base_lo           = $C3      // low byte of current room resource base
+.label room_base_hi           = $C4      // high byte of current room resource base
+.label read_ptr_lo            = $15      // low byte of metadata/record read pointer
+.label read_ptr_hi            = $16      // high byte of metadata/record read pointer
 
-// room_ensure_resident vars
-.label room_data_ptr_local = $387b
-.label room_index = $387d
+// cache_room vars
+.label room_data_ptr_local_lo = $387B    // low byte of freshly loaded room base
+.label room_data_ptr_local_hi = $387C    // high byte of freshly loaded room base
+.label room_index             = $387D    // room index used when publishing pointer/tables
 
-// room_read_objects vars
-.label obj_count_remaining = $1d
-.label object_idx = $1b
+// load_room_objects vars
+.label obj_count_remaining    = $1D      // remaining objects to process in current room
+.label object_idx             = $1B      // 1-based object index for table/record access
 
-// room_load_sounds_and_scripts vars
-.label room_sounds_base = $15
-.label sound_count_left = $17
-.label script_count_left = $18
-.label meta_ptr = $19
+// load_room_sounds_and_scripts vars
+.label room_sounds_base       = $15      // base pointer (lo/hi) to sounds+scripts index table
+.label sound_count_left       = $17      // remaining sounds to ensure resident
+.label script_count_left      = $18      // remaining scripts to ensure resident
+.label meta_ptr               = $19      // pointer (lo/hi) to room metadata block
 
-//room_spawn_present_costumes vars
-.label unused = $3880
+// spawn_actors_for_room_costumes vars
+.label unused                 = $3880    // legacy scratch byte written on entry (no semantics)
+
+// read_room_graphics vars
+.label bytes_left_lo          = $15      // remaining bytes to decode (low byte)
+.label bytes_left_hi          = $16      // remaining bytes to decode (high byte)
+.label payload_len_lo         = $1D      // payload size prefix for mask block (low byte)
+.label payload_len_hi         = $1E      // payload size prefix for mask block (high byte)
+.label gfx_read_ptr_lo        = $27      // compressed-stream read pointer (low byte)
+.label gfx_read_ptr_hi        = $28      // compressed-stream read pointer (high byte)
+.label gfx_write_ptr_lo       = $19      // decode destination write pointer (low byte)
+.label gfx_write_ptr_hi       = $1A      // decode destination write pointer (high byte)
+.label gfx_alloc_base_lo      = $4F      // base of allocated mask-pattern block (low byte)
+.label gfx_alloc_base_hi      = $50      // base of allocated mask-pattern block (high byte)
+.label dbg_room_width         = $FD91    // debug mirror of room_width for diagnostics
+.label dbg_room_height        = $FD92    // debug mirror of room_height for diagnostics
 
 
-//read_room_graphics vars
-.label bytes_left	      	= $15   // byte counter  (16-bit)
-.label payload_len		    = $1d   // payload size read from stream (16-bit)
-.label gfx_read_ptr 		= $27 	// generic read pointer / decomp source (16-bit pointer)
-.label gfx_write_ptr 		= $19 	// generic write pointer (16-bit pointer)
-.label gfx_alloc_base      		= $4f   // mem_alloc return (16-bit pointer)
-.label dbg_room_width    	= $fd91 // debug mirror: room width
-.label dbg_room_height   	= $fd92 // debug mirror: room height
+/*
+================================================================================
+  switch_to_room
+================================================================================
+Summary
+	Switch to another room and hydrate assets.
+	
+	Tear down the current room cleanly, switch to a new room given by X,
+	then bring up its scripts, sounds, actors, and raster state, finishing
+	with an “open shutter” transition.
 
+Arguments
+	X                       Incoming target room index to activate.
 
-/*===========================================
- * load_room: switch to a new room and (re)hydrate scene state
- *
- * Summary:
- *   Tears down the current room cleanly, switches assets to the target room,
- *   then brings up logic/content for the new scene (entry script, sounds,
- *   scripts, actors), and finalizes display state (camera, raster, shutter FX).
- *
- * Arguments:
- *   X (incoming)              New room index to activate.
- *
- * Returns:
- *   (none)                    Control returns to caller after the new room is ready.
- *   Registers                 A/X/Y clobbered.
- *   Flags                     Modified by subcalls; no guarantees to callers.
- *
- * Description:
- *   - Prologue: save X on stack to survive teardown subcalls.
- *   - Teardown (old room): clear sentence queue, run EXIT script, hide all actors.
- *   - Release per-actor visuals: walk costume slots $18..$01; if actor_for_costume[x]
- *     has bit7=0, unbind via detach_actor_from_costume (bit7=1 = empty slot).
- *   - Switch: restore X; mirror to var_current_room; seed camera with CAM_DEFAULT_POS;
- *     re-init sprites/sound; call room_switch_load_assets to set current_room, load
- *     base room data, and wire scene pointers/LRU.
- *   - Bring-up (new room): run room ENTRY script; ensure room sounds & scripts are
- *     resident; instantiate/load actors present in the room.
- *   - Visual system: set open_shutter_flag=1 for transition; reprogram raster IRQs.
- *   - Notes/edge cases:
- *       • Costume slot $00 is not processed (reserved by convention).
- *       • EXIT script runs before the switch; ENTRY script runs after assets load.
- *       • Callers must supply a valid room index in X.
- *===========================================*/
+Global Inputs
+	actor_for_costume[]     Per-costume assignment sentinel (bit7=1 ⇒ free).
+	current_room            Index of the room being exited (used in subcalls).
+
+Global Outputs
+	actor_for_costume[]     Cleared for any slot that was bound to an actor,
+	via detach_actor_from_costume.
+	var_current_room        Updated to the new active room index (mirror of X).
+	cam_target_pos          Seeded with CAM_DEFAULT_POS for the new room.
+	open_shutter_flag       Set to 1 to request an “open shutter” transition.	
+	(room / script / sound / actor state)	Updated indirectly							
+	(UI / raster / sprite state)			Reinitialized indirectly
+
+Description
+	- Prologue:
+		• Save X (target room index) on the stack so teardown logic can
+		clobber registers freely.
+	- Teardown of current room:
+		• init_sentence_ui_and_stack to clear pending verb/noun input so
+		old commands cannot leak into the new scene.
+		• execute_room_exit_script to run the current room’s EXIT script
+		while its data is still valid.
+		• hide_all_actors_and_release_sprites to remove all on-screen
+		actors/sprites and avoid one-frame carryover.
+		• Walk costume slots from $18 down to $01; for any slot whose
+		actor_for_costume[x].bit7==0 (assigned), call
+		detach_actor_from_costume to unbind the actor and free the slot.
+	- Switch to new room:
+		• Restore X from the stack and publish it to var_current_room as
+		the new room index.
+		• Seed cam_target_pos with CAM_DEFAULT_POS so camera logic has a
+		sane starting goal.
+		• Call init_raster_and_sound_state to reinitialize raster IRQ and
+		sound envelopes before loading new assets.
+		• Call load_room_gfx_and_objects to:
+			– Age and release resources for the old room.
+			– Ensure the new room is resident and load its metadata,
+			objects, and graphics.
+	- Bring-up for new room:
+		• execute_room_entry_script to run the new room’s ENTRY script.
+		• load_room_sounds_and_scripts to ensure all room-linked sounds
+		and scripts are resident.
+		• spawn_actors_for_room_costumes to spawn actors for costumes whose
+		dynamic room index matches current_room.
+	- Visual transition:
+		• Set open_shutter_flag := 1 to request an open-shutter effect on
+		subsequent frames.
+		• Call init_raster_irq_env to reprogram the raster IRQ chain for
+		the new scene before returning.
+
+Notes
+	Costume slot $00 is intentionally skipped by the release loop (reserved
+	by convention). EXIT scripts always run before the room switch; ENTRY
+	scripts always run after the new room’s assets are loaded.
+================================================================================
+*/
 * = $3466
-load_room:
-		// Preserve the incoming target room index across teardown work
+switch_to_room:
+		// Save target room index
 		txa
 		pha
 
 		// Teardown (in order) to leave no stale UI/actors before switching rooms
-		jsr     init_sentence_ui_and_stack      // flush pending verb/noun input so scripts don’t consume old commands
-		jsr     execute_room_exit_script         // run the CURRENT room’s exit logic while its data is still valid
-		jsr     hide_all_actors_and_release_sprites // hide all actors to avoid one-frame carryover/flicker during reload
+		jsr     init_sentence_ui_and_stack      	// flush pending verb/noun input so scripts don’t consume old commands
+		jsr     execute_room_exit_script         	// run the CURRENT room’s exit logic while its data is still valid
+		jsr     hide_all_actors_and_release_sprites // hide all actors to avoid flicker during reload
 
-		/*---------------------------------------
-		 * Release any actor → costume bindings
-		 *  -X scans costume slots $18..$01; exit when X reaches $00 (BNE falls through).
-		 *  -actor_for_costume[x] has bit7=1 ⇒ no actor assigned (BMI taken → skip).
-		 *  -detach_actor_from_costume clears the mapping for the current slot.
-		 *--------------------------------------*/
-		ldx     #$18
+		// ------------------------------------------------------------
+		// Release any actor → costume bindings
+		// ------------------------------------------------------------
+		ldx     #COSTUME_MAX_INDEX
 release_costume_in_use:
 		lda     actor_for_costume,x
-		bmi     next_costume                     // N=1 (bit7 set) → empty slot → skip unassign
+		bmi     next_costume                   		// N=1 (bit7 set) → empty slot → skip unassign
 
-		txa                                     // preserve X across subcall
+		txa                                     	// save X across subcall
 		pha
-		jsr     detach_actor_from_costume       // free this costume slot’s actor assignment
+		jsr     detach_actor_from_costume       	// free this costume slot’s actor assignment
 		pla
 		tax
 
 next_costume:
-		dex                                     // loop toward $00
-		bne     release_costume_in_use           // Z=0 while X≠$00 → continue
+		dex                                     
+		bne     release_costume_in_use          
 
-		// Recover target room index saved earlier and publish it for debugging.
+		// Recover target room index saved earlier and publish it for debugging
 		pla
 		tax
 		stx     var_current_room              
 
-		// Seed camera with a sane starting goal so the first frame has a stable scroll target.
+		// Seed camera with a default target position 
 		lda     #CAM_DEFAULT_POS
 		sta     cam_target_pos       
 
@@ -205,428 +339,532 @@ next_costume:
 		jsr     init_raster_and_sound_state
 
 		// Switch assets to the new room (updates current_room, loads base data, etc.)
-		jsr     room_switch_load_assets
+		jsr     load_room_gfx_and_objects
 
 		// Run the new room's entry script
 		jsr     execute_room_entry_script
 
-		// Ensure room’s sounds and scripts are resident
-		jsr     room_load_sounds_and_scripts
+		// Cache room’s sounds and scripts
+		jsr     load_room_sounds_and_scripts
 
-		// Instantiate/load actors present in this room
-		jsr     room_spawn_present_costumes
+		// Spawn all actors for the costumes in the room
+		jsr     spawn_actors_for_room_costumes
 
 		// Request “open shutter” transition effect on next frame(s)
-		lda     #$01
+		lda     #SHUTTER_OPEN
 		sta     open_shutter_flag
 
 		// Reset raster IRQ handlers for the new scene
 		jsr     init_raster_irq_env
 		rts
- /*===========================================
- * room_switch_load_assets: switch active room, load assets, and age LRU
- *
- * Summary:
- *   Switches the active room to X (0 = “no room”). Ages the previously active
- *   room, publishes the new current_room, frees old room-layer resources, and
- *   either loads all assets for the new room or clears script hooks if X=0.
- *
- * Arguments:
- *   X         			New room to activate. X=0 means “no active room”.
- *   Y         			Implicitly read from current_room to age the OLD room.
- *   A 	       			Used only when current_room==0 at entry: A must already
- *                         contain the attribute value to store for room #0/sentinel.
- *
- * Returns:
- *   X (room index)        On load path: X = current_room (echoed). On X=0 path:
- *                         unspecified.
- *   A, Y                  Clobbered.
- *   Globals               current_room, var_current_room,
- *                         room_liveness_tbl[old], room_liveness_tbl[new],
- *                         room_gfx_layers_hi := 0, mask_bit_patterns_hi := 0,
- *                         (if X=0) room_entry_script_ptr := 0, room_exit_script_ptr := 0.
- *   Flags                 Not preserved / undefined for callers.
- *
- * Description:
- *   1) Read Y := current_room. If Y≠0, set old room’s age to 1 while preserving its
- *      lock state (bit7): if locked → write $81, else → write $01. If Y==0, skip
- *      the lock test and store whatever is already in A to room_liveness_tbl[0].
- *   2) Publish the new active room: current_room := X and mirror to var_current_room.
- *   3) Free prior per-room resources if present:
- *        - mem_release(room_layer_ptr); then clear only hi part of the ptr.
- *        - mem_release(mask_bit_patterns); then clear only hi part.
- *   4) If current_room==0: null out room entry/exit script pointers, discard the
- *      caller’s return address (interrupt running script), and RTS.
- *   5) Else load assets for the active room:
- *        - room_ensure_resident
- *        - Mark active room MRU (age=0) while preserving lock (write $80 if locked,
- *          else $00).
- *        - room_read_metadata, room_read_objects, read_room_graphics,
- *          setup_room_columns_with_decode_snapshots.
- *   6) LRU upkeep: for all resident rooms (room_ptr_hi_tbl[x]≠0), if age!=0 then
- *      INC room_liveness_tbl[x]. 
- *   7) Restore X := current_room and RTS.
- *
- *   Notes/edge cases:
- *     - Index 0 denotes “no room”; routine still writes room_liveness_tbl[0] on entry.
- *     - A is only semantically required when there was no previous room (Y==0) to
- *       supply the attribute for index 0/sentinel.
- *===========================================*/
+/*
+================================================================================
+  load_room_gfx_and_objects
+================================================================================
+Summary
+		Switch to a new room, load its data and assets accordingly.
+		
+        -Switch the active room to X (with X=0 meaning “no active room”)
+		-Age the previously active room in the liveness table
+		-Release per-room visual resources
+		-Optionally clear room script entry points
+		-Ensure room data is cached
+		-Load its metadata/objects/graphics
+		-Run an LRU age pass over all resident rooms
+
+Arguments
+        X                       New room index to activate.
+                                X = 0 ⇒ select “no active room” and clear
+                                entry/exit script pointers.
+
+        A                       Only semantically required when current_room is
+                                0 at entry: must already hold the attribute
+                                value to store into room_liveness_tbl[0].
+
+Global Inputs
+        current_room            Index of the active room at entry (old room).
+        room_liveness_tbl[]     Per-room attribute byte (bit7=lock, bits0..6=age).
+        room_ptr_lo_tbl[]       Per-room base pointer (lo); hi!=0 ⇒ resident.
+        room_ptr_hi_tbl[]       Per-room base pointer (hi); hi!=0 ⇒ resident.
+        room_gfx_layers_lo/hi   Per-room graphics-layer buffer pointer.
+        mask_bit_patterns_lo/hi Pointer to heap-allocated mask-patterns block.
+
+Global Outputs
+        current_room            Updated to X (new active room index).
+        var_current_room        Mirror of current_room for subsystems/scripts.
+        room_liveness_tbl[]     Updated:
+                                  - Old room: age set to 1 (locked/unlocked path).
+                                  - New room: age set to 0 while preserving lock bit.
+        room_gfx_layers_hi      Cleared to 0 when old room-layer buffer freed.
+        mask_bit_patterns_hi    Cleared to 0 when mask-patterns block freed.
+        room_exit_script_ptr    Cleared to 0 when X=0 (no active room).
+        room_entry_script_ptr   Cleared to 0 when X=0 (no active room).
+
+Description
+        - Age outgoing room:
+             • Y := current_room.
+             • If Y != 0:
+                  – Read room_liveness_tbl[Y]; if lock bit set, write
+                    ROOM_ATTR_LOCKED_AGE_1, otherwise ROOM_ATTR_UNLOCKED_AGE_1.
+             • If Y == 0:
+                  – Skip lock test and directly store A to room_liveness_tbl[0].
+        - Publish new active room:
+             • current_room := X.
+             • var_current_room := current_room.
+        - Release prior per-room visual resources:
+             • If room_gfx_layers_hi != 0, call mem_release on the room-gfx
+               buffer and then clear room_gfx_layers_hi to 0 (lo left stale).
+             • If mask_bit_patterns_hi != 0, call mem_release on the mask-
+               patterns block and then clear mask_bit_patterns_hi to 0 (lo left
+               stale).
+        - Branch on new room index:
+             • If current_room == 0:
+                  – Clear room_exit_script_ptr and room_entry_script_ptr to 0.
+                  – Discard the caller’s return address from the stack (used
+                    when interrupting a running script).
+                  – RTS with “no room active”.
+             • Else (current_room != 0):
+                  – Call cache_room to ensure the new room is loaded
+                    and to set its age to 1.
+                  – Read room_liveness_tbl[current_room]; if locked, write
+                    ROOM_ATTR_LOCK (lock + age=0), else write
+                    ROOM_ATTR_UNLOCKED_AGE_0 (unlocked + age=0).
+                  – Load room content in order:
+                       · load_room_metadata
+                       · load_room_objects
+                       · read_room_graphics
+                       · setup_room_columns_with_decode_snapshots
+        - LRU upkeep:
+             • For X from ROOM_MAX_INDEX down to 1:
+                  – If room_ptr_hi_tbl[X] == 0, skip (room not resident).
+                  – Else mask age = room_liveness_tbl[X] & ROOM_ATTR_AGE_MASK.
+                  – If age != 0, increment room_liveness_tbl[X] (lock bit
+                    preserved).
+        - Epilogue:
+             • X := current_room
+
+Notes
+        Index 0 is treated specially as a “no room” sentinel: this routine
+        still updates room_liveness_tbl[0] on entry and, when X=0, clears the
+        room’s entry/exit script pointers and discards the caller’s return
+        address to abort script execution.
+================================================================================
+*/
 * = $34A4
-room_switch_load_assets:
+load_room_gfx_and_objects:
         // Y := current room index. If Y==0 (“no room”), skip the lock test and
         // jump to the write; A must already hold the desired attribute value.
         ldy     current_room
         beq     write_room_attr_age
 
-        /*---------------------------------------
-         * Set age=1 while preserving the lock bit (bit7)
-         *   room_liveness_tbl[Y].bit7  = lock (unchanged)
-         *   room_liveness_tbl[Y].bits0..6 = age (set to 1)
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Set current room's age to 1 while preserving the locking state (bit7)
+		//
+		// room_liveness_tbl[Y].bit7  = lock (unchanged)
+		// room_liveness_tbl[Y].bits0..6 = age (set to 1)
+		// ------------------------------------------------------------
         lda     room_liveness_tbl,y
-        bpl     room_attr_unlocked            // bit7 clear → unlocked → use AGE_1 only
+        bpl     room_attr_unlocked            	
         lda     #ROOM_ATTR_LOCKED_AGE_1         // locked + age=1
         jmp     write_room_attr_age
 room_attr_unlocked:
-        lda     #ROOM_ATTR_UNLOCKED_AGE_1              // unlocked + age=1
+        lda     #ROOM_ATTR_UNLOCKED_AGE_1      	// unlocked + age=1
 write_room_attr_age:
-        // Commit attribute byte for room Y (age=1; lock preserved per path above).
+        // Commit new liveness
         sta     room_liveness_tbl,y
 
-        /*---------------------------------------
-         * Publish the active room index
-         *  - current_room := X
-         *  - var_current_room mirrors it for subsystems/scripts
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Publish the new current room index
+		// - var_current_room mirrors it for scripts
+		// ------------------------------------------------------------
         stx     current_room
         lda     current_room
         sta     var_current_room
 
-        /*---------------------------------------
-         * Release room-layer resource if present
-         *  - mem_release(X=lo, Y=hi)
-         *  - Clear only the hi byte afterward to mark “not loaded”
-         *--------------------------------------*/
-        ldx     room_gfx_layers_lo           // X := ptr.lo (call arg)
-        ldy     room_gfx_layers_hi           // Y := ptr.hi (call arg)
-        beq     clear_room_gfx_layers_hi     // hi==0 → nothing to free
+		// ------------------------------------------------------------
+		// Release gfx resource if present
+		// ------------------------------------------------------------
+        ldx     room_gfx_layers_lo           
+        ldy     room_gfx_layers_hi           
+        beq     clear_room_gfx_layers_hi 	// hi==0 → nothing to free
+		
+		// mem_release(X=lo, Y=hi)
         jsr     mem_release
 
 clear_room_gfx_layers_hi:
+		// Mark gfx resource as not resident
         lda     #$00
-        sta     room_gfx_layers_hi           // mark unloaded (hi=0; lo left stale by convention)
+        sta     room_gfx_layers_hi          
 
-        /*---------------------------------------
-         * Release mask-bit-patterns resource, if present
-         *  - mem_release calling convention: X=ptr.lo, Y=ptr.hi
-         *  - If hi==0, pointer is considered null → nothing to free
-         *  - After freeing, clear only the hi byte to mark “not loaded”
-         *--------------------------------------*/
-        ldx     mask_bit_patterns_lo        // X := ptr.lo (arg for mem_release)
-        ldy     mask_bit_patterns_hi        // Y := ptr.hi (arg for mem_release)
-        beq     clear_mask_patterns_hi  	// not loaded → skip free
+		// ------------------------------------------------------------
+		// Release mask resource if present
+		// ------------------------------------------------------------
+        ldx     mask_bit_patterns_lo        
+        ldy     mask_bit_patterns_hi        
+        beq     clear_mask_patterns_hi  	// hi==0 → nothing to free
+		
+		// mem_release(X=lo, Y=hi)
         jsr     mem_release
 
 clear_mask_patterns_hi:
+		// Mark mask resource as not resident
         lda     #$00
-        sta     mask_bit_patterns_hi        // mark unloaded (hi=0; lo left stale by convention)
+        sta     mask_bit_patterns_hi        
 
-        /*---------------------------------------
-         * Branch by room validity:
-         *   - current_room != 0 → load this room’s graphics & objects
-         *   - current_room == 0 → no active room: clear entry/exit script pointers and return
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Branch by room validity
+		//
+		// current_room != 0 → load this room’s graphics & objects
+		// current_room == 0 → no active room: clear entry/exit script pointers and return
+		// ------------------------------------------------------------
         ldx     current_room
         bne     room_load_assets   // non-zero → proceed with loading
 
-        // No active room: null out room script entry/exit pointers.
+        // No active room: clear out room script entry/exit pointers.
         lda     #$00
-        sta     room_exit_script_ptr       // lo := 0
-        sta     room_exit_script_ptr + 1       // hi := 0
-        sta     room_entry_script_ptr      // lo := 0
-        sta     room_entry_script_ptr + 1      // hi := 0
+        sta     room_exit_script_ptr       
+        sta     room_exit_script_ptr + 1   
+        sta     room_entry_script_ptr      
+        sta     room_entry_script_ptr + 1  
 
         // Balance caller’s stack usage
-		// We come from a running script? So discarding the return address
+		// We come from a running script so discarding the return address
 		// is necessary to interrupt its execution
         pla                                   
         pla                                   
-        rts                                   // return with no room active
+        rts                                   
 
 room_load_assets:
-        /*---------------------------------------
-         * Ensure active room is resident
-         *  - Uses current_room to fetch the room’s main data
-         *  - On return, pointer tables reflect the resident room
-         *  - Keep X = current_room for subsequent steps (ageing, subloads)
-         *--------------------------------------*/
-        jsr     room_ensure_resident
-        ldx     current_room               // X := active room index
+		// ------------------------------------------------------------
+		// Cache new room
+		// ------------------------------------------------------------
+        jsr     cache_room
 
-        /*---------------------------------------
-         * Mark active room as MRU (age = 0), keep lock state
-         *   - room_liveness_tbl: bit7 = lock, bits0..6 = age
-         *   - If locked (bit7=1) → write LOCK|0
-         *   - If unlocked       → write 0
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Mark active room as MRU (age = 0), keep lock state
+		//
+		// - room_liveness_tbl: bit7 = lock, bits0..6 = age
+		// - If locked (bit7=1) → write LOCK|0
+		// - If unlocked       → write 0
+		// ------------------------------------------------------------
+        ldx     current_room               
         lda     room_liveness_tbl,x
-        bpl     room_unlocked                  // bit7=0 → unlocked path
-        lda     #ROOM_ATTR_LOCK                // locked + age=0 (bit7 set; age bits 0)
+        bpl     room_unlocked                  		// bit7=0 → unlocked path
+        lda     #ROOM_ATTR_LOCK                		// locked + age=0 (bit7 set; age bits 0)
         jmp     commit_room_age
 room_unlocked:
-        lda     #ROOM_ATTR_UNLOCKED_AGE_0               // unlocked + age=0 (all bits clear)
+        lda     #ROOM_ATTR_UNLOCKED_AGE_0           // unlocked + age=0 (all bits clear)
 commit_room_age:
-        sta     room_liveness_tbl,x               // commit attribute byte for room X
+        // Commit new liveness
+        sta     room_liveness_tbl,x               	
 
-        /*---------------------------------------
-         * Load remaining room content, in order:
-         *  - room_read_metadata   : room metadata/params (scripts, flags, bounds…)
-         *  - room_read_objects     : object table (IDs, states, positions)
-         *  - read_room_graphics    : visual assets (tiles/bitmaps/sprites)
-         *  - setup_room_columns_with_decode_snapshots : scene-layer/mask pointers & final wiring
-         *--------------------------------------*/
-        jsr     room_read_metadata
-        jsr     room_read_objects
+		// ------------------------------------------------------------
+		// Load remaining room content, in order:
+		//
+		// - load_room_metadata   	: room metadata
+		// - load_room_objects     	: object table (IDs, states, positions)
+		// - read_room_graphics    	: graphics layers
+		// - setup_room_columns_with_decode_snapshots : setup room columns to accelerate rendering
+		// ------------------------------------------------------------
+        jsr     load_room_metadata
+        jsr     load_room_objects
         jsr     read_room_graphics
         jsr     setup_room_columns_with_decode_snapshots
 
-        /*---------------------------------------
-         * LRU upkeep: increment age for resident, non-zero-age rooms
-         *   - A room is considered resident if room_ptr_hi_tbl[x] != 0
-         *   - Age field is bits0..6; bit7 is lock and must be preserved
-         *   - If age==0, leave at 0 (current/MRU or freshly touched)
-         *   - Otherwise INC the full byte (lock bit unchanged)
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// LRU upkeep
+		//
+		// For every resident room, increment its age by 1.
+		//
+		// - A room is considered resident if room_ptr_hi_tbl[x] != 0
+		// - Age field is bits0..6; bit7 is lock and must be preserved
+		// - If age==0, leave at 0 (current/MRU or freshly touched)
+		// - Otherwise INC the full byte (lock bit unchanged)
+		// ------------------------------------------------------------
         ldx     #ROOM_MAX_INDEX
 lru_age_scan:
         lda     room_ptr_hi_tbl,x
-        beq     age_scan_next                 // not loaded → skip
+        beq     age_scan_next                 	// not resident → skip
 
         lda     room_liveness_tbl,x
-        and     #ROOM_ATTR_AGE_MASK          // extract age (0..$7F)
+        and     #ROOM_ATTR_AGE_MASK          	// extract age
 		cmp		#$00
-        beq     age_scan_next                 // age==0 → do not age
+        beq     age_scan_next                 	// age==0 → do not age
 
-        inc     room_liveness_tbl,x              // ++age; lock bit (bit7) remains as-is
+        inc     room_liveness_tbl,x             // ++age; lock bit (bit7) remains as-is
 
 age_scan_next:
         dex
         bne     lru_age_scan
 
-        /*---------------------------------------
-         * Epilogue: restore X to the active room index and return
-         *--------------------------------------*/
-        ldx     current_room          // X := current room (for callers that rely on it)
+		// Restore X to the active room index and return
+        ldx     current_room          
         rts
-/*===========================================
- * room_read_metadata: copy per-room meta, script pointers, and layer dictionaries
- *
- * Summary:
- *   Uses current_room to find the loaded room’s base, skips the 4-byte header
- *   (header +0..+3), copies the fixed 8-bit meta block (+$00..+$05) and the
- *   16-bit offset block (+$06..+$0F) into room_data_ptr_local, installs exit/entry
- *   script pointers (+$14..+$17), then reads the 4-byte symbol dictionaries
- *   for the tile, color, and mask streams by seeking to
- *   (room_base + tile_matrix_ofs/color_layer_ofs/mask_layer_ofs).
- *
- * Arguments:
- *   current_room          Index of the active room (selects room_ptr_*_tbl[x]).
- *   room_ptr_lo_tbl[x]    Per-room data pointer (lo) for resident rooms.
- *   room_ptr_hi_tbl[x]    Per-room data pointer (hi); hi != 0 ⇒ resident.
- *
- * Returns:
- *   Registers            A,X,Y clobbered; no flags preserved.
- *   Globals              
- *                        room_exit_script_ptr, room_entry_script_ptr
- *                        tile_dict[0..3], color_dict[0..3], mask_dict[0..3]
- *
- * Description:
- *   1) Load room_base from room_ptr_*_tbl[current_room] and mirror to
- *      current_room_rsrc for other subsystems.
- *   2) Set read_ptr := room_base + MEM_HDR_LEN, so reads begin at meta +$00.
- *   3) Copy the six 8-bit meta fields (+$00..+$05) to room_data_ptr_local[0..5]
- *      (e.g., width, height, video flag, bg0..bg2).
- *   4) Copy the five 16-bit offsets (+$06..+$0F) to room_data_ptr_local[6..$0F]
- *      (tile definitions, tile matrix, color layer, mask layer, mask indexes).
- *   5) Read script pointers at +$14..+$17 and store to
- *      room_exit_script_ptr and room_entry_script_ptr.
- *   6) For each layer (tile/color/mask): compute
- *      read_ptr := room_base + <layer_ofs>, then copy the 4-byte
- *      symbol dictionary at that location into the corresponding dict buffer.
- *
- * Notes / invariants:
- *   - Assumes the room is resident (room_ptr_hi_tbl[current_room] != 0).
- *   - Expects tile_matrix_ofs, color_layer_ofs, mask_layer_ofs, mask_indexes_ofs
- *     to contain valid byte offsets relative to (room_base + 4).
- *   - Header +0..+3 is skipped; all documented offsets are relative to meta +$00.
- *===========================================*/
+/*
+================================================================================
+  load_room_metadata
+================================================================================
+Summary
+	Read and setup room metadata, including:
+		-room width
+		-room height
+		-background colors
+		-entry and exit scripts
+		-tile/color/mask compressed streams
+		
+	Copy the active room’s core metadata into a local buffer, install room
+	entry/exit script pointers, and read the 4-byte symbol dictionaries for
+	the tile, color, and mask compressed streams.
+
+Global Inputs
+	current_room            Index of the active room.
+	room_ptr_lo_tbl[]       Per-room resource base pointer (lo).
+	room_ptr_hi_tbl[]       Per-room resource base pointer (hi); hi!=0 ⇒ resident.
+
+Global Outputs
+	current_room_rsrc       Published base pointer for the active room resource.
+	room_metadata_base[]    Buffer receiving width/height, flags, and all 16-bit
+							layer offsets copied from metadata.
+	room_exit_script_ptr    Installed 16-bit pointer to room exit script.
+	room_entry_script_ptr   Installed 16-bit pointer to room entry script.
+	tile_dict[0..3]         4-byte symbol dictionary for tile-matrix stream.
+	color_dict[0..3]        4-byte symbol dictionary for color-layer stream.
+	mask_dict[0..3]         4-byte symbol dictionary for mask-layer stream.
+
+Description
+	- Select the active room’s base:
+		• Use current_room to index room_ptr_*_tbl and publish the resulting
+		pointer both to current_room_rsrc and to room_base for local use.
+	- Initialize read_ptr to the metadata block:
+		• Compute read_ptr := room_base + MEM_HDR_LEN, skipping the 4-byte
+		in-memory resource header so reads start at metadata offset +$00.
+	- Copy 8-bit metadata fields:
+		• For Y from ROOM_META_8_START_OFS to ROOM_META_8_END_EXCL−1, copy
+		bytes from (read_ptr),Y into room_metadata_base,Y
+		(e.g., width, height, video flag, bg0..bg2).
+	- Copy 16-bit offset fields:
+		• Starting at ROOM_META_16_START_OFS, copy five (lo,hi) pairs from
+		(read_ptr),Y into room_metadata_base,Y up to ROOM_META_16_END_EXCL.
+		• These offsets define the tile definitions, tile matrix, color layer,
+		mask layer, and mask-index streams relative to (room_base + 4).
+	- Install script entry points:
+		• Read the 16-bit exit script pointer at ROOM_EXIT_SCRIPT_OFS and
+		store it into room_exit_script_ptr.
+		• Read the 16-bit entry script pointer at ROOM_ENTRY_SCRIPT_OFS and
+		store it into room_entry_script_ptr.
+	- Read per-layer symbol dictionaries:
+		• For the tile-matrix layer:
+			– Compute read_ptr := room_base + tile_matrix_ofs and copy the
+			4-byte dictionary at that location into tile_dict[0..3].
+		• For the color layer:
+			– Compute read_ptr := room_base + color_layer_ofs and copy the
+			4-byte dictionary into color_dict[0..3].
+		• For the mask layer:
+			– Compute read_ptr := room_base + mask_layer_ofs and copy the
+			4-byte dictionary into mask_dict[0..3].
+
+Notes
+	Assumes the active room is already resident
+	(room_ptr_hi_tbl[current_room] != 0) and that the metadata offsets and
+	layer pointers refer to valid regions within the loaded room resource.
+================================================================================
+*/
 * = $3532
-room_read_metadata:
-		// Use current_room to select this room’s loaded base; mirror it for shared
-		// consumers (current_room_rsrc) and keep a local zp pointer (room_base)
-		// for subsequent pointer arithmetic and indexed reads.
+load_room_metadata:
+		// ------------------------------------------------------------
+		// Resolve room's base address
+		// Mirror it into current_room_rsrc as well
+		// ------------------------------------------------------------
 		ldx     current_room
-
 		lda     room_ptr_hi_tbl,x   
-		sta     current_room_rsrc + 1  // publish base for other subsystems
-		sta     room_base + 1          // local working base (hi)
+		sta     current_room_rsrc + 1  
+		sta     room_base_hi  
+        
 		lda     room_ptr_lo_tbl,x
-		sta     current_room_rsrc  // publish base (lo)
-		sta     room_base          // local working base (lo)
+		sta     current_room_rsrc  
+		sta     room_base_lo          
 
-
-		// Advance read cursor past the 4-byte resource header (header +0..+3),
+		// ------------------------------------------------------------
+		// Set read cursor past the resource header,
 		// so subsequent reads start at the first metadata field. 
+		// ------------------------------------------------------------
 		clc
-		lda     room_base
+		lda     room_base_lo
 		adc     #<MEM_HDR_LEN
-		sta     read_ptr
-		lda     room_base + 1
+		sta     read_ptr_lo
+		
+		lda     room_base_hi
 		adc     #>MEM_HDR_LEN
-		sta     read_ptr + 1
+		sta     read_ptr_hi
 
+		// ------------------------------------------------------------
 		// Copy the six 8-bit fields following the header
+		// ------------------------------------------------------------
 		ldy     #ROOM_META_8_START_OFS
-copy_meta_loop:
-		lda     (read_ptr),y
+copy_meta_8bit_loop:
+		lda     (read_ptr_lo),y
 		sta     room_metadata_base,y
 		iny
 		cpy     #ROOM_META_8_END_EXCL            
-		bne     copy_meta_loop
+		bne     copy_meta_8bit_loop
 
-		// Copy the five 16-bit fields
-		//   +$06..+$07 → tile_definitions_ofs
-		//   +$08..+$09 → tile_matrix_ofs
-		//   +$0A..+$0B → color_layer_ofs
-		//   +$0C..+$0D → mask_layer_ofs
-		//   +$0E..+$0F → mask_indexes_ofs
+		// ------------------------------------------------------------
+		// Copy the five 16-bit fields next
+		// ------------------------------------------------------------
 		ldy     #ROOM_META_16_START_OFS
-copy_gfx_ofs_loop:
-		lda     (read_ptr),y
+copy_meta_16bit_loop:
+		lda     (read_ptr_lo),y
 		sta     room_metadata_base,y
 		iny
-		lda     (read_ptr),y
+		
+		lda     (read_ptr_lo),y
 		sta     room_metadata_base,y
 		iny
 		cpy     #ROOM_META_16_END_EXCL
-		bne     copy_gfx_ofs_loop
+		bne     copy_meta_16bit_loop
 
-		// Install script entry points from the metadata block:
-		//   +$14..+$15 → room_exit_script_ptr
-		//   +$16..+$17 → room_entry_script_ptr
+		// Copy room exit script pointer
 		ldy     #ROOM_EXIT_SCRIPT_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     room_exit_script_ptr
+		
 		iny
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     room_exit_script_ptr + 1
+		
+		// Copy room entry script pointer
 		iny
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     room_entry_script_ptr
+		
 		iny
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     room_entry_script_ptr + 1
 
-		// Position read_ptr at the tile-matrix section:
+		// ------------------------------------------------------------
+		// Set read cursor at the start of the tile matrix
+		//
 		// read_ptr = room_base + tile_matrix_ofs
+		//
 		// The first bytes at this section form the symbol dictionary
-		// required by the decompressor for the tile matrix stream.
+		// required by the decompressor for a compressed stream.
+		// ------------------------------------------------------------
 		clc
-		lda     room_base
+		lda     room_base_lo
 		adc     tile_matrix_ofs_lo
-		sta     read_ptr
-		lda     room_base + 1
+		sta     read_ptr_lo
+		lda     room_base_hi
 		adc     tile_matrix_ofs_hi
-		sta     read_ptr + 1
+		sta     read_ptr_hi
 
+		// ------------------------------------------------------------
 		// Copy the symbol dictionary for the tile matrix.
+		// ------------------------------------------------------------
 		ldy     #COMP_DICT_MAX_OFS
 copy_tile_dict_loop:
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     tile_dict,y
 		dey
 		bpl     copy_tile_dict_loop
 
 
-		// Position read_ptr at the color-layer section:
+		// ------------------------------------------------------------
+		// Repeat the logic for the color layer
+		//
 		// read_ptr = room_base + color_layer_ofs
-		// The first bytes at this section are the symbol dictionary 
-		// for the color stream.
+		// ------------------------------------------------------------
 		clc
-		lda     room_base
+		lda     room_base_lo
 		adc     color_layer_ofs_lo
-		sta     read_ptr
-		lda     room_base + 1
+		sta     read_ptr_lo
+		lda     room_base_hi
 		adc     color_layer_ofs_hi
-		sta     read_ptr + 1
+		sta     read_ptr_hi
 
-		// Copy the symbol dictionary for the color layer.
 		ldy     #COMP_DICT_MAX_OFS
 copy_color_dict_loop:
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     color_dict,y
 		dey
 		bpl     copy_color_dict_loop
 
-		// Position read_ptr at the mask-layer section:
-		// read_ptr = room_base + mask_layer_ofs.
-		// The first bytes at this section are the symbol dictionary 
-		// for the mask stream.
+		// ------------------------------------------------------------
+		// Repeat the logic for the mask layer
+		//
+		// read_ptr = room_base + mask_layer_ofs
+		// ------------------------------------------------------------
 		clc
-		lda     room_base
+		lda     room_base_lo
 		adc     mask_layer_ofs_lo
-		sta     read_ptr
-		lda     room_base + 1
+		sta     read_ptr_lo
+		lda     room_base_hi
 		adc     mask_layer_ofs_hi
-		sta     read_ptr + 1
+		sta     read_ptr_hi
 
-		// Copy the symbol dictionary for the mask layer.
 		ldy     #COMP_DICT_MAX_OFS
 copy_mask_dict_loop:
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     mask_dict,y
 		dey
 		bpl     copy_mask_dict_loop
 
 		rts
-/*===========================================
- * room_load_sounds_and_scripts: ensure all room sounds & scripts are resident
- *
- * Summary:
- *   Reads sound/script counts from the room’s metadata, then walks a shared
- *   subresource index table to load sounds first and scripts second. The table
- *   is contiguous: script indices immediately follow the sound indices.
- *
- * Arguments:
- *   current_room                 		Active room index selecting room_ptr_*.
- *   room_ptr_*_tbl						Base pointers for each room resource.
- * Uses: 
- *   room_get_sounds_base        		Returns base of subresource index table for this room.
- *
- * Returns:
- *   Registers                    A,X,Y clobbered.
- *   Flags                        Modified per loads/loops; no promises to callers.
- *   Globals updated              Sounds and scripts ensured resident.
- *                                
- *
- * Description:
- *   1) meta_ptr := room_ptr[current_room] + MEM_HDR_LEN to point at the metadata block.
- *   2) Read counts: sound_count and script_count
- *   3) Sounds phase:
- *        - Y := 0; for each sound: base := room_get_sounds_base(); idx := base[Y]; load sound; Y++.
- *   4) Scripts phase:
- *        - Continue with the same Y (scripts follow sounds contiguously):
- *          for each script: base := room_get_sounds_base(); idx := base[Y]; ensure script; Y++.
- *   Notes / invariants:
- *     • Callees (subres pointer getter, sound/script loaders) must preserve Y.
- *     • Caller must ensure the room is resident (room_ptr_hi_tbl[current_room] ≠ 0).
- *     • The subresource index table base must correspond to (room_base + $1C + 4*object_count).
- *===========================================*/
- * = $35D5
-room_load_sounds_and_scripts:
-		// Position cursor at the room’s metadata: meta_ptr = room_ptr[x] + MEM_HDR_LEN.
-		// (skip the fixed header so subsequent reads index fields directly)
+/*
+================================================================================
+  load_room_sounds_and_scripts
+================================================================================
+Summary
+		Cache all room's sounds and scripts.
+		
+        Ensure all sounds and scripts referenced by the active room’s metadata
+        are resident by walking a shared subresource index table (sounds first,
+        scripts immediately after).
+
+Global Inputs
+        current_room            Active room index.
+        room_ptr_lo_tbl[]       Per-room resource base pointer (lo).
+        room_ptr_hi_tbl[]       Per-room resource base pointer (hi); hi!=0 ⇒ resident.
+
+Global Outputs
+        (sound/script resources)	Marked resident via rsrc_cache_sound/script.
+
+Description
+        - Compute meta_ptr := room_ptr[current_room] + MEM_HDR_LEN to reach the
+          room’s metadata block.
+        - Read sound_count_left from ROOM_META_SOUND_COUNT_OFS and
+          script_count_left from ROOM_META_SCRIPT_COUNT_OFS.
+        - Sounds phase:
+             • Initialize Y := 0 as the running index into the subresource table.
+             • While sound_count_left > 0:
+                  – Call get_room_sounds_base_address to obtain room_sounds_base.
+                  – Load the sound index from (room_sounds_base),Y into A.
+                  – Call rsrc_cache_sound to ensure that sound is resident
+                    (callees must not clobber Y).
+                  – Increment Y and decrement sound_count_left.
+        - Scripts phase:
+             • Continue with the same Y; script indices directly follow the
+               sound indices in the same table.
+             • While script_count_left > 0:
+                  – Call get_room_sounds_base_address again to re-acquire the same base.
+                  – Load the script index from (room_sounds_base),Y into A.
+                  – Call rsrc_cache_script to ensure that script is resident
+                    (again, Y must be preserved).
+                  – Increment Y and decrement script_count_left.
+
+Notes
+	Assumes the active room is already resident (room_ptr_hi_tbl[current_room] != 0),
+	and that the subresource index table is laid out as:
+            [sound_count entries][script_count entries]
+			
+	with counts stored separately in metadata. 
+	Callers rely on Y being preserved by rsrc_cache_sound/script and get_room_sounds_base_address.
+================================================================================
+*/
+* = $35D5
+load_room_sounds_and_scripts:
+		// ------------------------------------------------------------
+		// Position read cursor at the room’s metadata: meta_ptr = room_ptr[x] + MEM_HDR_LEN.
+		// ------------------------------------------------------------
 		ldx     current_room
 		lda     room_ptr_lo_tbl,x
 		clc
@@ -636,9 +874,12 @@ room_load_sounds_and_scripts:
 		adc     #>MEM_HDR_LEN
 		sta     meta_ptr + 1
 
-		// Fetch subresource counts from metadata:
-		//   +$12 → sound_count (drives first loop)
-		//   +$13 → script_count (drives second loop; Y will continue past sounds)
+		// ------------------------------------------------------------
+		// Fetch subresource counts from metadata
+		//
+		//   +ROOM_META_SOUND_COUNT_OFS → sound_count (drives first loop)
+		//   +ROOM_META_SCRIPT_COUNT_OFS → script_count (drives second loop; Y will continue past sounds)
+		// ------------------------------------------------------------
 		ldy     #ROOM_META_SOUND_COUNT_OFS
 		lda     (meta_ptr),y
 		sta     sound_count_left
@@ -647,90 +888,102 @@ room_load_sounds_and_scripts:
 		lda     (meta_ptr),y
 		sta     script_count_left
 
-		/*---------------------------------------
-		 * Phase: ensure all sounds are resident
-		 *  - Intent: iterate sound indices stored in the subresource table.
-		 *  - Y is the running index into that table; callees must not clobber Y.
-		 *--------------------------------------*/
-		ldy     #$00                    // start at first entry in the subresource index table
+		// ------------------------------------------------------------
+		// Ensure all sounds are resident
+		// ------------------------------------------------------------
+		ldy     #$00                    
 		lda     sound_count_left
-		beq     scripts_ensure_resident // no sounds → skip straight to scripts
+		beq     scripts_ensure_resident 	// no sounds left → skip straight to scripts
 
 sound_next:
-		jsr     room_get_sounds_base   // compute/get base of {sounds, then scripts} index table
-		lda     (room_sounds_base),y     // fetch sound index at current Y
-		jsr     rsrc_cache_sound // load/ensure sound by index (must preserve Y)
-		iny                              // advance to next subresource index
-		dec     sound_count_left         // loop exit when count reaches 0 (Z=1)
+		jsr     get_room_sounds_base_address   		// get base address of {sounds, then scripts} index table
+		lda     (room_sounds_base),y     	// fetch sound index at current Y
+		jsr     rsrc_cache_sound 			// cache sound by index
+		iny                              	// advance to next sound index
+		dec     sound_count_left         	// loop until count reaches 0
 		bne     sound_next
 
 scripts_ensure_resident:
-		// Ensure all scripts referenced by this room are resident.
-		// Y intentionally continues from the sounds loop, so scripts follow sounds contiguously.
+		// ------------------------------------------------------------
+		// Ensure all scripts are resident
+		// Y intentionally continues from the sounds loop, so scripts follow sounds contiguously
+		// ------------------------------------------------------------
 		lda     script_count_left
-		beq     room_load_sounds_and_scripts_exit   // nothing to do
+		beq     load_room_sounds_and_scripts_exit   
 
 script_next:
-		// Re-acquire the subresource index table base; callees must preserve Y.
-		jsr     room_get_sounds_base               // base of {sounds, then scripts} index list
-		lda     (room_sounds_base),y                 // fetch script index at current Y
-		jsr     rsrc_cache_script         // ensure script is loaded/resident (must not clobber Y)
-		iny                                         // advance to next subresource index
-		dec     script_count_left                   // loop exit when count reaches 0 (Z=1)
+		jsr     get_room_sounds_base_address    	// base of {sounds, then scripts} index list
+		lda     (room_sounds_base),y        // fetch script index at current Y
+		jsr     rsrc_cache_script         	// cache script by index
+		iny                                 // advance to next script index
+		dec     script_count_left           // loop until count reaches 0
 		bne     script_next
 
-room_load_sounds_and_scripts_exit:
+load_room_sounds_and_scripts_exit:
 		rts
-/*===========================================
- * room_get_sounds_base: compute base pointer to sounds/scripts index table
- *
- * Summary:
- *   Produces a pointer to the contiguous subresource index table for the active
- *   room, where sound indices come first and script indices follow immediately.
- *   The table begins after the two per-object offset tables in metadata.
- *
- * Arguments:
- *   current_room                Active room index selecting room_ptr_*.
- *   room_ptr_lo_tbl, room_ptr_hi_tbl
- *                                Base pointer to the loaded room resource.
- *   room_obj_count       N = number of objects in this room.
- *
- * Returns:
- *   room_sounds_base             ZP pointer set to:
- *                                 room_base + ROOM_OBJ_ABS_START + (4 * N)
- *                               (Because two N×2 tables precede: gfx_ofs[N], rec_ofs[N].)
- *   Registers                   A,X clobbered; Y preserved (callers rely on Y as the running index).
- *   Flags                       Modified; no guarantees to callers.
- *
- * Description:
- *   Given room_base and N = room_obj_count, the subresource index table
- *   (sounds then scripts) starts at:
- *     room_base + ROOM_OBJ_ABS_START + 2*N (gfx_ofs) + 2*N (rec_ofs)
- *   = room_base + ROOM_OBJ_ABS_START + 4*N.
- *   Callers then iterate with Y over the table: first sound_count entries, then
- *   script_count entries. Ensure callees preserve Y.
- *
- * Notes:
- *   • Precondition: room is resident (room_ptr_hi_tbl[current_room] ≠ 0).
- *===========================================*/
-* = $3618
-room_get_sounds_base:
-		// Compute pointer to the sounds and scripts index table for this room:
-		//   room_sounds_base = room_ptr[current_room] + ($1C + 4*N) where N=room_obj_count.
-		ldx     current_room
+/*
+================================================================================
+  get_room_sounds_base_address
+================================================================================
+Summary
+	Get the base address of the sound section start in a room resource.
+	
+Global Inputs
+	current_room            Index of the active room.
+	room_obj_count          Number of objects in the active room (N).
+	room_ptr_lo_tbl[]       Per-room resource base pointer (lo).
+	room_ptr_hi_tbl[]       Per-room resource base pointer (hi).
 
-		// Form low-byte of 4*N (tables total size): A = (N << 2). High byte is discarded here.
+Global Outputs
+	room_sounds_base        ZP pointer to the base of the {sounds+scripts}
+							index table for the active room.
+
+Description
+	- Interpret room_obj_count as N, the number of objects in the room.
+	- Compute the byte size of the two per-object offset tables:
+		• gfx_offset[N] (N×2 bytes) and record_offset[N] (N×2 bytes)
+		together occupy 4*N bytes.
+	- Add ROOM_OBJ_ABS_START (fixed base of the first per-object table) to
+	this total, then add the result to room_ptr_*_tbl[current_room] to
+	form:
+		• room_sounds_base = room_base + ROOM_OBJ_ABS_START + 4*N
+	- Store the resulting pointer (lo,hi) into room_sounds_base for callers.
+	- Callers then index into this table with Y:
+		• First sound_count entries are sound indices.
+		• Next script_count entries are script indices.
+
+Notes
+	The implementation only uses the low byte of (4*N + ROOM_OBJ_ABS_START)
+	and relies on carry from the final add into the high byte. 
+	If (4*N + ROOM_OBJ_ABS_START) ≥ $0100, the high byte of this offset is
+	effectively truncated, which can misaddress the table for large N
+	(e.g., many objects in a room).
+================================================================================
+*/
+* = $3618
+get_room_sounds_base_address:
+		// ------------------------------------------------------------
+		// Compute size of room object's offset tables 
+		// 2 bytes for object graphics offset
+		// 2 bytes for object record offset
+		// Total size = 4 * object count
+		// ------------------------------------------------------------
+		ldx     current_room
 		lda     room_obj_count
 		asl
 		asl
 
-		// Add fixed preface (object gfx + header skip).
+		// Add offset of the first offset table to get an offset past the 2 tables
 		clc
 		adc     #ROOM_OBJ_ABS_START
 
-		// Add offset.low to room base; carry only bumps the base.high.
+		// ------------------------------------------------------------
+		// Add offset to room base address
+		//
+		// The result is an absolute address to the start of the room's sounds section
 		// BUG: if (4*N + $1C) ≥ $0100, its high byte is ignored unless this add carries,
 		//      yielding an error of multiples of $0100 (e.g., N ≥ 57 can mispoint).
+		// ------------------------------------------------------------
 		clc
 		adc     room_ptr_lo_tbl,x
 		sta     room_sounds_base
@@ -739,112 +992,143 @@ room_get_sounds_base:
 		adc     #$00
 		sta     room_sounds_base + 1
 		rts
-/*===========================================
- * room_read_objects: gather per-object tables and scatter object fields
- *
- * Summary:
- *   Reads object_count from the room metadata, builds two variable-length
- *   per-object tables (compressed-gfx offsets and object-record offsets),
- *   then walks each object record to populate attribute arrays
- *   (ids, geometry, parent links, destinations, flags).
- *
- * Arguments:
- *   current_room                 Index selecting the active room.
- *   room_ptr_lo_tbl, room_ptr_hi_tbl
- *                                Per-room base pointer (must be resident; hi≠0 elsewhere).
- *
- * Returns:
- *   Registers                    A,X,Y clobbered; no flags preserved.
- *   Globals updated              
- *                                room_obj_count            (mirrored count)
- *                                obj_gfx_ptr_tbl[*]               (N×16-bit gfx stream offsets)
- *                                room_obj_ofs_tbl[*]              (N×16-bit record start offsets)
- *                                room_object_index_{lo,hi}[*]     (IDs)
- *                                obj_width_tbl[*], obj_height_tbl[*]
- *                                obj_left_col_tbl[*], obj_top_row_tbl[*]
- *                                object_x_destination[*], object_y_destination[*]
- *                                ancestor_overlay_req_tbl[*], parent_idx_tbl[*]
- *
- * Description:
- *   - Compute read_ptr = room_base + MEM_HDR_LEN to the metadata block.
- *   - Read object_count (N); if zero, return.
- *   - Copy N 16-bit entries into obj_gfx_ptr_tbl.
- *   - Immediately following, copy N 16-bit entries into room_obj_ofs_tbl.
- *     (Tables are written starting at byte index 2: arrays are effectively 1-based,
- *      with bytes 0..1 reserved.)
- *   - For object_idx = 1..N:
- *       • Form record pointer: room_base + room_obj_ofs_tbl[object_idx].
- *       • Extract fields
- *   - No residency guard is performed in this routine; callers must ensure
- *     room_ptr_hi_tbl[current_room] ≠ 0.
- *===========================================*/
-* = $3631
-room_read_objects:
-		// Select the active room’s base address for subsequent indexed reads.
-		// Precondition: room is resident (room_ptr_hi_tbl[x] ≠ 0 elsewhere).
-		ldx     current_room
+/*
+================================================================================
+  load_room_objects
+================================================================================
+Summary
+		Set up pointers and metadata for all objects in a room resource.
 		
+        Read the object table for the active room, build two per-object offset
+        tables (compressed-gfx offsets and object-record offsets), then walk each
+        object record to scatter its fields into the engine’s per-object
+        attribute arrays.
+
+Global Inputs
+        current_room                    Index of the active room.
+        room_ptr_lo_tbl[]               Per-room base pointer (lo) for resident rooms.
+        room_ptr_hi_tbl[]               Per-room base pointer (hi); hi!=0 ⇒ resident.
+
+Global Outputs
+        room_obj_count                  Total object count for this room.
+        obj_gfx_ptr_tbl[]               N×16-bit offsets to compressed gfx streams.
+        room_obj_ofs_tbl[]              N×16-bit offsets to object-record starts.
+        room_obj_id_{lo,hi}_tbl[]       Object IDs.
+        obj_width_tbl[]                 Width values.
+        obj_height_tbl[]                Height values.
+        obj_left_col_tbl[]              Initial X positions.
+        obj_top_row_tbl[]               Initial Y positions.
+        parent_idx_tbl[]                Parent object indices.
+        ancestor_overlay_req_tbl[]      Parent-possible flag (bit7 encoded).
+        object_x_destination[]          Target X coordinate.
+        object_y_destination[]          Target Y coordinate (lower 5 bits).
+        object_destination_active[]     Destination-active flag (lower 3 bits).
+
+Description
+        - Load room_base from room_ptr_*_tbl[current_room].
+        - Compute read_ptr := room_base + MEM_HDR_LEN to reach metadata.
+        - Read object_count from metadata, mirror to room_obj_count and
+          obj_count_remaining; if zero, return immediately.
+        - Build compressed-gfx offset table:
+             • Starting at ROOM_META_OBJ_GFX_OFS, copy N 16-bit (lo,hi) pairs
+               into obj_gfx_ptr_tbl[], beginning at table index 2 (index 0..1
+               reserved by convention).
+        - Build object-record offset table:
+             • Immediately following the gfx-offset block, copy the next N
+               16-bit (lo,hi) pairs into room_obj_ofs_tbl[], again starting at
+               table index 2.
+        - For each object 1..N:
+             • Compute idx2 = object_idx * 2 (pair index).
+             • Build read_ptr := room_base + room_obj_ofs_tbl[idx2].
+             • Extract fields from the object record:
+                 – ID (lo,hi)
+                 – width
+                 – start X, start Y (parent-flag bit7 and Y-start bits0..6)
+                 – parent index
+                 – destination X and destination Y (lower 5 bits)
+                 – destination_active (bits0..2)
+                 – height (bits7..3)
+               Write each to the corresponding attribute table.
+             • Advance object_idx and decrement obj_count_remaining until all
+               records are processed.
+
+Notes
+        Tables obj_gfx_ptr_tbl[] and room_obj_ofs_tbl[] use 1-based indexing in
+        practice: entry 0..1 are reserved, and the first real object lives at
+        pair index 2. This mirrors the original engine’s table layout.
+================================================================================
+*/
+* = $3631
+load_room_objects:
+		// Resolve current room's base address
+		ldx     current_room		
 		lda     room_ptr_hi_tbl,x
-		sta     room_base + 1            // working base (hi)
+		sta     room_base_hi            
 		lda     room_ptr_lo_tbl,x
-		sta     room_base            // working base (lo)
+		sta     room_base_lo            
 
-		// Start parsing at the metadata region: read_ptr = room_base + header.
+		// Skip header to set the read pointer
+		// read_ptr = room_base + header
 		clc
-		lda     room_base
+		lda     room_base_lo
 		adc     #<MEM_HDR_LEN
-		sta     read_ptr
-		lda     room_base + 1
+		sta     read_ptr_lo
+		lda     room_base_hi
 		adc     #>MEM_HDR_LEN
-		sta     read_ptr + 1
+		sta     read_ptr_hi
 
-		// Fetch object_count from metadata.
-		// Mirror it: obj_count_remaining drives loops; room_obj_count is for callers/UI.
-		// Branch: BNE continues when count ≠ 0 (Z=0); otherwise early-return.
+		// Fetch object_count
 		ldy     #ROOM_META_OBJ_COUNT_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
+		
+		// Mirror it: obj_count_remaining drives loops; room_obj_count is for callers/UI.
 		sta     obj_count_remaining
 		sta     room_obj_count
-		bne     copy_obj_comp_ofs
-		jmp     room_read_objects_exit
 
-		// Build the per-object gfx compressed-stream offset table.
-		// Later code can jump straight to each object’s compressed gfx data.
-		// Loop: for each object (object_idx times), copy a 16-bit offset (lo/hi) and advance.
+		// Object count == 0? If so, exit
+		bne     copy_obj_comp_ofs
+		jmp     load_room_objects_exit
+
+		// ------------------------------------------------------------
+		// Build the per-object gfx offset table.
+		// ------------------------------------------------------------
 copy_obj_comp_ofs:
-		sta     object_idx              // object_idx := object_count (pair counter)
-		ldy     #ROOM_META_OBJ_GFX_OFS   // source cursor: start of offsets block
-		ldx     #$02                 // dest cursor: table starts at index 2 (slot 0 reserved)
+		sta     object_idx              	// object_idx := object_count (pair counter)
+		ldy     #ROOM_META_OBJ_GFX_OFS   	// source cursor: start of OBJ GFX offsets block
+		ldx     #$02                 		// dest cursor: table starts at index 2 (slot 0 reserved)
 
 copy_obj_comp_ofs_loop:
-		lda     (read_ptr),y         // copy lo byte
+		// Copy a 16-bit offset (lo/hi) and advance
+		lda     (read_ptr_lo),y         	// copy lo byte
 		sta     obj_gfx_ptr_tbl,x
 		iny
 		inx
-		lda     (read_ptr),y         // copy hi byte
+		lda     (read_ptr_lo),y         	// copy hi byte
 		sta     obj_gfx_ptr_tbl,x
 		iny
 		inx
-		dec     object_idx              // exit when all object pairs consumed (Z=1)
+		dec     object_idx              	// exit when all object pairs consumed (Z=1)
 		bne     copy_obj_comp_ofs_loop
 
+		// ------------------------------------------------------------
 		// Stage copy of per-object record starts (offsets within the room blob).
 		// object_idx := remaining objects; Y already points past previous table.
+		// ------------------------------------------------------------
 		lda     obj_count_remaining
 		sta     object_idx
-		lda     $1e                 // Unknown purpose of this copy
-		sta     $1c
-		ldx     #$02                // destination pairs start at index 2 (slot 0 reserved)
-
+		lda     $1E                 		// Unknown purpose of this copy
+		sta     $1C
+		
+		// Addresses pairs start at index 2 (slot 0 skipped)
+		ldx     #$02                		
 copy_obj_record_ofs_loop:
-		// For each object: copy a 16-bit start offset (lo,hi) from metadata.
-		// Loop exits when object_idx reaches 0.
-		lda     (read_ptr),y
-		sta     room_obj_ofs_tbl,x       // lo byte
+		// Copy a 16-bit start offset from metadata.
+		lda     (read_ptr_lo),y
+		sta     room_obj_ofs_tbl,x       	// lo byte
 		iny
 		inx
-		lda     (read_ptr),y
-		sta     room_obj_ofs_tbl,x       // hi byte
+		lda     (read_ptr_lo),y
+		sta     room_obj_ofs_tbl,x       	// hi byte
 		iny
 		inx
 		dec     object_idx
@@ -853,89 +1137,87 @@ copy_obj_record_ofs_loop:
 		// Walk objects; for each, fetch its record and fan out fields.
 		lda     #$01
 		sta     object_idx
-
 load_obj_records:
-		// Compute pair index into the offset table: idx2 = object_idx * 2.
+		// Compute pair index into the offset table: X = object_idx * 2.
 		lda     object_idx
 		asl     
 		tax
 
-		// Build a direct pointer to this object’s record within the room blob:
-		// read_ptr := room_base + room_obj_ofs_tbl[x]  (bytes from room_base).
+		// Convert object offset (relative to room base) to an absolute address
+		// read_ptr = room_base + room_obj_ofs[X]
 		lda     room_obj_ofs_tbl,x
-		sta     read_ptr
+		sta     read_ptr_lo
 		lda     room_obj_ofs_tbl+1,x
-		sta     read_ptr + 1
+		sta     read_ptr_hi
+		
 		clc
-		lda     read_ptr
-		adc     room_base          // add base (lo)
-		sta     read_ptr
-		lda     read_ptr + 1
-		adc     room_base + 1          // add base (hi) + carry
-		sta     read_ptr + 1
+		lda     read_ptr_lo
+		adc     room_base_lo          
+		sta     read_ptr_lo
+		
+		lda     read_ptr_hi
+		adc     room_base_hi          
+		sta     read_ptr_hi
 
-		// Switch X to the object index for attribute table writes.
+		// Switch X to the object index for attribute table writes
 		ldx     object_idx
 
-		// Capture the object’s identifier from the record header:
+		// Fetch the object’s index from the record header
 		ldy     #OBJ_META_IDX_HI_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     room_obj_id_hi_tbl,x
 		ldy     #OBJ_META_IDX_LO_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     room_obj_id_lo_tbl,x
 
-		// Record-specified geometry: width byte
+		// Fetch object width (in columns)
 		ldy     #OBJ_META_WIDTH_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     obj_width_tbl,x
 
-		// Horizontal start coordinate
+		// Fetch object leftmost column
 		ldy     #OBJ_META_X_START_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     obj_left_col_tbl,x
 
-		// Derive parent-linkability flag from Y-start bit7.
-		// Branch meaning: BPL when bit7=0 (N=0) → not linkable; otherwise linkable.
+		// Fetch packed ancestor overlay requirement/top row byte
+		// Bit 7 is ancestor requirement
+		// Bits 6-0 are top object row
 		ldy     #OBJ_META_Y_START_OFS
-		lda     (read_ptr),y
-		bpl     set_00            		// bit7 clear → store $00
-		lda     #%1000_0000             // bit7 set   → store $80
+		lda     (read_ptr_lo),y
+		bpl     set_00            		
+		lda     #%1000_0000             
 		jmp     set_result
 set_00:
 		lda     #%0000_0000
 set_result:
 		sta     ancestor_overlay_req_tbl,x
 
-		// From the same byte, keep bits0..6 as the vertical start coordinate.
-		// Mask clears the parent flag (bit7) set/checked above.
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		and     #%0111_1111
 		sta     obj_top_row_tbl,x
 
-		// Parent chain: room object index (NOT Object ID) of this object’s parent.
+		// Fetch parent object index: room object index (NOT Object ID) of this object’s parent.
 		ldy     #OBJ_META_PARENT_IDX_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     parent_idx_tbl,x
 
-		// Target horizontal coordinate.
+		// Fetch horizontal "destination" coordinate.
 		ldy     #OBJ_META_X_DEST_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		sta     object_x_destination,x
 
-		// From the same byte: keep bits4..0 as target vertical coordinate
-		// Upper bits (7..5) encode a “preposition index” that is ignored by this routine.
+		// Fetch vertical "destination" coordinate (bits 4-0).
 		ldy     #OBJ_META_Y_DEST_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		and     #%0001_1111
 		sta     object_y_destination,x
 
-		// Height byte packs two fields:
+		// Fetch packed height/destination active byte
 		//   - bits2..0 → destination_active (3-bit flag)
 		//   - bits7..3 → height (5-bit value)
-		// Extract in-place: first store low 3 bits, then shift right 3 to expose height.
 		ldy     #OBJ_META_HEIGHT_OFS
-		lda     (read_ptr),y
+		lda     (read_ptr_lo),y
 		pha
 		and     #%0000_0111              
 		sta     object_destination_active,x
@@ -945,488 +1227,495 @@ set_result:
 		lsr     
 		sta     obj_height_tbl,x
 
-		// Advance to next object: object_idx is 1-based; obj_count_remaining tracks loop bound.
-		// Exit when obj_count_remaining reaches 0 (Z=1 after DEC); otherwise process next.
+		// Advance to next object
 		inc     object_idx
 		dec     obj_count_remaining
 		bne     load_obj_records
 
-room_read_objects_exit:
-		// Done: no registers/flags preserved by contract.
+load_room_objects_exit:
 		rts
-/*===========================================
-  read_room_graphics: decode tiles & mask-indexes, program BKG colors
+/*
+================================================================================
+  read_room_graphics
+================================================================================
+Summary
+		Loads and sets up a room's graphics data: 
+			-background colors
+			-tile definitions
+			-mask bit-patterns
+			
+Global Inputs
+        current_room            Active room index.
+        room_ptr_lo_tbl[]       Base address (lo) of each resident room resource.
+        room_ptr_hi_tbl[]       Base address (hi) of each resident room resource.
+        room_bg_colors[0..3]    Room background color bytes (bg3..bg0).
+        room_tile_definitions_offset
+                                16-bit offset to compressed tile-definitions stream.
+        mask_indexes_ofs        16-bit offset to size-prefixed mask-index stream.
 
-  Summary:
-    Programs VIC background colors for the active room, then loads two
-    graphics subresources from the room blob:
-      (1) Tile definitions stream → decompressed to $D800..$DFFF (size $0800).
-      (2) Mask bit-patterns block → size-prefixed, heap-allocated, headered, and filled.
+Global Outputs
+        mask_bit_patterns_lo/hi Pointer to heap-allocated mask-pattern block.
 
-  Arguments:
-    current_room                   Index of the active room; selects room_ptr_*_tbl.
-	
-  Reads:
-    room_ptr_*_tbl				   Per-room base pointers to the room blob in RAM.
-    room_bg_colors[0..3]           Background color bytes for VIC (bg0..bg3).
-    room_bg0                       Primary background color (mirrored to shadow).
-    room_tile_definitions_offset   Offset (from room_base) to the tile-defs stream.
-    mask_indexes_ofs               Offset (from room_base) to mask-index block.
+Description
+        - Select the active room’s resource base from room_ptr_*_tbl.
+        - Program VIC background colors:
+             • Map I/O in, write bg3..bg0, mirror bg0 to room_bg0_shadow,
+               map I/O out.
+        - Tile-definitions load:
+             • Set bytes_left := TILE_DEFS_SIZE.
+             • Point decomp_src_ptr to (room_base + tile_definitions_offset).
+             • Point gfx_write_ptr to TILE_DEFS_ADDR ($D800).
+             • Initialize dict-4 decoder and stream exactly TILE_DEFS_SIZE
+               decoded bytes into $D800..$DFFF.
+        - Mask-pattern block:
+             • If mask_bit_patterns_hi != 0, free previous block via mem_release.
+             • Point gfx_read_ptr to (room_base + mask_indexes_ofs).
+             • Read 16-bit payload_len from start of block.
+             • Allocate (payload_len + MEM_HDR_LEN) bytes via mem_alloc.
+             • Initialize 4-byte resource header and publish pointer to
+               mask_bit_patterns_lo/hi.
+             • Set gfx_write_ptr to (allocated_base + MEM_HDR_LEN).
+             • Point decomp_src_ptr to (gfx_read_ptr + 2) to skip size prefix.
+             • Initialize dict-4 decoder and stream exactly payload_len decoded
+               bytes into the allocated buffer.
 
-  Returns:
-    (none)  Side effects only.
-	
- Side effects:
-    VIC background registers      bg0..bg3 written.
-    room_bg0_shadow               Updated to match room_bg0.
-    $D800..$DFFF                  Filled with decompressed tile definitions ($0800 bytes).
-    mask_bit_patterns_lo/hi       Updated to newly allocated block base (or left zero if none).
-    rsrc_resource_type/index      Set to tag the allocated mask-index block as ROOM_LAYERS/1.
-    CPU/ZP temporaries            bytes_left, payload_len, src_ptr/dst_ptr, gfx_alloc_base updated.
-
-  Description:
-	-assumes the active room is already resident
-	-reads room_base from room_ptr_*_tbl[current_room]
-    -temporarily maps I/O to poke VIC background registers (bg3..bg0) and mirrors bg0 to a shadow
-    -decompression #1: tile-defs stream at (room_base + room_tile_definitions_offset) uses a 4-byte
-    dictionary header and a dictionary-4 decoder; exactly $0800 decoded bytes are written linearly
-    to $D800..$DFFF.
-    -if a previous mask bit-patterns block exists (mask_bit_patterns_hi != 0), it is freed. 
-	-the mask block lives at (room_base + mask_indexes_ofs) and begins with a 16-bit little-endian payload
-    size. 
-	-the routine allocates (payload_size + 4) bytes
-	-initializes a standard 4-byte resource header
-	-records the block in mask_bit_patterns_{lo,hi}
-	-decompresses exactly payload_size bytes into (block_base + 4) using the same dictionary-4 scheme starting after the
-    size field. 
-	-on exit, A/X/Y and flags are not preserved.
-===========================================*/
+Notes
+        Assumes the room is already resident (room_ptr_hi_tbl[current_room] != 0)
+        and that the tile-definitions stream always decodes to TILE_DEFS_SIZE
+        bytes with no end-marker.
+================================================================================
+*/
 * = $3710
 read_room_graphics:
-        // Snapshot dimensions for debugging
+        // Snapshot room dimensions into debug vars
         lda     room_width
         sta     dbg_room_width
         lda     room_height
         sta     dbg_room_height
 
-        /*---------------------------------------
-         * Select active room's resource base
-         *  - X holds current_room; use it to index room_ptr_*_tbl
-         *  - Cache in room_base for subsequent offset math/reads
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Resolve current room's base pointer
+		// ------------------------------------------------------------
         ldx     current_room
+        lda     room_ptr_lo_tbl,x     
+        sta     room_base_lo
+        lda     room_ptr_hi_tbl,x     
+        sta     room_base_hi
 
-        lda     room_ptr_lo_tbl,x     // base.lo := room_ptr_lo_tbl[current_room]
-        sta     room_base
-        lda     room_ptr_hi_tbl,x     // base.hi := room_ptr_hi_tbl[current_room]
-        sta     room_base + 1
-
-        /*---------------------------------------
-         * Program background colors via VIC registers
-         *  - Enable IO mapping so VIC registers are visible
-         *  - Write bg3..bg0 in a short X-descending loop
-         *  - Mirror bg0 to a shadow copy for later reads
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Setup room's background colors via VIC registers
+		//
+		// - Enable IO mapping so VIC registers are visible
+		// - Write bg3..bg0 in a short X-descending loop
+		// - Mirror bg0 to a shadow copy for later reads
+		// ------------------------------------------------------------
         ldy     #MAP_IO_IN
-        sty     cpu_port                    // map IO in (enable VIC register access)
+        sty     cpu_port                    
 
-        ldx     #$03                        // X := 3 → write bg3, bg2, bg1, bg0
+        ldx     #$03                        	// X := 3 → write bg3, bg2, bg1, bg0
 bkg_colors_set_loop:
-        lda     room_bg_colors,x            // fetch configured background color X
-        sta     vic_bg0_reg,x               // poke VIC background color register X
+        lda     room_bg_colors,x            
+        sta     vic_bg0_reg,x               
         dex
-        bne     bkg_colors_set_loop         // loop until X wraps past 0
+        bne     bkg_colors_set_loop         
 
-        lda     room_bg0                    // keep a CPU-side shadow of bg0
+		// Keep a shadow of background color 0
+        lda     room_bg0                    
         sta     room_bg0_shadow
 
         ldy     #MAP_IO_OUT
         sty     cpu_port
 
-        /*---------------------------------------
-         Set decode byte budget for tile definitions (exactly $0800 bytes to write)
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Decompress tile definitions
+		// ------------------------------------------------------------
+        // Set decompression byte count
         lda     #<TILE_DEFS_SIZE
-        sta     bytes_left
+        sta     bytes_left_lo
         lda     #>TILE_DEFS_SIZE
-        sta     bytes_left + 1 
+        sta     bytes_left_hi 
 
-        /*---------------------------------------
-         Point decoder source at the tile-definitions stream:
-         decomp_src_ptr = room_base + tile_defs_ofs  (units: bytes)
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Point decompression source at the tile-definitions stream:
+		// decomp_src_ptr = room_base + tile_defs_ofs
+		// ------------------------------------------------------------
         clc
-        lda     room_base
+        lda     room_base_lo
         adc     room_tile_definitions_offset
         sta     decomp_src_ptr_lo
-        lda     room_base + 1
+		
+        lda     room_base_hi
         adc     room_tile_definitions_offset + 1
         sta     decomp_src_ptr_hi
 
-        /*---------------------------------------
-         Set destination for decoded tile definitions (tile bitmap page)
-         *--------------------------------------*/
+        // Set destination pointer for decoded tile definitions
         lda     #<TILE_DEFS_ADDR
-        sta     gfx_write_ptr
+        sta     gfx_write_ptr_lo
         lda     #>TILE_DEFS_ADDR
-        sta     gfx_write_ptr + 1
+        sta     gfx_write_ptr_hi
 
-        /*---------------------------------------
-		 Decompress tile definitions
-         *--------------------------------------*/
-        // Initialize the 4-symbol dictionary decoder for this stream
-        // (uses decomp_src_ptr as the input stream; prepares the symbol table/state)
+		// ------------------------------------------------------------
+		// Initialize the 4-symbol dictionary decoder for this stream
+		// (uses decomp_src_ptr as the input stream; prepares the symbol table/state)
+		// ------------------------------------------------------------
         jsr     decomp_dict4_init
 
-        // Decode tiles: stream → [gfx_write_ptr .. +$0800)
+		// ------------------------------------------------------------
+        // Decompress tile data
+		//
         // Loop intent: keep Y=0 and advance dst pointer manually; stop when remain_bytes == 0.
+		// ------------------------------------------------------------
         ldy     #$00
 decomp_tiles_loop:
-        jsr     decomp_stream_next            // produce next decoded byte in A
-        sta     (gfx_write_ptr),y             // store at *dst_ptr
-        inc     gfx_write_ptr                // dst_ptr++ (lo)
+        jsr     decomp_stream_next            	// produce next decoded byte in A
+        sta     (gfx_write_ptr_lo),y            // store at *dst_ptr
+		
+		// Move write pointer
+        inc     gfx_write_ptr_lo                
         bne     tiles_update_count
-        inc     gfx_write_ptr + 1                // carry into hi on wrap
+        inc     gfx_write_ptr_hi               
 
+		// Update count and loop
 tiles_update_count:
-        lda     bytes_left                   // 16-bit countdown: if lo==0 then dec hi
+        lda     bytes_left_lo                   
         bne     tiles_dec_lo_byte
-        dec     bytes_left + 1
+        dec     bytes_left_hi
 tiles_dec_lo_byte:
-        dec     bytes_left                   // --remain_bytes.lo
-        lda     bytes_left
-        ora     bytes_left + 1                   // zero when both lo and hi are zero
-        bne     decomp_tiles_loop             // keep decoding while bytes remain
+        dec     bytes_left_lo                   
+        lda     bytes_left_lo
+        ora     bytes_left_hi                   
+        bne     decomp_tiles_loop             
 
-        /*---------------------------------------
-         If a previous mask bit-patterns block is resident, release it first
-         *--------------------------------------*/
-        ldx     mask_bit_patterns_lo          // X:= existing block base.lo
-        ldy     mask_bit_patterns_hi          // Y:= existing block base.hi
-        beq     setup_mask_patterns_load      // hi==0 ⇒ no prior block → skip free
-        jsr     mem_release                   // free block at (X,Y)
+		// ------------------------------------------------------------
+		// Mask bit-patterns loading
+		// ------------------------------------------------------------
+        // Is there a resident mask bit-patterns block? If so, release it
+        ldx     mask_bit_patterns_lo          
+        ldy     mask_bit_patterns_hi          
+        beq     setup_mask_patterns_load      	// hi==0 ⇒ no prior block → skip free
+		
+		// Block resident, release it (block pointer at X/Y)
+        jsr     mem_release                   
 
 setup_mask_patterns_load:
-        /*---------------------------------------
-         Position stream cursor at the mask-indexes section:
-           gfx_read_ptr = room_base + mask_idx_ofs  (start of size-prefixed block)
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Resolve mask pointer
+		// gfx_read_ptr = room_base + mask_idx_ofs  (start of size-prefixed block)
+		// ------------------------------------------------------------
         clc
-        lda     room_base
+        lda     room_base_lo
         adc     mask_indexes_ofs
-        sta     gfx_read_ptr
-        lda     room_base + 1
+        sta     gfx_read_ptr_lo
+        lda     room_base_hi
         adc     mask_indexes_ofs + 1
-        sta     gfx_read_ptr + 1
+        sta     gfx_read_ptr_hi
 
-        /*---------------------------------------
-         Read payload size prefix at start of mask-index block (little-endian: lo,hi)
-         *--------------------------------------*/
+        // Read mask payload size
         ldy     #$00
-        lda     (gfx_read_ptr),y
-        sta     payload_len
+        lda     (gfx_read_ptr_lo),y
+        sta     payload_len_lo
         iny
-        lda     (gfx_read_ptr),y
-        sta     payload_len + 1
+        lda     (gfx_read_ptr_lo),y
+        sta     payload_len_hi
 
-        /*---------------------------------------
-         Compute total allocation size = payload_size + resource header (4 bytes)
-         Store into remain_bytes for use as the request to mem_alloc
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Compute total block size = payload_len + header (4 bytes)
+		// Store into bytes_left for use as the request to mem_alloc
+		// ------------------------------------------------------------
         clc
-        lda     payload_len
+        lda     payload_len_lo
         adc     #<MEM_HDR_LEN
-        sta     bytes_left
-        lda     payload_len + 1
+        sta     bytes_left_lo
+		
+        lda     payload_len_hi
         adc     #>MEM_HDR_LEN
-        sta     bytes_left + 1
+        sta     bytes_left_hi
 
-        /*---------------------------------------
-         Request a heap block large enough to hold [4-byte header + payload]
-         mem_alloc expects (X=lo, Y=hi) byte count; returns block base in (X,Y)
-         *--------------------------------------*/
-        ldx     bytes_left
-        ldy     bytes_left + 1
+		// ------------------------------------------------------------
+		// Alloc a block for the mask resource
+		// mem_alloc expects (X=lo, Y=hi) byte count; returns block base in (X,Y)
+		// ------------------------------------------------------------
+        ldx     bytes_left_lo
+        ldy     bytes_left_hi
         jsr     mem_alloc
 
-        // Record the allocated block base for later writes and publishing
-        stx     gfx_alloc_base
-        sty     gfx_alloc_base + 1
+        // Stash the block base for later writes and publishing
+        stx     gfx_alloc_base_lo
+        sty     gfx_alloc_base_hi
 
-        /*---------------------------------------
-         Initialize the resource header for this block:
-		 
-           rsrc_type := ROOM_LAYERS, rsrc_index := 1
-           rsrc_hdr_init writes the standard 4-byte header at gfx_alloc_base
-         *--------------------------------------*/
+		// ------------------------------------------------------------
+		// Initialize the resource header for this block
+		// ------------------------------------------------------------
         lda     #RSRC_TYPE_ROOM_LAYERS
         sta     rsrc_resource_type
-        lda     #$01
+        lda     #RSRC_INDEX_MASK_LAYER
         sta     rsrc_resource_index
         jsr     rsrc_hdr_init
 
-        /*---------------------------------------
-         Publish the newly allocated block as the room’s mask bit-patterns buffer
-         *--------------------------------------*/
-        ldx     gfx_alloc_base
-        ldy     gfx_alloc_base + 1
-        stx     mask_bit_patterns_lo          // record base.lo
-        sty     mask_bit_patterns_hi          // record base.hi (hi==0 would mean “none”)
+        // ------------------------------------------------------------
+        // Publish the newly allocated block as the current mask bit-patterns
+        // ------------------------------------------------------------
+        ldx     gfx_alloc_base_lo
+        ldy     gfx_alloc_base_hi
+        stx     mask_bit_patterns_lo          
+        sty     mask_bit_patterns_hi          
+        stx     gfx_write_ptr_lo
+        sty     gfx_write_ptr_hi
 
-        /*---------------------------------------
-         Point destination at start of payload within the new block:
-         dst_ptr := gfx_alloc_base + MEM_HDR_LEN  (skip 4-byte resource header)
-         *--------------------------------------*/
-        stx     gfx_write_ptr
-        sty     gfx_write_ptr + 1
+        // ------------------------------------------------------------
+        // Point destination at start of payload within the new block:
+		//
+        // gfx_write_ptr_lo := gfx_write_ptr_lo + MEM_HDR_LEN  (skip 4-byte resource header)
+        // ------------------------------------------------------------
         clc
-        lda     gfx_write_ptr
-        adc     #<MEM_HDR_LEN          // add header size (bytes) to lo
-        sta     gfx_write_ptr
-        lda     gfx_write_ptr + 1
-        adc     #>MEM_HDR_LEN          // propagate carry into hi
-        sta     gfx_write_ptr + 1
+        lda     gfx_write_ptr_lo
+        adc     #<MEM_HDR_LEN          
+        sta     gfx_write_ptr_lo
+		
+        lda     gfx_write_ptr_hi
+        adc     #>MEM_HDR_LEN          
+        sta     gfx_write_ptr_hi
 
-        /*---------------------------------------
-         Set remaining byte budget to the payload size (we’ll decode exactly this many bytes)
-         *--------------------------------------*/
-        lda     payload_len
-        sta     bytes_left
-        lda     payload_len + 1
-        sta     bytes_left + 1
+        // ------------------------------------------------------------
+        // Set decompression byte count (as the payload size)
+        // ------------------------------------------------------------
+        lda     payload_len_lo
+        sta     bytes_left_lo
+        lda     payload_len_hi
+        sta     bytes_left_hi
 
+        // ------------------------------------------------------------
+        // Reacquire compressed mask stream
+		//
+        // gfx_read_ptr = room_base + mask_indexes_ofs
+        // ------------------------------------------------------------
 		ldx 	current_room
 		lda 	room_ptr_lo_tbl,X
-		sta 	room_base
+		sta 	room_base_lo
 		lda 	room_ptr_hi_tbl,X
-		sta 	room_base + 1
-
-        /*---------------------------------------
-         Reacquire stream base for mask-index section:
-           gfx_read_ptr = room_base + mask_idx_ofs  (we’ll skip the size next)
-         *--------------------------------------*/
+		sta 	room_base_hi
+		
         clc
-        lda     room_base
+        lda     room_base_lo
         adc     mask_indexes_ofs
-        sta     gfx_read_ptr
-        lda     room_base + 1
+        sta     gfx_read_ptr_lo
+        lda     room_base_hi
         adc     mask_indexes_ofs + 1
-        sta     gfx_read_ptr + 1
+        sta     gfx_read_ptr_hi
 
-        /*---------------------------------------
-         Set decoder source just past the 2-byte size prefix:
-           decomp_src_ptr = gfx_read_ptr + 2  (units: bytes)
-         *--------------------------------------*/
+        // ------------------------------------------------------------
+        // Set decompression source pointer past the 2-byte size prefix:
+		//
+        // decomp_src_ptr = gfx_read_ptr + 2
+        // ------------------------------------------------------------
         clc
-        lda     gfx_read_ptr
+        lda     gfx_read_ptr_lo
         adc     #$02
         sta     decomp_src_ptr_lo
-        lda     gfx_read_ptr + 1
+        lda     gfx_read_ptr_hi
         adc     #$00
         sta     decomp_src_ptr_hi
 
-        /*---------------------------------------
-		 Decompress mask patterns
-         *--------------------------------------*/
-        // Initialize the 4-symbol decoder for the mask-index stream:
-        // reads the 4-byte dictionary at decomp_src_ptr (+0..+3) and primes state
+		// ------------------------------------------------------------
+		// Initialize the 4-symbol dictionary decoder for this stream
+		// (uses decomp_src_ptr as the input stream; prepares the symbol table/state)
+		// ------------------------------------------------------------
         jsr     decomp_dict4_init
 		
-        // Decode mask bit-patterns payload into dst_ptr
-        // Loop intent: keep Y fixed at 0, advance dst_ptr manually; stop when remain_bytes == 0
+		// ------------------------------------------------------------
+        // Decompress mask data
+		//
+        // Loop intent: keep Y=0 and advance dst pointer manually; stop when remain_bytes == 0.
+		// ------------------------------------------------------------
         ldy     #$00
 decomp_mask_patterns_loop:
-        jsr     decomp_stream_next            // A ← next decoded byte from comp_src_ptr
-        sta     (gfx_write_ptr),y             // store to *dst_ptr
-        inc     gfx_write_ptr                // dst_ptr++
+        jsr     decomp_stream_next            	// produce next decoded byte in A
+        sta     (gfx_write_ptr_lo),y            // store at *dst_ptr
+		
+		// Move write pointer
+        inc     gfx_write_ptr_lo                
         bne     mask_update_count
-        inc     gfx_write_ptr + 1                // carry into hi on wrap
+        inc     gfx_write_ptr_hi                
 
+		// Update count and loop
 mask_update_count:
-        lda     bytes_left                   // 16-bit countdown: if lo==0 then dec hi
+        lda     bytes_left_lo                   
         bne     mask_dec_lo_byte
-        dec     bytes_left + 1
+        dec     bytes_left_hi
 mask_dec_lo_byte:
-        dec     bytes_left                   // --remain_bytes.lo
-        lda     bytes_left
-        ora     bytes_left + 1                   // Z=1 when both lo and hi are zero 
-        bne     decomp_mask_patterns_loop     // continue until no bytes remain
+        dec     bytes_left_lo                   
+        lda     bytes_left_lo
+        ora     bytes_left_hi                   
+        bne     decomp_mask_patterns_loop     
 
         rts
-/*===========================================
- * room_ensure_resident: ensure room is resident; set age=1 (preserve lock)
- *
- * Summary:
- *   Ensures the room indexed by X is resident in memory. If already resident
- *   (room_ptr_hi_tbl[x] != 0), skips I/O and just updates its LRU age to 1
- *   while preserving the lock bit. Otherwise, primes the loader, reads the
- *   room resource, publishes its pointer, then updates age=1.
- *
- * Arguments:
- *   X 				       Target room index to ensure resident and age.
- * 
- * State/Vars:
- *   room_index            Scratch mirror of X for publishing pointer.
- *   rsrc_resource_index        Scratch mirror of X for loader/age selection.
- *
- * Returns:
- *   (cold path)           Pointer tables updated for room Y=room_index.
- *   X, Y                  Clobbered by loader; on cold path Y ends as rsrc_resource_index,
- *                         on fast path Y is unspecified (not initialized here).
- *   A                     Clobbered.
- *   Flags                 Undefined on return.
- * 
- * Globals:
- *   		               room_ptr_lo_tbl[room_index], room_ptr_hi_tbl[room_index],
- *                         room_liveness_tbl[rsrc_resource_index],
- *                         rsrc_read_offset := 0, rsrc_sector_idx := 0,
- *                         rsrc_resource_type := RSRC_TYPE_ROOM.
- *
- * Description:
- *   Fast path: 
- *				-test room_ptr_hi_tbl[x]
- *				-if nonzero, branch directly to age update
- *   Cold path: 
- * 				-copy X into rsrc_resource_index and room_index
- * 				-call room_disk_chain_prepare
- *   			-initialize rsrc_read_offset=0 (bytes) and rsrc_sector_idx=0 (sectors/pages)
- *   			-set rsrc_resource_type=RSRC_TYPE_ROOM
- *				-call rsrc_load_from_disk which returns a pointer in X/Y and save it into room_data_ptr_local
- *  			-publish to room_ptr_lo_tbl/hi_tbl[y=room_index]
- *
- *   Finally, select Y := rsrc_resource_index and set room_liveness_tbl[y] to:
- *     - ROOM_ATTR_LOCKED_AGE_1 if bit7 was set
- *     - ROOM_ATTR_UNLOCKED_AGE_1 if bit7 was clear
- *===========================================*/
+/*
+=======================================================================
+  cache_room
+=======================================================================
+Summary
+	Cache a room into memory.
+	
+	Ensure the room identified by X is resident in memory. If already
+	resident, skip disk I/O and only update its liveness age while
+	preserving the lock bit.
+
+Arguments
+	X                       Target room index to ensure resident and age.
+
+Global Inputs
+	room_ptr_hi_tbl[]       Per-room hi-byte pointer; hi!=0 ⇒ room already resident.
+	room_liveness_tbl[]     Per-room attribute byte (lock bit and age field).
+
+Global Outputs
+	room_ptr_lo_tbl[]       Updated with newly loaded room base (cold path only).
+	room_ptr_hi_tbl[]       Updated with newly loaded room base (cold path only).
+	room_liveness_tbl[]     Updated to AGE_1 while preserving lock bit.
+
+Description
+	- Fast path:
+		- Check room_ptr_hi_tbl[X]; if non-zero, room is already resident.
+		- Skip disk I/O and jump directly to the age update for that room.
+	- Cold path:
+		- Mirror X into rsrc_resource_index and room_index for downstream use.
+		- Call room_disk_chain_prepare to configure the disk chain for this room.
+		- Clear rsrc_read_offset and rsrc_sector_idx so the load starts at the header.
+		- Set rsrc_resource_type to the room resource type.
+		- Call rsrc_load_from_disk to fetch the room resource; capture its pointer in
+		room_data_ptr_local and publish it into room_ptr_lo_tbl/room_ptr_hi_tbl at
+		index room_index.
+		- Reload Y from rsrc_resource_index so the subsequent age update targets
+		this room.
+		- Age update:
+			- Read room_liveness_tbl[Y]; if the lock bit is set, write LOCKED_AGE_1,
+			otherwise write UNLOCKED_AGE_1.
+			- Leave with the room’s lock bit preserved and its age field set to 1.
+
+Notes
+	This routine assumes that, on the fast path, Y already refers to the same
+	room index as X when room_ptr_hi_tbl[X] is non-zero; the age update uses Y
+	as the index into room_liveness_tbl.
+=======================================================================
+*/
 * = $3833
-room_ensure_resident:
-		// Fast path: if the room’s data pointer is already non-null (hi != $00),
-		// skip storage access and go update its age. LDA sets Z based on the hi byte;
-		// BNE (Z=0) takes the branch when resident.
+cache_room:
+		// Room already resident? If so, skip load and set age to 1
 		lda     room_ptr_hi_tbl,x
 		bne     room_set_age_to_1
 
-		// Cold path: prime the loader’s parameter block for a room fetch.
+        // ------------------------------------------------------------
+		// Room not resident 
+		// 
+		// Prime the loader’s parameter block for a room fetch.
 		// Mirror the room index into both slots so subroutines can use it
 		// without relying on X surviving; room_disk_chain_prepare initializes
 		// the device/chain state prior to the read.
+        // ------------------------------------------------------------
 		stx     rsrc_resource_index
 		stx     room_index
 		jsr     room_disk_chain_prepare
 
-		// Start reads at the resource header base: read_offset = $00 (bytes).
+        // ------------------------------------------------------------
+		// Load room from disk and stash pointer
+        // ------------------------------------------------------------
+		// Room resources always reside at the start of a disk chain (sector 0, offset 0)
 		lda     #$00
 		sta     rsrc_read_offset
-
-		// Begin at the first sector
 		lda     #$00
 		sta     rsrc_sector_idx
 
-		// Select resource kind for the loader/dispatcher: type = RSRC_TYPE_ROOM (=3).
+		// Set resource type
 		lda     #RSRC_TYPE_ROOM
 		sta     rsrc_resource_type
 
-		// Fetch room from disk
+		// Load room from disk
 		jsr     rsrc_load_from_disk
-		stx     room_data_ptr_local              // save ptr.lo
-		sty     room_data_ptr_local + 1              // save ptr.hi
+		
+		// Stash room pointer
+		stx     room_data_ptr_local_lo              
+		sty     room_data_ptr_local_hi          
 
-		// Publish the pointer into the residency tables (Y = room_index):
-		//   lo -> room_ptr_lo_tbl[y], hi -> room_ptr_hi_tbl[y].
+        // ------------------------------------------------------------
+		// Publish the pointer into the residency tables
+        // ------------------------------------------------------------
 		ldy     room_index
-		lda     room_data_ptr_local
+		lda     room_data_ptr_local_lo
 		sta     room_ptr_lo_tbl,y
-		lda     room_data_ptr_local + 1
+		lda     room_data_ptr_local_hi
 		sta     room_ptr_hi_tbl,y
 
-		// Choose which room’s attribute to update (index lives in rsrc_resource_index here).
+        // ------------------------------------------------------------
+		// Set age = 1 while preserving lock (bit7 of room liveness).
+        // ------------------------------------------------------------
 		ldy     rsrc_resource_index
-
 room_set_age_to_1:
-		// Set age = 1 while preserving lock (bit7).
-		// Branch logic: LDA sets N from bit7; BPL (N=0) → unlocked path; otherwise locked.
 		lda     room_liveness_tbl,y
 		bpl     attr_unlocked_path
 
 		// Locked case
 		lda     #ROOM_ATTR_LOCKED_AGE_1
 		jmp     commit_room_attr
-
 attr_unlocked_path:
 		// Unlocked case
 		lda     #ROOM_ATTR_UNLOCKED_AGE_1
-
 commit_room_attr:
-		// Post-condition: room_liveness_tbl[y] updated; lock preserved, age reset to 1.
 		sta     room_liveness_tbl,y
 		rts
+/*
+=======================================================================
+  spawn_actors_for_room_costumes
+=======================================================================
+Summary
+	Assign actors for all costumes present in the current room.
 
-/*===========================================
- * room_spawn_present_costumes: spawn actors for unassigned costumes present in current_room
- *
- * Summary:
- *   Walks all costume slots and, for any slot that is currently unassigned and
- *   whose costume is located in the active room, ensures its costume resource
- *   is resident and binds a free actor slot to it.
- *
- * Arguments:
- *   X (entry)                  Ignored; routine initializes X=0 and iterates 0..COSTUME_MAX_INDEX.
- *   actor_for_costume[]        Per-costume assignment sentinel (bit7=1 ⇒ unassigned, bit7=0 ⇒ assigned).
- *   costume_room_idx[]         Per-costume current room index (dynamic location).
- *   current_room               Active room index to match against.
- *   rsrc_cache_costume (subroutine)
- *                              Ensures the costume asset is loaded; sets rsrc_resource_index.
- *   assign_costume_to_free_actor     Binds a free actor slot; consumes X as costume/resource index.
- *
- * Returns:
- *   A, X, Y                    Clobbered.
- *   Flags                      Modified by loop/subcalls; no guarantees to callers.
- *   Globals updated            actor tables via assign_costume_to_free_actor;
- *                              rsrc_resource_index set by rsrc_cache_costume;
- *                              'unused' receives A (legacy write, no semantic effect).
- *
- * Description:
- *   Iterates X from 0 to COSTUME_MAX_INDEX. For each X:
- *     - If actor_for_costume[X].bit7 == 0, skip (already assigned).
- *     - If costume_room_idx[X] != current_room, skip (not present here).
- *     - Otherwise:
- *         • rsrc_cache_costume → guarantees asset availability and writes rsrc_resource_index.
- *         • X := rsrc_resource_index; assign_costume_to_free_actor → allocate/init actor for this costume.
- *   Loop exits once all costume slots have been considered.
- *   Notes:
- *     • Assignment sentinel is active-high for “free”: bit7=1 means no actor bound yet.
- *     • The routine relies on the convention that assign_costume_to_free_actor consumes X as the
- *       costume/resource index; X is (re)loaded from rsrc_resource_index before the call.
- *===========================================*/		
+Global Inputs
+	actor_for_costume[]     Per-costume assignment (bit7=1 ⇒ unassigned).
+	costume_room_idx[]      Per-costume current room index.
+	current_room            Active room index to match against.
+
+Global Outputs
+	actor_for_costume[]     Updated indirectly via assign_costume_to_free_actor.
+
+Description
+	- Start with X=0 and scan each costume slot up to COSTUME_MAX_INDEX.
+	- Skip if actor_for_costume[x].bit7==0 (already assigned).
+	- Skip if costume_room_idx[x] != current_room.
+	- For a matching slot, call rsrc_cache_costume to ensure the costume
+	resource is resident and to publish its resource index.
+	- Load X from rsrc_resource_index and call assign_costume_to_free_actor
+	so a free actor is allocated and bound to this costume.
+	- Restore X from rsrc_resource_index and continue scanning until all
+	costume slots have been considered.
+
+Notes
+	Assumes the costume slot index and costume resource index share the
+	same index space (rsrc_resource_index corresponds to the scanned slot).
+=======================================================================
+*/
 * = $3881
-room_spawn_present_costumes:
-        // Legacy/harmless side effect: write A to 'unused' (A is caller-clobber here)
+spawn_actors_for_room_costumes:
+        // Legacy/harmless side effect: write A to 'unused'
         sta     unused
 
-        // Iterate over all costume slots (X := 0..$18); exit when X == $19
+        // Iterate over all costume slots
         ldx     #$00
 check_costume_presence:
-        // Only act on costumes that are currently UNASSIGNED:
-        // sentinel: actor_for_costume[x] bit7=1 ⇒ no actor bound; bit7=0 ⇒ already bound → skip
+		// Costume already has an actor assigned? If so, skip
+        // bit7=1 ⇒ no actor bound; bit7=0 ⇒ already bound → skip
         lda     actor_for_costume,x
         bpl     next_costume_2
 
-        // Further filter: only spawn if this costume’s character is in the ACTIVE room
-        // Compare dynamic location (costume_room_idx[x]) to current_room
+        // Costume is present in the current room? If not, skip
         lda     costume_room_idx,x
         cmp     current_room
-        beq     costume_in_current_room      // equal → handle; else fall through to skip
+        beq     costume_in_current_room      
         jmp     next_costume_2
 
 costume_in_current_room:
-        // Make sure this costume’s asset is loaded before spawning an actor.
-        // Contract: rsrc_cache_costume sets rsrc_resource_index to the
-        //           resource index corresponding to the costume we’re handling.
+		// Cache costume in memory
         jsr     rsrc_cache_costume
 
         // Bind a free actor slot to this costume.
-        // Convention: assign_costume_to_free_actor consumes X as the costume/resource index,
-        // so load X from rsrc_resource_index produced by the loader above.
         ldx     rsrc_resource_index
         jsr     assign_costume_to_free_actor
 
@@ -1434,8 +1723,8 @@ costume_in_current_room:
         ldx     rsrc_resource_index
 
 next_costume_2:
-        // Loop control: advance to next costume; exit once X == COSTUME_MAX_INDEX+1.
+        // Advance to next costume
         inx
-        cpx     #(COSTUME_MAX_INDEX + 1)    // processed 0..COSTUME_MAX_INDEX
+        cpx     #COSTUME_MAX_INDEX + 1
         bne     check_costume_presence
         rts

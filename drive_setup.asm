@@ -1,7 +1,8 @@
 /*
- ------------------------------------------------------------------------------
+================================================================================
  Overview
- ------------------------------------------------------------------------------
+================================================================================
+
  These routines initialize the Commodore 64’s communication with the disk drive
  and upload a custom loader into the drive’s memory.
 
@@ -36,7 +37,8 @@
  In short: this code transfers a compact loader into the disk drive using the
  normal KERNAL routines, then switches both the C64 and drive into a faster,
  custom serial link that no longer depends on the KERNAL.
- ------------------------------------------------------------------------------
+ 
+================================================================================
 */
 #importonce
 #import "constants.inc"
@@ -516,3 +518,233 @@ wait_loop:
         // ------------------------------------------------------------
         sei
         rts
+
+
+/*
+Pseudo-code
+
+function setup_vectors_and_drive_code()
+    // Configure CPU port data direction so lower bits (memory map) are outputs
+    cpu_port_ddr := CPU_PORT_DDR_INIT
+
+    // Map I/O and KERNAL ROM in, BASIC out (replaced by RAM)
+    cpu_port := CPU_PORT_MAP_IO_KERNAL_RAM_NBASIC
+
+    // Disable interrupts while vectors are being changed
+    disable_interrupts()
+
+    // Set IRQ and BRK vectors to KERNAL_IRQ_VECTOR_ADDR ($EA31)
+    kernal_irq_vector   := low_byte(KERNAL_IRQ_VECTOR_ADDR)
+    kernal_irq_vector+1 := high_byte(KERNAL_IRQ_VECTOR_ADDR)
+    kernal_brk_vector   := low_byte(KERNAL_IRQ_VECTOR_ADDR)
+    kernal_brk_vector+1 := high_byte(KERNAL_IRQ_VECTOR_ADDR)
+
+    // Set NMI vector to KERNAL_NMI_VECTOR_ADDR ($FE47)
+    kernal_nmi_vector   := low_byte(KERNAL_NMI_VECTOR_ADDR)
+    kernal_nmi_vector+1 := high_byte(KERNAL_NMI_VECTOR_ADDR)
+
+    // ----- CIA2 initial setup for serial -----
+    // Enable all CIA2 interrupt sources via mask register
+    cia2_irq_status_reg := CIA2_IRQ_ENABLE_ALL
+
+    // Preserve PB5 direction; force all other port B bits to input
+    cia2_ddrb := cia2_ddrb AND CIA2_DDRB_KEEP_BIT5_MASK
+
+    // Set CIA2 PRA to initial IEC levels:
+    //  - ATN / CLOCK / DATA outputs cleared
+    //  - TXD set
+    //  - VIC bank forced to bank 3 via low bits
+    cia2_pra := CIA2_PRA_INIT_LEVELS
+
+    // Configure CIA2 DDRA so:
+    //  - DATA IN / CLOCK IN bits are inputs
+    //  - remaining bits are outputs
+    cia2_ddra := CIA2_DDRA_DIR_MASK
+
+    // ----- Drive initialize and loader upload -----
+    // Ask the drive to initialize (I0)
+    drive_initialize_cmd()
+
+    // Set host source pointer to start of loader in C64 RAM
+    source := DRIVE_LOADER_SRC_ADDR
+
+    // Set drive destination pointer to buffer #2 ($0500) in drive RAM
+    destination := DRIVE_LOADER_DEST_ADDR
+
+    // Number of 32-byte groups to send (512 bytes total)
+    X := DRIVE_GROUP_COUNT_32B   // e.g., 16 groups
+
+    // Loop over groups of 32 bytes
+    while X > 0 do
+        // Snapshot remaining-group count so it survives inner operations
+        group_counter := X
+
+        // Emit "M-W dest.lo dest.hi 32" header for this destination
+        drive_issue_write_memory_32()
+
+        // Y will have been set to 0 by drive_issue_write_memory_32
+        // Stream 32 data bytes from host to drive via CHROUT
+        Y := 0
+        while Y < DRIVE_GROUP_SIZE_BYTES do
+            A := read_byte_at(source + Y)
+            CHROUT(A)                      // send byte over KERNAL channel
+            Y := Y + 1
+        end while
+
+        // Terminate the M-W command line with carriage return
+        CHROUT(ASCII_CR)
+
+        // Close command channel 15
+        drive_close_channel()
+
+        // Advance source and destination pointers by 32 bytes
+        advance_io_ptrs_by_group()
+
+        // Decrement group counter and loop if more blocks remain
+        X := group_counter
+        X := X - 1
+    end while
+
+    // ----- Command drive to execute loader and switch to custom link -----
+    // Instruct drive to jump to $0500 (U3 command)
+    drive_issue_u3_command()
+
+    // Reconfigure CIA2 to the game’s custom serial protocol and delay briefly
+    setup_serial_communication()
+
+    // Leave interrupts disabled; higher-level code decides when to re-enable
+end function
+
+
+function drive_open_command_channel()
+    // Prepare an empty filename
+    SETNAM(name_length = EMPTY_NAME_LEN, name_ptr = null_string)
+
+    // Logical file 15, device 8, secondary address 15
+    SETLFS(logical_number = CMD_CHANNEL_LFN,
+           device_number  = DRIVE_DEVICE_ID,
+           secondary_addr = CMD_CHANNEL_LFN)
+
+    // Open the command channel on the drive
+    OPEN()
+
+    // Make logical file 15 the current output channel
+    CHKOUT(CMD_CHANNEL_LFN)
+end function
+
+
+function drive_issue_u3_command()
+    // Open drive command channel 15
+    drive_open_command_channel()
+
+    // Send "U3" sequence to command execution of buffer #2 at $0500
+    CHROUT(CMD_U3_CHAR_U)      // 'U'
+    CHROUT(CMD_U3_CHAR_3)      // '3'
+
+    // Terminate command with carriage return
+    CHROUT(ASCII_CR)
+
+    // Close the command channel and restore default I/O
+    drive_close_channel()
+end function
+
+
+function drive_issue_write_memory_32()
+    // Open drive command channel 15
+    drive_open_command_channel()
+
+    // Send "M-W" to indicate a memory-write command
+    CHROUT(CMD_MEM_WRITE_CHAR_M)       // 'M'
+    CHROUT(CMD_MEM_WRITE_CHAR_HYPHEN)  // '-'
+    CHROUT(CMD_MEM_WRITE_CHAR_W)       // 'W'
+
+    // Send destination address in drive RAM (low, then high byte)
+    CHROUT(low_byte(destination))
+    CHROUT(high_byte(destination))
+
+    // Send the number of bytes to write (fixed at 32 here)
+    CHROUT(DRIVE_GROUP_SIZE_BYTES)
+
+    // Initialize Y so caller can use (source + Y) loop
+    Y := 0
+
+    // Channel remains open; caller will:
+    //   - write 32 data bytes via CHROUT
+    //   - send <CR>
+    //   - call drive_close_channel()
+    return
+end function
+
+
+function drive_initialize_cmd()
+    // Open drive command channel 15
+    drive_open_command_channel()
+
+    // Send "I0" to reinitialize the drive
+    CHROUT('I')
+    CHROUT('0')
+
+    // Terminate command with carriage return
+    CHROUT(ASCII_CR)
+
+    // Close command channel 15 and restore default I/O
+    drive_close_channel()
+end function
+
+
+function advance_io_ptrs_by_group()
+    // Advance host source pointer by one 32-byte group
+    source := source + DRIVE_GROUP_SIZE_BYTES
+
+    // Advance drive destination pointer by one 32-byte group
+    destination := destination + DRIVE_GROUP_SIZE_BYTES
+end function
+
+
+function drive_close_channel()
+    // Restore default input/output devices
+    CLRCHN()
+
+    // Close logical file 15 (command channel)
+    CLOSE(CMD_CHANNEL_LFN)
+end function
+
+
+function setup_serial_communication()
+    // Reconfigure CIA2 Port A for custom serial link while preserving VIC bank
+    // --- Configure CIA2 DDRA (data direction) ---
+    current_ddra := cia2_ddra
+
+    // Clear bits 7..2 (DATA/CLOCK/ATN/TXD directions), preserve bits 1..0 (VIC bank)
+    current_ddra := current_ddra AND %00000011
+
+    // Set bits 5..2 as outputs (DATA OUT, CLOCK OUT, ATN OUT, TXD)
+    current_ddra := current_ddra OR %00111100
+
+    cia2_ddra := current_ddra
+
+    // --- Configure CIA2 PRA (output levels) ---
+    current_pra := cia2_pra
+
+    // Preserve VIC bank selection in bits 1..0
+    current_pra := current_pra AND CIA2_PRA_KEEP_VIC_BANK
+
+    // Force ATN and TXD high; leave DATA/CLOCK outputs untouched
+    current_pra := current_pra OR CIA2_PRA_SET_ATN_TXD
+
+    cia2_pra := current_pra
+
+    // --- Short stabilization delay for the serial lines ---
+    X := SERIAL_STABILIZE_OUTER
+    while X > 0 do
+        Y := SERIAL_STABILIZE_INNER
+        while Y > 0 do
+            Y := Y - 1       // inner busy-wait
+        end while
+        X := X - 1           // outer loop decrements
+    end while
+
+    // Ensure interrupts remain disabled on exit
+    disable_interrupts()
+end function
+*/

@@ -89,7 +89,7 @@ start_game:
 
         // Ensure game disk side 1 is in the drive
         lda     #GAME_DISK_ID_SIDE1
-        jsr     disk_ensure_side
+        jsr     disk_ensure_correct_side
 
         // Setup disk read: track #$01, offset #$00; then seek to sector #$00, offset #$02
         ldx     #$00
@@ -97,7 +97,7 @@ start_game:
         jsr     disk_init_chain
         ldx     #$02
         ldy     #$00
-        jsr     disk_seek_read
+        jsr     disk_seek_and_read_sector
 
         // Load object attributes block
         ldx     #<object_attributes
@@ -111,7 +111,7 @@ start_game:
         // Next sector: track #$01, sector #$01, offset #$02
         ldx     #$02
         ldy     #$01
-        jsr     disk_seek_read
+        jsr     disk_seek_and_read_sector
 
         // Load resource storage metadata
         ldx     #<room_disk_side_tbl

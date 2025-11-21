@@ -1867,14 +1867,14 @@ start_game:
 .C:044f  20 1A 5D    JSR clear_inventory_memory
 ;Ensure disk side 1 is in the drive
 .C:0452  A9 31       LDA #$31		
-.C:0454  20 EB 3A    JSR disk_ensure_side
+.C:0454  20 EB 3A    JSR disk_ensure_correct_side
 ;Setup disk read from track 1 sector 0, starting from byte offset #02
 .C:0457  A2 00       LDX #$00
 .C:0459  A0 01       LDY #$01
 .C:045b  20 D3 44    JSR disk_init_chain
 .C:045e  A2 02       LDX #$02
 .C:0460  A0 00       LDY #$00
-.C:0462  20 F7 44    JSR disk_seek_read
+.C:0462  20 F7 44    JSR disk_seek_and_read_sector
 ;Load all object's attributes
 ;The object attributes section starts at $7301
 .C:0465  A2 01       LDX #$01
@@ -1887,7 +1887,7 @@ start_game:
 ;Setup disk read from track 1 sector 1, starting from byte offset #02
 .C:0476  A2 02       LDX #$02
 .C:0478  A0 01       LDY #$01
-.C:047a  20 F7 44    JSR disk_seek_read
+.C:047a  20 F7 44    JSR disk_seek_and_read_sector
 ;Load game resources' disk storage data to memory
 ;The storage data section starts at $7401
 .C:047d  A2 01       LDX #$01
@@ -13815,7 +13815,7 @@ room_disk_chain_prepare:
 .C:3ac0  CD 9C FE    CMP active_side_id		
 .C:3ac3  F0 09       BEQ disk_id_correct
 .C:3ac5  8E DD 3B    STX temp_index
-.C:3ac8  20 EB 3A    JSR disk_ensure_side		
+.C:3ac8  20 EB 3A    JSR disk_ensure_correct_side		
 .C:3acb  AE DD 3B    LDX temp_index
 disk_id_correct:
 ;.X = room index - Multiply by 2 to get the offset into the track/sector array
@@ -13839,7 +13839,7 @@ dummy_label:
 ;===========================================
 ;Arguments: desired disk side ID on .A
 ;===========================================
-disk_ensure_side:
+disk_ensure_correct_side:
 .C:3aeb  8D 65 3B    STA $3B65		;3B65 is the disk side number inlined in the message printed "Put in side # and push joystick button."
 									;As the value is stored directly in the string, this means that disk side 1 has the character code for "1" (#31)
 									; and side 2 uses #32 ("2")
@@ -16159,7 +16159,7 @@ disk_init_chain_and_read:
 .C:44f1  AE 3A 46    LDX read_offset
 .C:44f4  AC 3B 46    LDY sector_chain_index
 ;===========================================
-; disk_seek_read
+; disk_seek_and_read_sector
 ;
 ;	Input args:	.X	read_offset	- byte offset to start reading from (within a sector's data)
 ;				.Y	sector_chain_index	(the index of the desired sector in a chain)
@@ -16174,7 +16174,7 @@ current_track = $4636
 read_offset = $463A
 sector_chain_index = $463B
 
-disk_seek_read:
+disk_seek_and_read_sector:
 .C:44f7  8E 3A 46    STX read_offset
 .C:44fa  8C 3B 46    STY sector_chain_index
 .C:44fd  AD 33 46    LDA start_sector
@@ -16188,7 +16188,7 @@ disk_seek_read:
 ;Keep advancing until we reach the desired index
 .C:450e  AA          TAX
 next_sector_in_chain:
-.C:450f  20 AE 45    JSR disk_next_sector_phys
+.C:450f  20 AE 45    JSR disk_next_phys_sector
 .C:4512  CA          DEX
 .C:4513  D0 FA       BNE next_sector
 ;Set the read offset
@@ -16272,7 +16272,7 @@ try_write:
 ;map_out_io
 .C:457e  A0 24       LDY #$24
 .C:4580  84 01       STY cpu_port
-.C:4582  20 AE 45    JSR disk_next_sector_phys
+.C:4582  20 AE 45    JSR disk_next_phys_sector
 .C:4585  EE 32 46    INC src_ptr_hi
 .C:4588  CE 3D 46    DEC disk_copy_count_hi
 .C:458b  D0 D4       BNE try_write
@@ -16305,7 +16305,7 @@ disk_stream_next_byte:
 ;If it's zero, we just crossed a page (which match perfectly with sectors)
 ; so we need to continue in the next consecutive sector
 ;Load the next valid sector into memory
-.C:459d  20 AE 45    JSR disk_next_sector_phys
+.C:459d  20 AE 45    JSR disk_next_phys_sector
 .C:45a0  20 EB 45    JSR disk_read_sector_into_buffer
 ;Reset read offset
 .C:45a3  A9 00       LDA #$00		
@@ -16331,7 +16331,7 @@ y_copy:
 ;===========================================
 current_track = $4636
 current_sector = $4635
-disk_next_sector_phys:
+disk_next_phys_sector:
 ;Increase sector by 1
 .C:45ae  EE 35 46    INC current_sector
 ;Check that it doesn't exceed the sectors per track limit for this track
@@ -16452,7 +16452,7 @@ send_next_byte:
 .C:4666  18          CLC
 .C:4667  60          RTS
 ;===========================================
-disk_reset:
+disk_reset_drive:
 .C:4668  A9 20       LDA #$20					;#20 = reset drive
 .C:466a  20 C2 46    JSR send_command_to_drive
 .C:466d  60          RTS
@@ -19426,7 +19426,7 @@ rsrc_load_from_disk:
 ;Read the first data sector from disk
 .C:5544  AE 78 56    LDX rsrc_read_offset
 .C:5547  AC 79 56    LDY rsrc_sector_step
-.C:554a  20 F7 44    JSR disk_seek_read
+.C:554a  20 F7 44    JSR disk_seek_and_read_sector
 ;Copy the resource header to local memory
 .C:554d  A2 3B       LDX #<local_header
 .C:554f  A0 55       LDY #>local_header
@@ -19459,7 +19459,7 @@ room_raw_data_load:
 ;Load the whole resource data from disk into memory
 .C:557c  AE 78 56    LDX rsrc_read_offset
 .C:557f  AC 79 56    LDY rsrc_sector_step
-.C:5582  20 F7 44    JSR disk_seek_read
+.C:5582  20 F7 44    JSR disk_seek_and_read_sector
 .C:5585  AE 3F 55    LDX <rsrc_data
 .C:5588  AC 40 55    LDY >rsrc_data
 .C:558b  AD 3B 55    LDA <rsrc_size
@@ -19594,7 +19594,7 @@ disk_id_check:
 .C:5633  20 D3 44    JSR disk_init_chain
 .C:5636  A2 00       LDX #$00
 .C:5638  A0 00       LDY #$00
-.C:563a  20 F7 44    JSR disk_seek_read
+.C:563a  20 F7 44    JSR disk_seek_and_read_sector
 ;Copy 1 byte to disk_id_in_sector
 ;This is the first byte of track 1 sector 0, which is always the Disk ID
 .C:563d  A2 7A       LDX #<disk_id_in_sector
@@ -19623,7 +19623,7 @@ infinite_loop:
 ;Disk ID doesn't match
 disk_id_mismatch:
 .C:5667  AD 9C FE    LDA active_side_id
-.C:566a  20 EB 3A    JSR disk_ensure_side
+.C:566a  20 EB 3A    JSR disk_ensure_correct_side
 .C:566d  68          PLA
 .C:566e  8D 34 46    STA track_desired
 .C:5671  68          PLA

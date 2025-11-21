@@ -254,7 +254,7 @@ Values observed
 // Disk
 // ===========================================================
 .label active_side_id = $fe9c //This represents the desired Side ID (the ID that identifies each of the game's disk sides)
-						//Once disk_ensure_side is called, this parameter is set and execution will not resume until the proper disk side is inserted
+						//Once disk_ensure_correct_side is called, this parameter is set and execution will not resume until the proper disk side is inserted
 									  
 // ===========================================================
 // Room subresources metadata

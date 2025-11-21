@@ -979,7 +979,7 @@ Description
 	- Copy 1 byte into disk_id_in_sector.
 	- Compare against active_side_id.
 	- If equal: set debug_error_code, map in I/O, spin writing border.
-	- If not equal: disk_ensure_side(active_side_id), restore CHS, return.
+	- If not equal: disk_ensure_correct_side(active_side_id), restore CHS, return.
 ================================================================================
 */
 .label  disk_id_in_sector = $567A          // Buffer for disk ID byte (T1 S0 offset 0)
@@ -1003,14 +1003,14 @@ disk_id_check:
 		// Initialize the disk read chain for track #$01 with byte offset #$00,
 		// then position to sector #$00 at offset #$00 and start the read.
 		// Assumes: X = offset, Y = track for disk_init_chain; X = offset,
-		// Y = sector for disk_seek_read. Clobbers X,Y,A as per callee specs.
+		// Y = sector for disk_seek_and_read_sector. Clobbers X,Y,A as per callee specs.
 		// ------------------------------------------------------------
         ldx     #$00
         ldy     #$01
         jsr     disk_init_chain
         ldx     #$00
         ldy     #$00
-        jsr     disk_seek_read
+        jsr     disk_seek_and_read_sector
 
         // Copy 1 byte (disk ID) to disk_id_in_sector
         ldx     #<disk_id_in_sector
@@ -1050,7 +1050,7 @@ infinite_loop:
         // Disk ID doesn't match
 disk_id_mismatch:
         lda     active_side_id               // A := target side ID we expect to be active
-        jsr     disk_ensure_side             // Switch/verify drive is on that side; updates media state
+        jsr     disk_ensure_correct_side             // Switch/verify drive is on that side; updates media state
 
 		// ------------------------------------------------------------
 		// Restore caller’s track and sector

@@ -177,7 +177,7 @@ SCUMM-style resources efficiently on a constrained machine:
 .label rsrc_retry_rem               = $EA    // Remaining retries for load/verify before showing disk error UI
 
 .label saved_y                      = $3BDC  // Saved Y register across rsrc_cache_* calls that clobber caller’s Y
-.label saved_room_idx               = $3BDD  // Saved room index across disk_ensure_side in room_disk_chain_prepare
+.label saved_room_idx               = $3BDD  // Saved room index across disk_ensure_correct_side in room_disk_chain_prepare
 
 .label rsrc_hdr_scratch             = $553B  // 4-byte scratch buffer for copied on-disk header (size/sentinel/checksum)
 .label rsrc_total_bytes_lo          = $553B  // 16-bit total size (header + payload), low byte; aliases rsrc_hdr_scratch
@@ -188,8 +188,8 @@ SCUMM-style resources efficiently on a constrained machine:
 
 .label rsrc_resource_index          = $5676 // Resource index within its type (byte).
 .label rsrc_resource_type           = $5677 // Resource type identifier (byte).
-.label rsrc_read_offset             = $5678 // Byte offset into resource stream (passed in X to disk_seek_read).
-.label rsrc_sector_idx             	= $5679 // Sector index in physical chain (passed in Y to disk_seek_read).  
+.label rsrc_read_offset             = $5678 // Byte offset into resource stream (passed in X to disk_seek_and_read_sector).
+.label rsrc_sector_idx             	= $5679 // Sector index in physical chain (passed in Y to disk_seek_and_read_sector).  
 
 .label rsrc_raw_size_lo             = $FD9C  // 16-bit raw payload size (bytes) for in-memory header, low byte
 .label rsrc_raw_size_hi             = $FD9D  // 16-bit raw payload size (bytes) for in-memory header, high byte
@@ -502,7 +502,7 @@ Arguments:
 	X		Index into per-room disk tables.
 
 Description:
-	- If the current disk side doesn’t match active_side_id, call disk_ensure_side.
+	- If the current disk side doesn’t match active_side_id, call disk_ensure_correct_side.
 	- Resolve room's disk location to fetch sector and track
 	- Call disk_init_chain with X=sector, Y=track.
 ================================================================================
@@ -521,7 +521,7 @@ room_disk_chain_prepare:
         // Side mismatch: switch and verify the correct side
         // ------------------------------------------------------------
         stx saved_room_idx                // save room index across helper
-        jsr disk_ensure_side              // ensure required side is mounted (may prompt/pause)
+        jsr disk_ensure_correct_side              // ensure required side is mounted (may prompt/pause)
         ldx saved_room_idx                // restore room index
 
 side_ready:
@@ -618,7 +618,7 @@ rsrc_load_from_disk:
 		// ------------------------------------------------------------
         ldx rsrc_read_offset
         ldy rsrc_sector_idx
-        jsr disk_seek_read
+        jsr disk_seek_and_read_sector
 
 		// ------------------------------------------------------------
 		// Copy the on-disk resource header into local scratch (rsrc_hdr_scratch).
@@ -679,7 +679,7 @@ copy_payload_from_disk:
 		// Seek to resource start (sector index + offset)
 		ldx rsrc_read_offset 
 		ldy rsrc_sector_idx
-		jsr disk_seek_read		
+		jsr disk_seek_and_read_sector		
 		
 		// ------------------------------------------------------------
 		// Copy the entire resource from the disk stream into the allocated block
@@ -1518,7 +1518,7 @@ function room_disk_chain_prepare(roomIndex):
     if requiredSide != active_side_id:
         // Switch disk sides if needed (may prompt / wait)
         saved_room_idx = roomIndex
-        disk_ensure_side(requiredSide)
+        disk_ensure_correct_side(requiredSide)
         roomIndex = saved_room_idx
 
     // Resolve disk location: each room has [SECTOR, TRACK]
@@ -1537,7 +1537,7 @@ function rsrc_load_from_disk() -> pointer:
 
     while true:
         // 1) Read header into scratch buffer
-        disk_seek_read(offset = rsrc_read_offset,
+        disk_seek_and_read_sector(offset = rsrc_read_offset,
                        sectorIndex = rsrc_sector_idx)
 
         disk_stream_copy(
@@ -1569,7 +1569,7 @@ function rsrc_load_from_disk() -> pointer:
 
         // 4) Copy full resource (header + payload) from disk into RAM
         //    This block is factored in assembly as copy_payload_from_disk
-        disk_seek_read(offset = rsrc_read_offset,
+        disk_seek_and_read_sector(offset = rsrc_read_offset,
                        sectorIndex = rsrc_sector_idx)
 
         disk_stream_copy(

@@ -1,40 +1,6 @@
 /*
 ================================================================================
-  generate_random_byte
-================================================================================
-
-Summary
-	Produce an 8-bit pseudo-random value by advancing a 24-bit LFSR eight steps
-	and mixing the updated low byte with the caller’s X via a gated shift/add
-	accumulator.
-
-Arguments
-	.X  Secondary seed and mixer source.
-
-Returns
-	.A  Pseudo-random byte.
-
-Global Inputs
-	rng_state_hi   24-bit LFSR state, high byte
-	rng_state_mid  24-bit LFSR state, mid  byte
-	rng_state_lo   24-bit LFSR state, low  byte
-
-Global Outputs
-	rng_state_hi   advanced by 8 LFSR steps
-	rng_state_mid  advanced by 8 LFSR steps
-	rng_state_lo   advanced by 8 LFSR steps
-	mix_gate       temp copy of rng_state_lo used by mixer (clobbered)
-	mix_src_x      temp copy of X used by mixer (clobbered)
-
-Description
-	- LFSR advance (8 iterations):
-		• Feedback bit = (rng_state_hi bit6) XOR (rng_state_mid bit7).
-		• Rotate left the 24-bit state through carry (hi → mid → lo).
-	- Mixer:
-		• Initialize A := 0.
-		• Use mix_gate (shifted MSB→C) to conditionally add shifted copies of
-		mix_src_x into A until mix_src_x becomes zero.
-	- Output is the mixed accumulator in A.
+ Pseudo Random Number Generator
 ================================================================================
 
 The generator implements a 24-bit Linear Feedback Shift Register (LFSR) whose
@@ -102,6 +68,44 @@ Characteristics
 .label mix_src_x      = $e1    // copy of X used by mixer (shift/add source)
 .label mix_gate       = $e2    // copy of rng_state_lo; shifted to gate adds via carry
 
+/*
+================================================================================
+  generate_random_byte
+================================================================================
+Summary
+	Produce an 8-bit pseudo-random value by advancing a 24-bit LFSR eight steps
+	and mixing the updated low byte with the caller’s X via a gated shift/add
+	accumulator.
+
+Arguments
+	.X  Secondary seed and mixer source.
+
+Returns
+	.A  Pseudo-random byte.
+
+Global Inputs
+	rng_state_hi   24-bit LFSR state, high byte
+	rng_state_mid  24-bit LFSR state, mid  byte
+	rng_state_lo   24-bit LFSR state, low  byte
+
+Global Outputs
+	rng_state_hi   advanced by 8 LFSR steps
+	rng_state_mid  advanced by 8 LFSR steps
+	rng_state_lo   advanced by 8 LFSR steps
+	mix_gate       temp copy of rng_state_lo used by mixer (clobbered)
+	mix_src_x      temp copy of X used by mixer (clobbered)
+
+Description
+	- LFSR advance (8 iterations):
+		• Feedback bit = (rng_state_hi bit6) XOR (rng_state_mid bit7).
+		• Rotate left the 24-bit state through carry (hi → mid → lo).
+	- Mixer:
+		• Initialize A := 0.
+		• Use mix_gate (shifted MSB→C) to conditionally add shifted copies of
+		mix_src_x into A until mix_src_x becomes zero.
+	- Output is the mixed accumulator in A.
+================================================================================
+*/
 * = $D7D4
 generate_random_byte:
         // ----------------------------------------------------
@@ -159,3 +163,60 @@ mix_loop_entry:
         lsr     mix_src_x           		// Else gate=0 → shift X-source once this iteration
         bne     mix_loop_entry      		// Loop while any bits remain in mix_src_x
         rts                         		// Return with mixed byte in A
+
+/*
+Pseudo-code
+
+function generate_random_byte(X : byte) -> byte
+    // State: global 24-bit LFSR (rng_state_hi, rng_state_mid, rng_state_lo)
+
+    // 1) Advance the 24-bit LFSR by 8 steps
+    repeat 8 times:
+        advance_lfsr_once()
+
+    // 2) Initialize mixer inputs
+    mix_gate  := rng_state_lo    // gate pattern from updated low byte
+    mix_src_x := X               // copy of caller’s X for mixing
+    A         := 0               // accumulator for final output
+
+    // 3) Gated shift/add mixing loop
+    while mix_src_x != 0:
+        // Consume one gate bit from mix_gate (its top bit before shift)
+        gate_bit := msb(mix_gate)
+        mix_gate := (mix_gate << 1) & $FF
+
+        if gate_bit == 1 then
+            // “Gate open”: use this iteration to fold mix_src_x into A
+            mix_src_x := mix_src_x >> 1          // shift source first
+            A         := (A + mix_src_x) & $FF   // 8-bit add with carry
+        else
+            // “Gate closed”: just decay mix_src_x without adding
+            mix_src_x := mix_src_x >> 1
+        end if
+    end while
+
+    return A
+end function
+
+
+function advance_lfsr_once()
+    // Combine two tap bits to form feedback
+    tap_hi  := bit(rng_state_hi, 6)   // bit index 6 of high byte
+    tap_mid := bit(rng_state_mid, 7)  // bit index 7 of mid byte
+    feedback := tap_hi XOR tap_mid    // 0 or 1
+
+    // Treat rng_state_hi/mid/lo as a single 24-bit value and rotate left:
+    //   - Shift left by 1 bit.
+    //   - Insert feedback into the new least-significant bit.
+    temp := (rng_state_hi << 16) |
+            (rng_state_mid << 8)  |
+             rng_state_lo
+
+    temp := ( (temp << 1) & $FFFFFF ) | feedback
+
+    rng_state_hi  := (temp >> 16) & $FF
+    rng_state_mid := (temp >> 8)  & $FF
+    rng_state_lo  :=  temp        & $FF
+end function
+
+*/

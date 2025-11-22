@@ -375,7 +375,7 @@ op_load_script:
 		// Ensure the script resource is resident, then relocate pointers.
 		// ------------------------------------------------------------
 		jsr     script_load_operand_bit7       		// A := script index
-		jsr     rsrc_cache_script    		// load/ensure resident
+		jsr     rsrc_cache_script    				// load/ensure resident
 		jsr     refresh_script_addresses_if_moved   // fix relocated script pointers
 		rts                                     
 /*
@@ -406,6 +406,6 @@ op_load_sound:
 		// Read sound index (hi from opcode bit7), load, then relocate.
 		// ------------------------------------------------------------
 		jsr     script_load_operand_bit7       		// A := sound index
-		jsr     rsrc_cache_sound          // load sound resource
+		jsr     rsrc_cache_sound          			// load sound resource
 		jsr     refresh_script_addresses_if_moved   // fix relocated script pointers
 		rts                                     

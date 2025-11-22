@@ -1,3 +1,65 @@
+/*
+================================================================================
+  Walkbox table access helpers
+================================================================================
+
+Overview
+	Centralized helpers for locating and indexing a room’s walkbox table.
+	
+	Higher-level pathing code uses this module to:
+		- Verify that a room resource (and its walkboxes) is resident in memory.
+		- Compute an absolute pointer to the room’s walkbox table
+		- Derive the byte offset within the walkbox table for a given box index.
+
+Responsibilities
+	- Track the “current” walkbox room via walkbox_room and expose a shared
+	pointer (box_ptr) into its walkbox table.
+	
+	- Provide room- and costume-based entry points to resolve box_ptr:
+		• get_walkboxes_for_room:   uses walkbox_room directly.
+		• get_walkboxes_for_costume: follows costume_room_idx[active_costume].
+		
+	- Encapsulate the room-header layout detail that the walkbox table is
+	stored at (room_base + OFS_WALKBOX).
+	
+	- Compute per-box byte offsets under the invariant that each walkbox
+	record has a fixed stride of 5 bytes (WALKBOX_STRIDE).
+
+Routines
+	- get_walkboxes_for_room
+		Given walkbox_room, checks if the room resource	is resident. 
+		If not, returns WALKBOX_NOT_RESIDENT. On success, tail-calls 
+		get_walkboxes_ptr to seed box_ptr.
+
+	- get_walkboxes_for_costume
+		Maps active_costume → room, then performs the same residency check 
+		as get_walkboxes_for_room. 	On success, calls get_walkboxes_ptr to 
+		initialize box_ptr for that room; 	on failure,	returns 
+		WALKBOX_NOT_RESIDENT.
+
+	- get_walkboxes_ptr
+		Core pointer resolver. 
+		Treats (room_ptr_lo_tbl[Y], A) as the base address of the room block, 
+		reads the 8-bit walkbox offset stored at base+OFS_WALKBOX, 
+		adds it to the base, and stores the result into	box_ptr (lo/hi). 
+		Returns A=0 on success.
+
+	- get_walkbox_offset
+		Computes the byte offset for a given walkbox index into the current
+		table: offset = index * WALKBOX_STRIDE. Implemented as
+		(index*4 + index) using 8-bit arithmetic and returns the low byte in Y,
+		which is used as an index when addressing through box_ptr.
+
+How it is used
+	- Pathfinding and walkbox geometry routines first call one of the
+	“get_walkboxes_*” entry points to ensure the underlying room is
+	resident and to populate box_ptr.
+	- Once box_ptr is valid, callers use get_walkbox_offset to seek to a
+	specific walkbox record (index * 5) and then perform AABB tests,
+	adjacency scans, or path building against those records.
+================================================================================
+*/
+
 #importonce
 #import "globals.inc"
 #import "constants.inc"

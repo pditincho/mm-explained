@@ -1,3 +1,85 @@
+/*
+================================================================================
+  Walkbox snapping and geometric queries
+================================================================================
+
+Overview
+	Provides the “point → walkbox” layer for the navigation system. Given a
+	target coordinate (click position, actor destination, etc.), it finds the
+	nearest walkbox, computes the closest point on or inside that box, and
+	optionally clamps that point to diagonal walls encoded in the walkbox
+	attributes. It also exposes a simple “actor inside box?” predicate.
+
+Responsibilities
+	- Table access:
+		- Use get_walkboxes_for_room to resolve the current room’s walkbox
+		table.
+		- Interpret each walkbox as a fixed-stride record containing {left,
+		right, top, bottom, ... attr} plus a sentinel-terminated list.
+
+	- Nearest-box search:
+		- get_nearest_box iterates all walkboxes, computing an approximate
+		  “octagonal” distance from the test point to each box via
+		  get_distance_to_box.
+		- Tracks the minimum distance and remembers:
+			  • nearest_box_idx
+			  • min_nearest_x / min_nearest_y (closest point on that box)
+
+	- Distance and nearest-point math:
+		- get_distance_to_box clamps the test point to the box’s rectangle,
+		  yielding a nearest (x,y) on or inside the box.
+		- Computes |dx| and |dy| and combines them into an anisotropic
+		  distance:
+			  • horizontal movement is weighted heavily
+			  • vertical movement is downscaled
+		  This produces a cheap integer-only metric that behaves like a
+		  softened blend between Manhattan and Chebyshev norms.
+
+	- Coordinate snapping:
+		- snap_coords_to_walkbox calls get_nearest_box, then snaps test_x /
+		  test_y to the nearest point on the chosen box.
+		- Calls clamp_to_diagonal_edge to project the snapped point
+		  onto a diagonal edge if the box encodes one.
+
+	- Diagonal edge clamping:
+		- clamp_to_diagonal_edge reads a per-box attribute that encodes
+		  whether a diagonal is present and its orientation (up-left or
+		  down-right).
+		- Uses a per-row LUT (diag_dx_lut) indexed by vertical offset from the
+		  box’s top edge to get a horizontal offset.
+		- Shifts the effective left/right boundary by that offset and clamps
+		  the snapped X coordinate to lie on or on the “walkable” side of the
+		  diagonal.
+
+	- Inside test:
+		- is_actor_pos_inside_box performs an inclusive rectangle test
+		  (left ≤ x ≤ right, top ≤ y ≤ bottom) for a given actor index and
+		  walkbox record.
+
+Data & conventions
+	- Walkbox records are laid out in a compact array, with a sentinel byte
+	marking the end of the list.
+	- Edges are stored as single-byte coordinates in screen space
+	(left/right X, top/bottom Y).
+	- Attributes use bit flags to enable diagonals and choose slope type.
+	- The same backing storage is reused with different labels for “test
+	point”, “candidate point”, and “nearest point”.
+
+Algorithms and techniques
+	- Geometry:
+		- Axis-aligned clamping to rectangles for nearest-point queries.
+		- Diagonal boundaries approximated via a precomputed LUT of per-row
+		horizontal shifts.
+	- Distance approximation:
+		- Integer-only “octagonal” metric combining scaled |dx| and |dy|
+		to approximate Euclidean distance without multiplication or
+		square root.
+	- Search:
+		- Linear scan over all walkboxes with incremental min-update, suitable
+		for the small number of boxes typically present in a room.
+
+================================================================================
+*/
 #importonce
 #import "globals.inc"
 #import "constants.inc"
@@ -18,6 +100,9 @@
 .label nearest_y                 = $1A61  // Nearest Y on or inside box
 .label scaled_x_dist             = $1A5C  // Scaled |dx| = 2*|x - nearest_x|
 .label scaled_y_dist             = $1A5D  // Scaled |dy| = |y - nearest_y|/4
+.label current_box_ptr          = $17  // zp ptr → current walkbox edge table {left,right,top,bottom}
+.label candidate_x              = $FE72  // candidate X
+.label candidate_y              = $FE73  // candidate Y
 
 // -----------------------------------------------------------------------------
 // Test point and selection state
@@ -56,9 +141,6 @@
 .const DIAG_MODE_DOWN_RIGHT  	 = $02    // stored in box_attribute for down-right
 .const ROOM_X_MAX                = $A0    // upper bound used in up-left path
 
-.label current_box_ptr          = $17  // zp ptr → current walkbox edge table {left,right,top,bottom}
-.label candidate_x              = $FE72  // candidate X
-.label candidate_y              = $FE73  // candidate Y
 
 /*
 ================================================================================
@@ -798,5 +880,97 @@ function is_actor_pos_inside_box(actorId, box) -> bool:
     if posY > bottom: return false
 
     return true
+
+
+function clamp_to_diagonal_edge(candidate_x, candidate_y):
+    diag_clamp_applied = 0
+
+    // 1) Fetch walkbox record for nearest_box_index
+    box = walkboxTable[nearest_box_index]
+
+    // 2) Read diagonal attribute
+    attr = box.attr
+
+    // 3) If diagonal is not enabled, exit
+    if (attr.bit7 == 0):
+        return  // candidate_x unchanged, diag_clamp_applied = 0
+
+    // 4) Decode diagonal type from bits 6..2
+    diag_code = extract_bits(attr, 2, 5)  // bits [6:2]
+
+    if diag_code == DIAG_CODE_UP_LEFT:
+        diag_mode = DIAG_MODE_UP_LEFT
+    else if diag_code == DIAG_CODE_DOWN_RIGHT:
+        diag_mode = DIAG_MODE_DOWN_RIGHT
+    else:
+        // Unsupported or “no diagonal” code → no clamp
+        return
+
+    // 5) Compute vertical offset dy from box top; this is our LUT index
+    top = box.top
+    dy = candidate_y - top
+
+    // Guard: if dy is outside the LUT range, clamp it
+    // (In the original code, dy is implicitly limited to table length by 8-bit wrap.)
+    if dy < 0:
+        dy = 0
+    if dy >= diag_dx_lut.length:
+        dy = diag_dx_lut.length - 1
+
+    // 6) Look up horizontal offset for this row
+    dx = diag_dx_lut[dy]
+
+    // 7) Apply clamp depending on diagonal mode
+    if diag_mode == DIAG_MODE_UP_LEFT:
+        // Effective boundary is a right edge slanting up-left:
+        //   boundary_x = right_edge - dx
+        right = box.right
+        boundary_x = right - dx
+
+        // If the candidate is to the right of this diagonal, clamp it to boundary
+        if candidate_x > boundary_x:
+            // Optional: guard against invalid boundary (room width overflow)
+            if boundary_x > ROOM_X_MAX:
+                // Original code has a suspicious clamp here
+                boundary_x = ROOM_X_MAX  
+
+            candidate_x = boundary_x
+            diag_clamp_applied = 1
+
+    else if diag_mode == DIAG_MODE_DOWN_RIGHT:
+        // Effective boundary is a left edge slanting down-right:
+        //   boundary_x = left_edge + dx
+        left = box.left
+        boundary_x = left + dx
+
+        // If the candidate is to the left of this diagonal, clamp it to boundary
+        if candidate_x < boundary_x:
+            candidate_x = boundary_x
+            diag_clamp_applied = 1
+
+    // 8) Return with candidate_x possibly updated and diag_clamp_applied set
+    return
+
+
+function snap_coords_to_walkbox(actorId) -> nearestBoxIndex:
+    // 1) Query nearest walkbox to the current test point
+    (nearest_box_idx,
+     nearest_x_candidate,
+     nearest_y_candidate) = get_nearest_box(test_x, test_y)
+
+    // If no box can be found (e.g., table missing), bail out early
+    if nearest_box_idx == NO_BOX_FOUND:
+        return NO_BOX_FOUND
+
+    // 2) Snap test_x/test_y to the nearest point on/inside that box
+    test_x = nearest_x_candidate
+    test_y = nearest_y_candidate
+
+    // 3) Optionally clamp along a diagonal edge, if the nearest box encodes one
+    //    This may move test_x sideways to lie on the diagonal boundary.
+    clamp_to_diagonal_edge(test_x, test_y)
+
+    // 4) Return the box index used for snapping
+    return nearest_box_idx
 
 */

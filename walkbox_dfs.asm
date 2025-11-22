@@ -1,47 +1,14 @@
 /*
 ================================================================================
-Walkbox and Pathfinding System Overview
+  Walkbox Pathfinding Core
 ================================================================================
 
-    Provides all logic for finding, classifying, and connecting “walkboxes”, 
-    rectangular walkable zones used by actors for navigation. Handles geometric
-    queries (inside checks, nearest box, distance estimation) and graph search
-    (building routes between boxes).
-
-Concepts
-    • A room contains a list of walkboxes. Each entry defines {left, right, top,
-      bottom} edges in pixels. Lists are terminated by $FF.
-    • Each box also has an adjacency list describing which boxes connect to it.
-    • Coordinates grow downward (larger Y = lower on screen).
-
-Main Components
-    1.  Table access
-        - get_walkboxes_for_room / get_walkboxes_for_costume / get_walkboxes_ptr
-          compute the pointer to the room's walkbox table.
-        - Walkbox records have a stride of 5 bytes, plus a global offset at $15.
-
-    2.  Geometry and proximity
-        - get_distance_to_box clamps a point to a box, computes the nearest point
-          and a fast “octagonal” distance (0 if inside).
-        - get_nearest_box scans all boxes to find the one closest to a given
-          coordinate pair.
-        - is_actor_pos_inside_box tests if an actor's position lies inside a box.
-
-    3.  Path search between boxes
-        - build_walkbox_path performs a bounded depth-first search through the
-          adjacency graph to connect an actor's current box to a destination box.
-        - increment_search_depth / decrement_search_depth manage recursive depth
-          with upper/lower caps.
-        - adjacency_contains_destination checks if the destination appears in
-          the current box's neighbor list.
-        - all_adjacent_boxes_known detects when every neighbor has been visited.
-        - write_actor_path_buffer serializes the successful path for an actor.
-
-    4.  Packed list utilities
-        - get_list_element_offset finds the byte offset of the N-th element in a
-          $FF-terminated list.
-        - restore_adjacency_list restores scan position when resuming exploration.
-
+Overview
+	Implements the depth-first search (DFS) layer that walks a room’s walkbox
+	adjacency graph to build per-actor routes. Uses a compact packed-list
+	representation for adjacency and a small per-depth state block to support
+	bounded search with backtracking and cycle avoidance.
+	
 Operation summary
     • When a path is requested, the system resolves the room's walkbox table,
       then begins a controlled DFS search.
@@ -53,12 +20,71 @@ Operation summary
           - the maximum search depth is hit → RESULT_PATH_MAX_DEPTH
     • The final path buffer contains the destination followed by the reverse
       chain of boxes leading back to the start.
+	
+Responsibilities
+	- Resolve adjacency list base for the current room from the walkbox table.
+	- Maintain DFS state:
+		- active_depth_level: current depth (1-based when active).
+		- actor_discovered_boxes[depth]: which box is at each depth in the path.
+		- resume_index_tbl[depth]: where scanning last stopped in each adjacency
+		list.
+	- Drive the DFS loop:
+		- Try to advance one level (increment_search_depth).
+		- Check whether the destination box is directly adjacent.
+		- If not, decide whether to keep exploring neighbors or backtrack.
+		- Terminate on success, depth cap, or graph exhaustion.
+	- Serialize the found walkbox path into a fixed-size per-actor segment.
 
-Why it works efficiently
-    • Entirely integer-based math; no multiplies or square roots.
-    • Compact state per actor: current depth, discovered boxes, and resume
-      indices.
-    • Each actor has a fixed-size (16-byte) segment for its computed route.
+Data layout
+	- Adjacency lists:
+		- Stored as a “list of lists” blob, addressed via a single base pointer.
+		- Each sublist corresponds to one walkbox and is terminated by $FF.
+		- Sublist 0 starts at offset 0; later lists are located by counting
+		terminators.
+	- Per-depth DFS state:
+		- active_depth_level: depth of current node.
+		- actor_discovered_boxes[1..N]: stack of boxes along the search path.
+		- resume_index_tbl[1..N]: last-consumed neighbor index for each box.
+	- Per-actor path buffer:
+		- Fixed-size segment per actor (same base array as the DFS stack).
+		- On success, stores {destination box, then reverse chain of boxes} and
+		a separate length field (number of steps).
+
+Key routines
+	find_path_between_walkboxes
+		- Entry point: orchestrates the bounded DFS for a single actor.
+		- Resolves adjacency base, sets up state, and runs the search loop.
+		- Returns a result code for success, depth cap, or full graph exhaustion.
+
+	increment_search_depth / decrement_search_depth
+		- Adjust active_depth_level with guards for minimum and maximum depth.
+		- On increment, record current_box at the new depth and reset the
+		per-depth resume index.
+
+	restore_adjacency_list
+		- For the current depth, recovers which box is being explored, the
+		last resume index, and the start offset of its adjacency sublist.
+
+	is_box_in_list
+		- Linear scan of a box’s adjacency sublist to see whether it contains
+		the destination box id.
+
+	are_all_adjacents_discovered
+		- Resumable scanner over one adjacency sublist using resume_index_tbl.
+		- Returns whether all neighbors have already been seen, or exposes the
+		next unseen neighbor by setting current_box.
+
+	is_box_discovered
+		- Membership test for current_box within the discovered stack
+		(depth range 1..active_depth_level).
+
+	serialize_box_path
+		- Converts the DFS depth stack into a compact per-actor path segment
+		(destination + reverse chain), and stores the path length.
+
+	get_list_start_offset
+		- Generic helper that maps a 0-based list index to its starting offset
+		inside a packed, terminator-delimited list-of-lists blob.
 
 ================================================================================
 
@@ -93,9 +119,9 @@ Walkthrough
    resume_index_tbl[1] := $FF
 
    Check adj(0) for destination 3 → not found.
-   all_adjacent_boxes_known?
+   are_all_adjacents_discovered?
      - resume_index_tbl[1] := $00  (first INC)
-     - Next candidate = adj(0)[0] = 1 → is_box_seen_by_actor? (scan 1..1) → not seen.
+     - Next candidate = adj(0)[0] = 1 → is_box_discovered? (scan 1..1) → not seen.
      - Return ONE_UNKNOWN → continue exploration at depth 1 (caller loop).
 
 3) Choose neighbor 1 (conceptually “descend” to 1)
@@ -107,9 +133,9 @@ Walkthrough
    resume_index_tbl[2] := $FF
 
    Check adj(1) for destination 3 → not found.
-   all_adjacent_boxes_known?
+   are_all_adjacents_discovered?
      - resume_index_tbl[2] := $00
-     - Next candidate = adj(1)[0] = 0 → is_box_seen_by_actor? (scan 1..2 = {0,1})
+     - Next candidate = adj(1)[0] = 0 → is_box_discovered? (scan 1..2 = {0,1})
        → 0 is seen → keep scanning
      - resume_index_tbl[2] := $01
      - Next byte = $FF → ALL_KNOWN
@@ -119,9 +145,9 @@ Walkthrough
    (backtrack to node 0 context)
 
 4) Resume scanning adj(0) after neighbor index 0
-   all_adjacent_boxes_known at depth 1?
+   are_all_adjacents_discovered at depth 1?
      - resume_index_tbl[1] := $01
-     - Next candidate = adj(0)[1] = 2 → is_box_seen_by_actor? (scan 1..1 = {0})
+     - Next candidate = adj(0)[1] = 2 → is_box_discovered? (scan 1..1 = {0})
        → 2 not seen → ONE_UNKNOWN
 
 5) Choose neighbor 2
@@ -133,7 +159,7 @@ Walkthrough
    resume_index_tbl[2] := $FF
 
    Check adj(2) for destination 3 → FOUND (adj(2)[1] = 3)
-   write_actor_path_buffer:
+   serialize_box_path:
      - active_depth_level = 2 → path length = 1 step
      - Output segment:
          [0] = destination_box_id = 3
@@ -163,7 +189,7 @@ Walkbox system — techniques and algorithms used
 
 • Packed list / table structures:
     - Walkboxes stored as variable-length FF-terminated lists packed back-to-back.
-    - get_list_element_offset scans terminators to map a list index to its byte
+    - get_list_start_offset scans terminators to map a list index to its byte
       offset.
     - Fixed-stride per-actor path buffers for output paths.
 
@@ -267,7 +293,7 @@ Walkbox system — techniques and algorithms used
 
 /*
 ================================================================================
-  build_walkbox_path
+  find_path_between_walkboxes
 ================================================================================
 Summary
     Constructs a path of connected walkboxes between an actor's current and
@@ -298,7 +324,7 @@ Description
       and destination box ids.
     - Executes iterative depth-first traversal:
         • Calls increment_search_depth (bounded to MAX_SEARCH_DEPTH).
-        • If destination box is adjacent → write_actor_path_buffer and return PATH_OK.
+        • If destination box is adjacent → serialize_box_path and return PATH_OK.
         • Otherwise checks adjacency lists:
               - If all adjacents known → attempt decrement_search_depth.
                     • If backtrack fails → PATH_GRAPH_EXHAUSTED.
@@ -309,7 +335,7 @@ Description
 ================================================================================
 */
 * = $18EB
-build_walkbox_path:
+find_path_between_walkboxes:
         // ------------------------------------------------------------
         // Resolve walkboxes for this costume
         // ------------------------------------------------------------
@@ -368,7 +394,7 @@ search_loop:
         // ------------------------------------------------------------
         // Check if destination box is adjacent
         // ------------------------------------------------------------
-        jsr     adjacency_contains_destination
+        jsr     is_box_in_list
         cmp     #DEST_IS_CONTAINED
         bne     explore_or_backtrack		// If not adjacent, continue search
 		
@@ -376,7 +402,7 @@ search_loop:
 		// Destination box is adjacent
 		// We have a path to it, so generate it and return success
         // ------------------------------------------------------------
-        jsr     write_actor_path_buffer
+        jsr     serialize_box_path
         lda     #RESULT_PATH_OK
         sta     return_value
         rts
@@ -388,7 +414,7 @@ explore_or_backtrack:
 		//
 		// If all adjacent boxes have not been explored yet, continue exploring
         // ------------------------------------------------------------
-        jsr     all_adjacent_boxes_known
+        jsr     are_all_adjacents_discovered
         cmp     #ALL_KNOWN
         bne     loop_if_continue
 
@@ -528,7 +554,7 @@ perform_depth_decrement:
 ================================================================================
 Summary
     Restore adjacency scanning so the graph walk can resume exactly where 
-	it left off. Selects the target neighbot list for this depth and 
+	it left off. Selects the target neighbor list for this depth and 
 	computes its start offset, honoring prior progress.
 
 Arguments
@@ -546,7 +572,7 @@ Description
       current_box.
     • Load the last processed index for this depth and use it as the starting
       position when resuming inside that list (supports backtracking).
-    • Call get_list_element_offset to translate current_box list index into a byte
+    • Call get_list_start_offset to translate current_box list index into a byte
       offset and store it in list_start_ofs.
 ================================================================================
 */
@@ -563,11 +589,11 @@ restore_adjacency_list:
         sta     resume_index        
 
         // Translate current_box list index to list offset
-        jsr     get_list_element_offset
+        jsr     get_list_start_offset
         rts
 /*
 ================================================================================
-  adjacency_contains_destination
+  is_box_in_list
 ================================================================================
 Summary
 	Check whether the destination box index appears in the current box's
@@ -596,7 +622,7 @@ Description
 ================================================================================
 */
 * = $199E
-adjacency_contains_destination:
+is_box_in_list:
         // Initialize adjacency context and load actor (X unused here)
         jsr     restore_adjacency_list
         ldx     actor
@@ -624,34 +650,34 @@ advance_and_check_eol:
         rts
 /*
 ================================================================================
-  all_adjacent_boxes_known
+  are_all_adjacents_discovered
 ================================================================================
 Summary
     Determines whether every adjacent box for the current list has already been 
 	discovered by the actor.
 
 Arguments
-    element_index                  selects which adjacency sublist to scan
+    active_depth_level          selects which adjacency sublist to scan
 
 Returns
     .A  		ONE_UNKNOWN   	at least one adjacent box not yet known
 				ALL_KNOWN	    all adjacent boxes already known
 
 Description
-    - Calls restore_adjacency_list with X = element_index to load adj_list_ptr
+    - Calls restore_adjacency_list with X = active_depth_level to load adj_list_ptr
       and sublist_base_ofs.
     - Resumes scanning at iter_ofs := sublist_base_ofs + resume_index.
     - For each box id:
         * Reads (adj_list_ptr),Y.
         * If byte == ELEM_TERM → return ALL_KNOWN.
-        * Otherwise sets current_box and calls is_box_seen_by_actor.
+        * Otherwise sets current_box and calls is_box_discovered.
           Returns ONE_UNKNOWN on first unseen box, else continues.
     - Updates resume_index_tbl,X before each fetch to maintain continuation
       state across calls.
 ================================================================================
 */
 * = $19B6
-all_adjacent_boxes_known:
+are_all_adjacents_discovered:
         // ------------------------------------------------------------
         // Prepare adjacency context for X = active_depth_level.
         // Loads adj_list_ptr and target_offset for element X.
@@ -697,7 +723,7 @@ check_adjacent_seen_state:
         // Otherwise continue scanning.
         // ------------------------------------------------------------
         sta     current_box
-        jsr     is_box_seen_by_actor          // returns A=$00 if seen, A=$FF if not
+        jsr     is_box_discovered          // returns A=$00 if seen, A=$FF if not
         cmp     #BOX_NOT_SEEN                 // Z=1 when unseen
         bne     loop_if_box_seen           // A=$00 (seen) → keep scanning
         lda     #ONE_UNKNOWN
@@ -710,7 +736,7 @@ loop_if_box_seen:
         rts                                   // safety (not reached)
 /*
 ================================================================================
-  is_box_seen_by_actor
+  is_box_discovered
 ================================================================================
 Summary
     Linear membership test for a box id within the actor's discovered boxes list.
@@ -730,7 +756,7 @@ Description
 ================================================================================
 */
 * = $19EB
-is_box_seen_by_actor:
+is_box_discovered:
         // ------------------------------------------------------------
         // Initialize scan limit: scan_limit_index := active_depth_level + 1
         // Y will serve as the loop counter (1..active_depth_level).
@@ -769,7 +795,7 @@ step_and_check_limit:
         rts
 /*
 ================================================================================
-  write_actor_path_buffer
+  serialize_box_path
 ================================================================================
 Summary
     Serialize the found walkbox route for the given actor into the per-actor
@@ -799,7 +825,7 @@ Description
 ================================================================================
 */
 * = $1A08
-write_actor_path_buffer:
+serialize_box_path:
         // ------------------------------------------------------------
         // Y := 16 * (actor + 1) → select actor's output segment base.
         // ------------------------------------------------------------
@@ -850,7 +876,7 @@ end_copy_path:
 
 /*
 ================================================================================
-  get_list_element_offset
+  get_list_start_offset
 ================================================================================
 Summary
 	Return the byte offset (from list start) of the target list in a list-of-lists
@@ -871,7 +897,7 @@ Description
 ================================================================================
 */
 * = $1A37
-get_list_element_offset:
+get_list_start_offset:
         // ------------------------------------------------------------
         // Initialize: Y=0 scan offset; list_count=0
         // ------------------------------------------------------------
@@ -915,7 +941,7 @@ scan_next_byte:
 /*
 Pseudo-code
 
-function build_walkbox_path(actorId) -> ResultCode:
+function find_path_between_walkboxes(actorId) -> ResultCode:
     // 1. Resolve walkbox data and adjacency base for this actor
     status = get_walkboxes_for_costume()
     // (If status == WALKBOX_NOT_RESIDENT, caller may treat as failure.)
@@ -938,12 +964,12 @@ function build_walkbox_path(actorId) -> ResultCode:
             return RESULT_PATH_MAX_DEPTH
 
         // Check if the destination appears in currentBox’s adjacency list
-        if adjacency_contains_destination() == true:
-            write_actor_path_buffer(actorId)
+        if is_box_in_list() == true:
+            serialize_box_path(actorId)
             return RESULT_PATH_OK
 
         // Otherwise, explore neighbors or backtrack
-        if all_adjacent_boxes_known() == true:
+        if are_all_adjacents_discovered() == true:
             // All neighbors of the current node have been processed
             if decrement_search_depth() == BACKTRACK_BLOCKED:
                 // No nodes left to backtrack to: graph fully explored
@@ -994,7 +1020,7 @@ function restore_adjacency_list():
 
     // Translate “box index” -> “byte/element offset” into packed adjacency blob
     // Conceptually: find Nth sublist in a list-of-lists structure
-    listStartOffset = get_list_element_offset(listIndex)
+    listStartOffset = get_list_start_offset(listIndex)
 
     // Now we know:
     //   - currentBox: which node we’re exploring
@@ -1002,7 +1028,7 @@ function restore_adjacency_list():
     //   - listStartOffset: where its adjacency sublist starts in adjacencyBase
 
 
-function adjacency_contains_destination() -> bool:
+function is_box_in_list() -> bool:
     // Prepare context for current depth
     restore_adjacency_list()
 
@@ -1023,7 +1049,7 @@ function adjacency_contains_destination() -> bool:
         continue loop
 
 
-function all_adjacent_boxes_known() -> bool:
+function are_all_adjacents_discovered() -> bool:
     // Prepare adjacency context for the current depth
     depth = activeDepthLevel
     restore_adjacency_list()
@@ -1045,7 +1071,7 @@ function all_adjacent_boxes_known() -> bool:
 
         // Check if this neighbor has already been discovered along current DFS path
         currentBox = neighbor
-        if is_box_seen_by_actor() == BOX_NOT_SEEN:
+        if is_box_discovered() == BOX_NOT_SEEN:
             // Found at least one yet-unseen neighbor
             return false
 
@@ -1054,7 +1080,7 @@ function all_adjacent_boxes_known() -> bool:
         continue loop
 
 
-function is_box_seen_by_actor() -> SeenFlag:
+function is_box_discovered() -> SeenFlag:
     // Scan the discovered boxes for current DFS path from depth 1..activeDepthLevel
     target = currentBox
     depthLimit = activeDepthLevel
@@ -1066,7 +1092,7 @@ function is_box_seen_by_actor() -> SeenFlag:
     return BOX_NOT_SEEN
 
 
-function write_actor_path_buffer(actorId):
+function serialize_box_path(actorId):
     depth = activeDepthLevel
 
     // Path length is (number of boxes along chain minus 1)
@@ -1092,7 +1118,7 @@ function write_actor_path_buffer(actorId):
         writeIndex += 1
 
 
-function get_list_element_offset(targetListIndex) -> int:
+function get_list_start_offset(targetListIndex) -> int:
     // adjacencyBase represents a packed list-of-lists, each sublist terminated by TERMINATOR.
     // We want the starting offset of sublist #targetListIndex (0-based).
 

@@ -13,6 +13,7 @@
 */
 #importonce
 #import "globals.inc"
+#import "constants.inc"
 
 .const CURSOR_SNAIL = $C2
 .const CURSOR_CROSS = $C1

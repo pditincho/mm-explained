@@ -1,8 +1,3 @@
-#importonce
-#import "globals.inc"
-#import "constants.inc"
-#import "walkbox.asm"
-
 /*
 ================================================================================
 Waypoint system overview
@@ -422,7 +417,7 @@ Pathing system — algorithms and techniques used
       intersection.
 
 • Diagonal-wall clamping:
-    - clamp_walkbox_diagonal_edge detects diagonal edges via attribute bits and
+    - clamp_to_diagonal_edge detects diagonal edges via attribute bits and
       applies slope-dependent ΔX corrections:
           up-left:  boundary = right − dx
           down-right: boundary = left  + dx
@@ -444,10 +439,14 @@ Overall:
 ================================================================================
 */
 
-.label current_box_ptr          = $17  // zp ptr → current walkbox edge table {left,right,top,bottom}
+#importonce
+#import "globals.inc"
+#import "constants.inc"
+#import "walkbox_dfs.asm"
+#import "walkbox_snap.asm"
+
+
 .label target_box_ptr           = $19  // zp ptr → target  walkbox edge table {left,right,top,bottom}
-.label nearest_x_candidate      = $1A62  // snapped X (pixels) nearest to destination within chosen walkbox
-.label nearest_y_candidate      = $1A63  // snapped Y (pixels) nearest to destination within chosen walkbox
 .label hall_lower_bound         = $1E04  // tight corridor lower bound on orthogonal axis (max of first edges)
 .label hall_upper_bound         = $1E05  // tight corridor upper bound on orthogonal axis (min of second edges)
 .label saved_ofs_y              = $1E8F  // scratch: Y-offset into discovered_boxes_tbl for this actor+depth
@@ -457,23 +456,7 @@ Overall:
 .label tgt_box_idx              = $FC3B  // walkbox index selected for target at final BFS depth
 .label actor_axis_class         = $FC3B  // axis test vs target: $00 below/left, $01 above/right, $02 inside
 .label dest_other_axis          = $FC3F  // temp: destination coordinate on the axis opposite to the hall axis
-.label nearest_box_index        = $FDAC    // current walkbox index
-.label candidate_x              = $FE72    // candidate X
-.label candidate_y              = $FE73    // candidate Y
-.label diag_slope_mode          = $FC3D    // decoded slope selector
-.label diag_clamp_applied       = $CB39    // 00=no adjust, 01=adjusted
 
-.const WALKBOX_ATTR_OFS          = $04      // record: attribute byte
-.const DIAG_ENABLE_BIT           = $80    // attribute bit7: diagonal present
-.const DIAG_MASK                 = $7C    // attribute bits6..2 mask for slope code
-.const DIAG_CODE_UP_LEFT         = $08    // bits3..2=10b → up-left slope
-.const DIAG_CODE_DOWN_RIGHT      = $0C    // bits3..2=11b → down-right slope
-.const DIAG_MODE_UP_LEFT     	 = $01    // stored in box_attribute for up-left
-.const DIAG_MODE_DOWN_RIGHT  	 = $02    // stored in box_attribute for down-right
-.const RET_NO_ADJUST             = $00    // function return: no clamp applied
-.const RET_ADJUSTED              = $01    // function return: clamp applied
-.const ROOM_X_MAX                = $A0    // upper bound used in up-left path
-.const NO_BOX_FOUND              = $FF    // sentinel: no valid walkbox located
 .const DISCOVERED_LIST_STRIDE    = $10    // bytes reserved per actor in discovered_boxes_tbl
 .const PATH_UPDATE_REQUIRED      = $01    // flag value to trigger path recomputation
 .const REL_BELOW                 = $00    // box relation: current below target
@@ -488,38 +471,6 @@ Overall:
 .const AXIS_INSIDE               = $02    // actor coordinate inside target range
 .const PATH_ADJUST_REQUIRED      = $FF    // path recalculation needed (return code)
 .const PATH_NO_ADJUST            = $00    // straight path valid (return code)
-
-/*
-================================================================================
-Diagonal edge horizontal offset lookup table
-================================================================================
-
-Summary
-    Provides the per-scanline ΔX (horizontal shift) used when clamping
-    coordinates to diagonal walkbox edges.
-
-Description
-    Each entry corresponds to one vertical pixel row below the walkbox’s top
-    edge. The value gives the number of pixels to shift horizontally from the
-    straight boundary to follow the diagonal slope.
-
-    Used by clamp_walkbox_diagonal_edge to determine how far the visible
-    wall edge moves horizontally as Y increases.
-
-Notes
-    - Indexed by (candidate_y − top_edge).
-    - Values plateau briefly to approximate shallower segments of the wall.
-    - Table length = 22 entries.
-
-================================================================================
-*/
-* = $1C09
-diag_dx_lut:
-        .byte $00,$01,$02,$03,$03
-        .byte $04,$05,$06,$06,$07
-        .byte $08,$09,$09,$0A,$0B
-        .byte $0C,$0C,$0D,$0E,$0F
-        .byte $10,$10
 
 /*
 ================================================================================
@@ -595,82 +546,6 @@ apply_snapped_destination:
         sta     actor_x_dest,x
         lda     test_y
         sta     actor_y_dest,x
-        rts
-/*
-================================================================================
-snap_coords_to_walkbox
-================================================================================
-
-Summary
-    Snap input coordinates to the nearest valid point constrained by walkboxes
-    and return the index of the nearest walkbox.
-
-Arguments
-    None
-
-Global Inputs
-    nearest_x/y_candidate      nearest X/Y before slope adjustment
-
-Global Outputs
-    test_x                     adjusted X
-    test_y                     adjusted Y
-
-Returns
-    A  nearest_box_idx        $FF if no walkbox found
-
-Description
-    - Preserve X and Y.
-    - Call get_nearest_box to compute nearest_box_idx and nearest_{x,y}_candidate.
-    - If nearest_box_idx == NO_BOX_FOUND:
-        • Restore X and Y, return with A=$FF (current code has a stack bug).
-    - Else:
-        • Write nearest_{x,y}_candidate to test_{x,y}.
-        • Call clamp_walkbox_diagonal_edge to refine along sloped edges.
-        • Restore X and Y and return nearest_box_idx in A.
-================================================================================
-*/
-* = $1A9B
-snap_coords_to_walkbox:
-        // 
-        // Preserve caller registers X,Y.
-        // 
-        txa
-        pha
-        tya
-        pha
-
-        // 
-        // Find nearest walkbox (sets nearest_box_idx and nearest_{x,y}_candidate).
-        // 
-        jsr     get_nearest_box
-
-        // 
-        // If no box found → return $FF after restoring regs.
-        // 
-        lda     nearest_box_idx
-        cmp     #NO_BOX_FOUND
-        bne     write_nearest_point
-		//BUG - original return address not in stack, so it will crash on return
-		rts
-
-        // 
-        // Write nearest point and refine along diagonal boundaries.
-        // 
-write_nearest_point:
-        lda     nearest_x_candidate
-        sta     test_x
-        lda     nearest_y_candidate
-        sta     test_y
-        jsr     clamp_walkbox_diagonal_edge
-
-        // 
-        // Restore Y,X and return nearest_box_idx in A.
-        // 
-        pla
-        tay
-        pla
-        tax
-        lda     nearest_box_idx
         rts
 /*
 ================================================================================
@@ -1131,82 +1006,122 @@ Summary
 	Determine the relative position between two axis-aligned boxes (AABBs).
 
 Arguments
-	current_box_ptr  zp pointer → {left, right, top, bottom}
-	target_box_ptr   zp pointer → {left, right, top, bottom}
+	current_box_ptr  	pointer to {left, right, top, bottom} edges of the current box
+	target_box_ptr   	pointer to {left, right, top, bottom} edges of the current box
 
 Returns
-	A = 	REL_BELOW      		current below target
-			REL_ABOVE      		current above target
-			REL_RIGHT      		current right of target
-			REL_LEFT       		current left of target
-			REL_OVERLAP_TOUCH	boxes overlap or only touch
+	A   	REL_BELOW      		current box below target box
+			REL_ABOVE      		current box above target box
+			REL_RIGHT      		current box right of target box
+			REL_LEFT       		current box left of target box
+			REL_OVERLAP_TOUCH	boxes overlap or touch
 
 Description
 	* Equality counts as overlap: edge or corner contact → OVERLAP.
 	* Coordinate convention: larger Y is lower on screen.
 	* Offsets: 0=left, 1=right, 2=top, 3=bottom.
 	* Axis encoding: bit1 of result set → horizontal (02/03), clear → vertical (00/01).
-	* Clobbers A, Y. Preserves X.
-
-Notes
-	* Precondition: Y must be #$00 on entry. Initialize if uncertain.
-	* O(1) test with early exits on clear separation.
 ================================================================================
 */
 * = $1D9E
 classify_box_relation:
-		// Vertical test: current.top ? target.bottom
+        // ------------------------------------------------------------
+		// Vertical test: current.top vs. target.bottom		
+        // ------------------------------------------------------------
+		// Set offset to top edge (+2)
 		iny
 		iny
-		lda     (current_box_ptr),y           // A := current.top
+		
+		// A := current.top
+		lda     (current_box_ptr),y         
+		
+		// Set offset to bottom edge (+3)
 		iny
-		cmp     (target_box_ptr),y            // A - target.bottom
+		
+		// Compare vs. target.bottom
+		cmp     (target_box_ptr),y   		
+		
+		// Equal? Continue testing
 		beq     test_vertical_above
-		bcs     box_below_target                     // current.top > target.bottom → below
-
+		
+		// current.top > target.bottom → current is below
+		// (vertical coordinates grow downwards on the screen)
+		bcs     box_below_target            
 
 test_vertical_above:
-		// Vertical test: current.bottom ? target.top
-		lda     (current_box_ptr),y           // A := current.bottom
+        // ------------------------------------------------------------
+		// Vertical test: current.bottom vs. target.top
+        // ------------------------------------------------------------
+		// Offset already at bottom edge (+3)
+		// A := current.bottom
+		lda     (current_box_ptr),y           
+		
+		// Set offset to top edge (+2)
 		dey
-		cmp     (target_box_ptr),y            // A - target.top
-		bcc     box_above_target                     // current.bottom < target.top → above
+		
+		// Compare vs. target.top
+		cmp     (target_box_ptr),y            
+		
+		// current.bottom < target.top → current is above
+		bcc     box_above_target              
 
-
-		// Horizontal test: current.left ? target.right
+        // ------------------------------------------------------------
+		// Horizontal test: current.left vs. target.right
+        // ------------------------------------------------------------
+		// Set offset to left edge (+0)
 		dey
 		dey
-		lda     (current_box_ptr),y           // A := current.left
+		
+		// A := current.left
+		lda     (current_box_ptr),y           
+		
+		// Set offset to right edge (+1)
 		iny
-		cmp     (target_box_ptr),y            // A - target.right
+		
+		// Compare vs. target.right
+		cmp     (target_box_ptr),y            
+		
+		// Equal? Continue testing
 		beq     test_horizontal_left
-		bcs     box_right_of_target                     // current.left > target.right → right
-
+		
+		// current.left > target.right → current is right
+		bcs     box_right_of_target                     
 
 test_horizontal_left:
-		// Horizontal test: current.right ? target.left
-		lda     (current_box_ptr),y           // A := current.right
+        // ------------------------------------------------------------
+		// Horizontal test: current.right vs. target.left
+        // ------------------------------------------------------------
+		// Offset already at right edge (+1)
+		// A := current.right
+		lda     (current_box_ptr),y           
+		
+		// Set offset to left edge (+0)
 		dey
-		cmp     (target_box_ptr),y            // A - target.left
-		bcc     box_left_of_target                     // current.right < target.left → left
-
-		lda     #REL_OVERLAP_TOUCH                          // overlap or touch
+		
+		// Compare vs. target.left
+		cmp     (target_box_ptr),y           
+		
+		// current.right < target.left → current is left
+		bcc     box_left_of_target                  
+		
+		// Otherwise, boxes are touching or overlapping
+		lda     #REL_OVERLAP_TOUCH                     
 		jmp     return_relative_position
 
 box_left_of_target:
-		lda     #REL_LEFT                          // left
+		lda     #REL_LEFT                          
 		jmp     return_relative_position
 
 box_right_of_target:
-		lda     #REL_RIGHT                          // right
+		lda     #REL_RIGHT                         
 		jmp     return_relative_position
 
 box_above_target:
-		lda     #REL_ABOVE                          // above
+		lda     #REL_ABOVE                         
 		jmp     return_relative_position
 
 box_below_target:
-		lda     #REL_BELOW                          // below
+		lda     #REL_BELOW                         
 		
 return_relative_position:
 		rts
@@ -1483,143 +1398,3 @@ return_PATH_ADJUST:
 return_PATH_NO_ADJUST:
 		lda     #PATH_NO_ADJUST                           // no adjustment needed
 		rts			
-/*
-================================================================================
-  Clamp candidate X against diagonal walkbox edge 
-================================================================================
-
-Summary
-	Adjust candidate_x to respect a diagonal walkbox boundary using a per-row
-	ΔX lookup indexed by vertical distance from the box top.
-
-Arguments
-	None
-
-Returns
-	.A  	RET_ADJUSTED  on paths through finalize_diag_exit
-			(early returns leave .A unchanged)
-
-Global Inputs
-	nearest_box_index             walkbox selector
-	candidate_x                   X under test
-	candidate_y                   Y under test
-	current_box_ptr               ZP pointer to walkbox record base
-
-Global Outputs
-	diag_slope_mode               01=up-left, 02=down-right
-	diag_clamp_applied            00 cleared on entry, set to 01 on exit path
-	candidate_x                   clamped when boundary test passes
-
-Description
-	- Resolve walkbox record via nearest_box_index and get attribute at +$04.
-	- Require attribute bit7 to enable diagonal handling; otherwise return.
-	- Mask bits6..2, decode slope code:
-		* $08 → up-left (use right − dx)
-		* $0C → down-right (use left + dx)
-	- Compute dy = candidate_y − top(+2), then dx = diag_dx_lut[dy].
-	- Compare adjusted boundary with candidate_x:
-		* up-left: if (right − dx) ≥ candidate_x, clamp candidate_x
-		and guard vs ROOM_X_MAX.
-		* down-right: if (left + dx) ≤ candidate_x, clamp candidate_x.
-	- Set diag_clamp_applied and return through finalize_diag_exit.
-================================================================================
-*/
-* = $1B91
-clamp_walkbox_diagonal_edge:
-        lda     #$00
-        sta     diag_clamp_applied             // clear adjustment flag
-
-        // ------------------------------------------------------------
-        // Resolve walkbox record and read attribute at +$04
-        // ------------------------------------------------------------
-        lda     nearest_box_index
-        jsr     get_walkbox_offset            // Y := base of walkbox record
-        tya
-        clc
-        adc     #WALKBOX_ATTR_OFS
-        tay
-        lda     (current_box_ptr),y
-        bmi     diag_attr_enabled                      // require bit7 set for diagonal
-        rts
-
-        // ------------------------------------------------------------
-        // Decode slope bits (mask 6..2), branch on $0C or $08
-        // ------------------------------------------------------------
-diag_attr_enabled:
-        and     #DIAG_MASK
-        cmp     #DIAG_CODE_DOWN_RIGHT
-        bne     check_slope_up_left
-
-        // down-right slope (right edge)
-        lda     #DIAG_MODE_DOWN_RIGHT
-        jmp     store_slope_mode
-
-check_slope_up_left:
-        cmp     #DIAG_CODE_UP_LEFT
-        bne     no_diagonal_exit
-
-        // up-left slope (left edge)
-        lda     #DIAG_MODE_UP_LEFT
-        jmp     store_slope_mode
-
-no_diagonal_exit:
-        rts
-
-        // ------------------------------------------------------------
-        // Compute dy from top(+2), fetch dx from table, clamp X
-        // ------------------------------------------------------------
-store_slope_mode:
-        sta     diag_slope_mode                 // persist slope selector
-
-        lda     candidate_y                   // A := candidate Y
-        dey                                   // Y := base + 3 (bottom)
-        dey                                   // Y := base + 2 (top)
-        sec
-        sbc     (current_box_ptr),y             // A := Y - top
-        tax                                   // X := dy (table index)
-
-        dey                                   // Y := base + 1 (right)
-        lda     diag_slope_mode
-        cmp     #DIAG_MODE_UP_LEFT
-        bne     handle_down_right_slope
-
-        // up-left slope: boundary = right(+1) - dx
-        lda     (current_box_ptr),y             // right
-        sec
-        sbc     diag_dx_lut,x        // right - dx
-        cmp     candidate_x                   // adjusted ≥ candidate X ?
-        bcs     room_width_guard
-        lda     #RET_NO_ADJUST                         // no adjust (note: exit path forces #$01)
-        jmp     finalize_diag_exit
-
-room_width_guard:
-        cmp     #ROOM_X_MAX                          // guard vs $A0
-        bcc     apply_x_clamp_up
-        beq     apply_x_clamp_up
-        lda     #$00
-apply_x_clamp_up:
-        sta     candidate_x
-        jmp     finalize_diag_exit
-
-        // down-right slope: boundary = left(+0) + dx
-handle_down_right_slope:
-        dey                                   // Y := base + 0 (left)
-        lda     (current_box_ptr),y             // left
-        clc
-        adc     diag_dx_lut,x        // left + dx
-        cmp     candidate_x                   // adjusted ≤ candidate X ?
-        bcc     apply_x_clamp_down
-        beq     apply_x_clamp_down
-        lda     #RET_NO_ADJUST                          // no adjust (note: exit path forces #$01)
-        jmp     finalize_diag_exit
-
-apply_x_clamp_down:
-        sta     candidate_x
-
-finalize_diag_exit:
-        lda     #RET_ADJUSTED                          // original code forces adjust flag
-        sta     diag_clamp_applied
-        rts
-
-
-		

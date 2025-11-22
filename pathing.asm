@@ -592,7 +592,7 @@ Description
 	  • Snapshots actor_box_cur into actor_box_prev.
 
 Notes
-	* Calls: snap_coords_to_walkbox, build_walkbox_path.
+	* Calls: snap_coords_to_walkbox, find_path_between_walkboxes.
 	* Clobbers A, X, Y; flags per last writes (no carry/overflow guarantees).
 	* Assumes actor holds a valid index before invocation.
 ================================================================================
@@ -624,7 +624,7 @@ save_destination_box:
         // 
         // Different destination → build full path.
         // 
-        jsr     build_walkbox_path
+        jsr     find_path_between_walkboxes
         ldx     actor
         jmp     mark_path_update_and_snapshot
 

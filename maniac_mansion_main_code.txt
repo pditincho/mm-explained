@@ -6006,7 +6006,7 @@ current_box = $cad3
 current_search_depth = $cad8
 return_value = $cad0
 
-build_walkbox_path:
+find_path_between_walkboxes:
 .C:18eb  A6 D8       LDX actor
 ;Get the pointer to the start of the boundary boxes list
 .C:18ed  20 B1 2D    JSR get_walkboxes_for_costume
@@ -6897,7 +6897,7 @@ box_found:
 .C:1c5a  DD CD FD    CMP actor_box_cur,X
 .C:1c5d  F0 08       BEQ closest_box_is_current
 ;It's not, so build a path to it
-.C:1c5f  20 EB 18    JSR build_walkbox_path
+.C:1c5f  20 EB 18    JSR find_path_between_walkboxes
 .C:1c62  A6 D8       LDX actor
 .C:1c64  4C 75 1C    JMP update_actor_path_vars
 closest_box_is_current:

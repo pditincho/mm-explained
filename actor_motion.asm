@@ -1098,7 +1098,7 @@ no_horiz_traverse_continue_y:
         rts
 
 		//Unreachable code - replicated from original
-		jmp commit_x_dirmask_and_walk
+		jmp 	commit_x_dirmask_and_walk
 		
         // ------------------------------------------------------------
         // Y walkbox boundary crossing

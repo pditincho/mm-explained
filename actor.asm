@@ -96,7 +96,7 @@ hide_all_actors_and_release_sprites
     • Zeros all actor_visible flags and then reassigns the sprite pool so
       no hidden actor keeps a sprite.
 
-map_dir_mask_to_standing_clip
+map_facing_direction_to_standing_clip
     • Direction mask → standing clip ID used when motion stops.
 
 
@@ -707,7 +707,7 @@ detach_actor_from_costume:
 		// standing clip ID and stores it in the costume entry.  
 		// ------------------------------------------------------------  
 		lda     facing_direction_for_actor,y       // A := actor facing direction mask  
-		jsr     map_dir_mask_to_standing_clip  // A := clip ID for that direction  
+		jsr     map_facing_direction_to_standing_clip  // A := clip ID for that direction  
 		sta     costume_clip_set,x               // save as costume’s default clip  
 
 		// ------------------------------------------------------------  
@@ -1074,59 +1074,6 @@ clear_visibility:
 		// ------------------------------------------------------------
 		jsr     assign_and_order_sprites      // release sprites from hidden actors
 		rts                                   // done
-/*
-================================================================================
-  map_dir_mask_to_standing_clip
-================================================================================
-
-Summary
-	Translates an actor’s directional bitmask (as used in pathfinding and
-	movement) into the corresponding standing clip set index used by the
-	costume animation system.
-
-Arguments
-	A  		Direction bitmask
-			$00 : facing left
-			$01 : facing right
-			$80 : facing down
-			$81 : facing up
-
-Returns
-	A  		Animation clip set index
-			CLIP_SET_STANDING_L, CLIP_SET_STANDING_R, CLIP_SET_STANDING_D, or CLIP_SET_STANDING_U
-
-Description
-	This lookup routine maps the low/high bits of the actor’s path direction
-	mask into a discrete animation set constant. It is used when transitioning
-	from motion-based states back to idle/standing poses so that the costume
-	faces the correct direction after movement stops.
-
-Notes
-	- Bit7 of the direction mask distinguishes vertical (down/up) vs.
-	horizontal (left/right).
-	- Default case (unmatched code) maps to “down” standing animation.
-================================================================================
-*/
-* = $3BDF
-map_dir_mask_to_standing_clip:
-		cmp     #DIR_RIGHT_MASK
-		bne     check_dir_left_3
-		lda     #CLIP_SET_STANDING_R
-		jmp     return_clip_set
-check_dir_left_3:
-		cmp     #DIR_LEFT_MASK
-		bne     check_dir_up_3
-		lda     #CLIP_SET_STANDING_L
-		jmp     return_clip_set
-check_dir_up_3:
-		cmp     #DIR_UP_MASK
-		bne     use_dir_down_default
-		lda     #CLIP_SET_STANDING_U
-		jmp     return_clip_set
-use_dir_down_default:
-		lda     #CLIP_SET_STANDING_D
-return_clip_set:
-		rts
 /*
 ================================================================================
   assign_and_order_sprites

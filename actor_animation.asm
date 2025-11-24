@@ -197,7 +197,7 @@ Responsibilities
 step_actor_limb_animation
 ├── setup_costume_for_actor          
 ├── apply_speaking_clip
-│   ├── map_path_direction_to_clip_offset
+│   ├── map_facing_direction_to_clip_variant
 │   └── assign_clip_to_costume
 │       └── init_limb_state_from_clip_set
 │           ├── setup_costume_for_actor
@@ -1059,6 +1059,45 @@ mfdtcv_exit:
         rts
 /*
 ================================================================================
+map_facing_direction_to_standing_clip
+================================================================================
+Summary
+    Map a direction code in A to the corresponding standing clip-set ID.
+
+Arguments
+    A                       Direction value encoded as DIRECTION_RIGHT/LEFT/UP/DOWN.
+
+Returns
+    A                       Standing clip-set ID (CLIP_SET_STANDING_R/L/U/D).
+
+Description
+    • Compare the incoming direction in A against DIRECTION_RIGHT, LEFT, and UP.
+    • For the first match, load the matching standing clip-set ID and return.
+    • If no explicit match is found, fall back to the “down” standing clip set.
+================================================================================
+*/
+* = $3BDF
+map_facing_direction_to_standing_clip:
+		cmp     #DIRECTION_RIGHT
+		bne     check_dir_left_3
+		lda     #CLIP_SET_STANDING_R
+		jmp     return_clip_set
+check_dir_left_3:
+		cmp     #DIRECTION_LEFT
+		bne     check_dir_up_3
+		lda     #CLIP_SET_STANDING_L
+		jmp     return_clip_set
+check_dir_up_3:
+		cmp     #DIRECTION_UP
+		bne     use_dir_down_default
+		lda     #CLIP_SET_STANDING_U
+		jmp     return_clip_set
+use_dir_down_default:
+		lda     #CLIP_SET_STANDING_D
+return_clip_set:
+		rts		
+/*
+================================================================================
   apply_speaking_clip
 ================================================================================
 Summary
@@ -1134,7 +1173,150 @@ commit_speaking_clip:
 		// Assign the clip to the active costume
         jsr     assign_clip_to_costume               
         rts
+/*
+================================================================================
+  apply_standing_clip
+================================================================================
 
+Summary
+    Choose the appropriate standing clip for the current actor based on its
+    facing direction and apply it as a loop-forever animation to the active
+    costume.
+
+Arguments
+    X                       	Actor index whose standing pose should be applied.
+
+Global Inputs
+    facing_direction_for_actor  Per-actor facing direction (DIRECTION_* enum).
+    actor                       Current actor index used to restore X after call.
+
+Global Outputs
+    target_clip_id              Standing clip ID selected for this actor.
+    clip_loop_cnt               Loop mode for the chosen standing clip
+                                (set to ANIM_LOOP_FOREVER).
+
+Description
+    • Read the actor’s facing direction and map it to one of the standing clip
+      IDs (right, left, up, or down).
+    • Store the chosen standing clip in target_clip_id and set clip_loop_cnt to
+      ANIM_LOOP_FOREVER so the pose remains stable.
+    • Call assign_clip_to_costume to bind the standing clip to the active
+      costume/actor and initialize limb state from that clip.
+    • Restore the actor index in X before returning.
+================================================================================
+*/
+* = $2BCA
+apply_standing_clip:
+        // ------------------------------------------------------------
+        // Map path direction mask to standing clip ID
+        // ------------------------------------------------------------
+        lda     facing_direction_for_actor,x
+        bne     check_dir_left
+
+        lda     #CLIP_STAND_RIGHT       
+        jmp     commit_standing_clip
+
+check_dir_left:
+        cmp     #DIRECTION_LEFT
+        bne     check_dir_up
+
+        lda     #CLIP_STAND_LEFT        
+        jmp     commit_standing_clip
+
+check_dir_up:
+        cmp     #DIRECTION_UP
+        bne     map_dir_down
+
+        lda     #CLIP_STAND_UP          
+        jmp     commit_standing_clip
+
+map_dir_down:
+        lda     #CLIP_STAND_DOWN        
+
+commit_standing_clip:
+		// Set the standing target clip
+        sta     target_clip_id          
+		
+		// Set a desired "loop forever" mode
+        lda     #ANIM_LOOP_FOREVER		
+        sta     clip_loop_cnt                 
+        jsr     assign_clip_to_costume	
+		
+		// Restore actor index in X
+        ldx     actor                   
+        rts
+/*
+================================================================================
+  apply_walking_clip
+================================================================================
+Summary
+    Select the walking clip for the current actor based on its facing direction
+    and initialize the walking animation to loop forever.
+
+Arguments
+    X                       Actor index whose walking animation should be updated.
+
+Global Inputs
+    facing_direction_for_actor  Per-actor facing direction encoded as DIRECTION_*.
+    actor                       Current actor index, used to restore X after call.
+
+Global Outputs
+    actor_target_clip           Walking clip ID chosen for this actor.
+    actor_clip_loop_cnt         Loop mode for the walking clip (set to loop forever).
+
+Description
+    • Read the actor’s facing direction and map it to a directional walking clip
+      (CLIP_WALK_RIGHT/LEFT/UP/DOWN).
+    • Store the chosen walking clip into actor_target_clip for this actor.
+    • Set actor_clip_loop_cnt to ANIM_LOOP_FOREVER so the walk cycles continuously.
+    • Call init_limb_state_from_clip_set to expand the clip into per-limb
+      animation state (cel sequences, flip flags, loop counts).
+    • Restore the actor index in X before returning.
+================================================================================
+*/
+* = $2BF6
+apply_walking_clip:
+        // ------------------------------------------------------------
+        // Map path direction mask to walking clip ID
+        // ------------------------------------------------------------
+        lda     facing_direction_for_actor,x
+        bne     check_dir_left_2
+
+        lda     #CLIP_WALK_RIGHT		
+        jmp     commit_walking_clip
+
+check_dir_left_2:
+        cmp     #DIRECTION_LEFT
+        bne     check_dir_up_2
+
+        lda     #CLIP_WALK_LEFT         
+        jmp     commit_walking_clip
+
+check_dir_up_2:
+        cmp     #DIRECTION_UP
+        bne     map_dir_down_2
+
+        lda     #CLIP_WALK_UP           
+        jmp     commit_walking_clip
+
+map_dir_down_2:
+        lda     #CLIP_WALK_DOWN         
+
+commit_walking_clip:
+		// Set the walking target clip
+        sta     actor_target_clip,x     
+
+		// Set a desired "loop forever" mode
+        lda     #ANIM_LOOP_FOREVER		
+        sta     actor_clip_loop_cnt,x   
+		
+		// Setup clip
+        jsr     init_limb_state_from_clip_set			
+		
+		// Restore actor index
+        ldx     actor                   
+        rts
+		
 
 /*
 Pseudo-code
@@ -1463,4 +1645,83 @@ procedure apply_speaking_clip()
     // Bind and apply this clip to the active costume (and its actor, if any).
     assign_clip_to_costume()
 end procedure
+
+procedure apply_standing_clip(actor_index_in_X)
+    // Read the actor’s facing direction.
+    facing_dir := facing_direction_for_actor[X]
+
+    // Map facing direction → standing clip ID.
+    if facing_dir = DIRECTION_RIGHT or facing_dir = 0 then
+        clip_id := CLIP_STAND_RIGHT
+    else if facing_dir = DIRECTION_LEFT then
+        clip_id := CLIP_STAND_LEFT
+    else if facing_dir = DIRECTION_UP then
+        clip_id := CLIP_STAND_UP
+    else
+        // Any other value → default to “down”.
+        clip_id := CLIP_STAND_DOWN
+    end if
+
+    // Set the chosen standing clip as the target.
+    target_clip_id := clip_id
+
+    // Standing pose should loop forever (stable idle).
+    clip_loop_cnt := ANIM_LOOP_FOREVER
+
+    // Bind this clip to the active costume / owning actor and
+    // expand it into limb state.
+    assign_clip_to_costume()
+
+    // Restore actor index in X (the routine expects X = actor on exit).
+    X := actor
+end procedure
+
+procedure apply_walking_clip(actor_index_in_X)
+    // Read the actor’s facing direction.
+    facing_dir := facing_direction_for_actor[X]
+
+    // Map facing direction → walking clip ID.
+    if facing_dir = DIRECTION_RIGHT or facing_dir = 0 then
+        clip_id := CLIP_WALK_RIGHT
+    else if facing_dir = DIRECTION_LEFT then
+        clip_id := CLIP_WALK_LEFT
+    else if facing_dir = DIRECTION_UP then
+        clip_id := CLIP_WALK_UP
+    else
+        // Any other value → default to “down”.
+        clip_id := CLIP_WALK_DOWN
+    end if
+
+    // Store the chosen walking clip directly in the actor’s clip state.
+    actor_target_clip[X] := clip_id
+
+    // Walking animation should loop forever while the actor is moving.
+    actor_clip_loop_cnt[X] := ANIM_LOOP_FOREVER
+
+    // Initialize all limb-level animation state from this clip
+    // (sequences, flip flags, loop counts, etc.).
+    init_limb_state_from_clip_set()
+
+    // Restore actor index in X (the routine expects X = actor on exit).
+    X := actor
+end procedure
+
+function map_facing_direction_to_standing_clip(direction) -> clip_set_id
+    // direction: one of DIRECTION_RIGHT, DIRECTION_LEFT, DIRECTION_UP, DIRECTION_DOWN
+
+    if direction = DIRECTION_RIGHT then
+        return CLIP_SET_STANDING_R
+
+    else if direction = DIRECTION_LEFT then
+        return CLIP_SET_STANDING_L
+
+    else if direction = DIRECTION_UP then
+        return CLIP_SET_STANDING_U
+
+    else
+        // Any other value (including DIRECTION_DOWN) defaults to “down”
+        return CLIP_SET_STANDING_D
+    end if
+end function
+
 */

@@ -13481,7 +13481,7 @@ detach_actor_from_costume:	;Should be renamed to "assign_actor", unassign, relea
 .C:3901  99 53 FE    STA costume_for_actor,Y
 ;Convert actor's direction to an animation set and save it
 .C:3904  B9 EB FD    LDA facing_direction_for_actor,Y
-.C:3907  20 DF 3B    JSR map_dir_mask_to_standing_clip
+.C:3907  20 DF 3B    JSR map_facing_direction_to_standing_clip
 .C:390a  9D 47 FF    STA costume_clip_set,X
 ;Assign sprites to all actors
 .C:390d  20 D3 3E    JSR assign_and_order_sprites
@@ -13969,7 +13969,7 @@ clear_visibility:
 ; Arguments:	.A	direction bitmask
 ; Returns:		.A	costume animation set
 ;===========================================
-map_dir_mask_to_standing_clip:
+map_facing_direction_to_standing_clip:
 check_00:
 .C:3bdf  C9 00       CMP #$00
 .C:3be1  D0 05       BNE check_01
@@ -24109,7 +24109,7 @@ destination_variable = $d0
 ;Actor not moving, compute facing side
 .C:6947  AA          TAX
 .C:6948  BD EB FD    LDA facing_direction_for_actor,X
-.C:694b  20 DF 3B    JSR map_dir_mask_to_standing_clip
+.C:694b  20 DF 3B    JSR map_facing_direction_to_standing_clip
 .C:694e  4C 54 69    JMP set_value_in_var
 actor_moving:
 ;Get the animation set for this costume

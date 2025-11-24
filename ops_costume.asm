@@ -642,7 +642,7 @@ op_get_costume_clip_set:
         // ----------------------------
         tax                                    
         lda     facing_direction_for_actor,x     // A := path-facing mask
-        jsr     map_dir_mask_to_standing_clip  // A := standing clip id
+        jsr     map_facing_direction_to_standing_clip  // A := standing clip id
         jmp     ogccs_set_value_in_var               // store and exit
 
 ogccs_actor_moving:

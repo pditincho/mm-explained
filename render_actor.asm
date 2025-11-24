@@ -95,7 +95,7 @@ draw_actor
  ├─ draw_actor_limbs         (loop 8 limbs)
  │    ├─ compute_cel_ptr
  │    │    ↳ uses: actor_gfx_base, cel_seq_tbl,
- │    │            actor_limbs_ofs(=actor*8), current_limb,
+ │    │            actor_limb_slot_base(=actor*8), current_limb,
  │    │            limb_frame_idx, limb_current_cel,
  │    │            ofs_cel_hi_tbl
  │    │    ↳ sets: dest_row_ptr
@@ -272,7 +272,7 @@ Global Outputs
 	global_mask_patterns_ptr            → mask_bit_patterns
 	gfx_base              				zp pointer to graphics section
 	cel_seq_tbl                      	zp pointer to limb-cel list
-	actor_limbs_ofs                     actor index × 8 stride
+	actor_limb_slot_base                     actor index × 8 stride
 	vertical_offset                     cleared to 0 before limb draws
 	actor_sprite_x_{hi,lo}[]            committed sprite X for slot
 	sprite_0_color[]                    committed background color
@@ -288,7 +288,7 @@ Description
 	- set_actor_sprite_base: bind actor_sprite_base for the slot.
 	- Load gfx_base and cel_seq_tbl from per-actor tables.
 	- Copy cel-address HI offset and constant used by the decoder.
-	- Compute actor_limbs_ofs = actor * 8.
+	- Compute actor_limb_slot_base = actor * 8.
 	- clear_sprite_visible_rows: zero staged rows for this sprite slot.
 	- Zero vertical_offset (and unused $FD15).
 	- If actor visible (actor_vars[active_costume] & ACTOR_IS_INVISIBLE == 0):
@@ -385,7 +385,7 @@ draw_actor:
         asl      
         asl      
         asl      
-        sta     actor_limbs_ofs
+        sta     actor_limb_slot_base
 
         // ----------------------------------------
         // Clear staged sprite rows for this sprite slot (Y preserved by callee)
@@ -496,6 +496,7 @@ Notes
         Carry from +9 adjustment is handled when computing graphics base.
 ================================================================================
 */
+//RENAME to setup_actor_animation_tables or similar
 * = $2470
 setup_costume_for_actor:
         // ----------------------------------------
@@ -940,7 +941,7 @@ Summary
         src_cel_ptr = gfx_base + cel_address(cel_id)
 
 Inputs
-        actor_limbs_ofs                 base offset for current actor’s limb bank
+        actor_limb_slot_base                 base offset for current actor’s limb bank
         current_limb              		limb selector within the actor
         limb_frame_idx[]    per-(actor,limb): frame index
         limb_current_cel[]       			per-(actor,limb): current cel sequence index
@@ -958,9 +959,9 @@ Outputs
 * = $23D8
 compute_cel_ptr:
         // ----------------------------------------
-        // X := limb index for this actor = actor_limbs_ofs + current_limb
+        // X := limb index for this actor = actor_limb_slot_base + current_limb
         // ----------------------------------------
-        lda     actor_limbs_ofs
+        lda     actor_limb_slot_base
         clc
         adc     current_limb
         tax

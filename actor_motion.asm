@@ -1163,12 +1163,12 @@ Global Inputs
 	actor                                Current actor index selector
 	actor_box_facing_override[*]         One-shot override: flag + dir bits
 	path_delta_directions_for_actor[*]   Intended facing from path step
-	path_direction_for_actor[*]          Current facing attribute
+	facing_direction_for_actor[*]          Current facing attribute
 	actor_motion_state[*]                Motion flags (bit7 = turning)
 
 Global Outputs
 	path_delta_directions_for_actor[*]   Updated from override when used
-	path_direction_for_actor[*]          New facing attribute committed
+	facing_direction_for_actor[*]          New facing attribute committed
 	actor_motion_state[*]                Turning bit set/cleared accordingly
 
 Description
@@ -1210,7 +1210,7 @@ resolve_turning_and_facing:
 		// ------------------------------------------------------------
 compare_dir_masks:
         lda     path_delta_directions_for_actor,x // load intended facing (delta)
-        cmp     path_direction_for_actor,x        // compare with current facing attribute
+        cmp     facing_direction_for_actor,x        // compare with current facing attribute
         beq     clear_actor_turning               // equal → no change; clear turning flag
 
 
@@ -1230,7 +1230,7 @@ compare_dir_masks:
         //   (both horizontal or both vertical), enforce a 90° pivot
         //   by toggling the axis bit. Otherwise, adopt the new delta.
         // ------------------------------------------------------------
-        lda     path_direction_for_actor,x     // load current facing attribute
+        lda     facing_direction_for_actor,x     // load current facing attribute
         and     #DIR_AXIS_BIT                  // isolate axis (0=horizontal, 1=vertical)
         sta     axis_bit_scratch               // save attribute’s axis for comparison
         lda     path_delta_directions_for_actor,x // load intended facing (delta)
@@ -1250,7 +1250,7 @@ compare_dir_masks:
         //   facing direction before committing the new attribute.
         // ------------------------------------------------------------
 force_axis_flip:
-        lda     path_direction_for_actor,x // load current facing attribute
+        lda     facing_direction_for_actor,x // load current facing attribute
         eor     #DIR_AXIS_BIT              // flip axis bit to force perpendicular pivot
         and     #DIR_SIGN_CLEAR_MASK       // clear sign bit → canonical positive direction
         jmp     write_facing_attribute     // commit facing; turning flag set in callee
@@ -1264,7 +1264,7 @@ begin_turning_transition:
         lda     path_delta_directions_for_actor,x // already turning → snap facing to delta
 
 write_facing_attribute:
-        sta     path_direction_for_actor,x        // commit new facing attribute
+        sta     facing_direction_for_actor,x        // commit new facing attribute
 
         // ------------------------------------------------------------
         // Mark actor as turning
@@ -1302,13 +1302,13 @@ Arguments
 	X                            Actor index on entry
 
 Global Inputs
-	path_direction_for_actor[*]  Direction mask per actor
+	facing_direction_for_actor[*]  Direction mask per actor
 	actor                        Actor index selector for post-call restore
 
 Global Outputs
 	target_clip_id               Selected standing clip ID
 	clip_loop_cnt                Set to ANIM_LOOP_FOREVER
-	(via apply_clip_set)         Applies clip to limbs for the active costume
+	(via assign_clip_to_costume)         Applies clip to limbs for the active costume
 
 Returns
 	.X                           Restored to actor
@@ -1320,7 +1320,7 @@ Description
 			DIR_UP_MASK → CLIP_STAND_UP
 			otherwise → CLIP_STAND_DOWN
 	- Store chosen clip and set loop count.
-	- Call apply_clip_set to realize the clip on limbs.
+	- Call assign_clip_to_costume to realize the clip on limbs.
 	- Restore X from actor and return.
 
 Notes
@@ -1332,7 +1332,7 @@ apply_standing_clip:
         // ------------------------------------------------------------
         // Map path direction mask to standing animation clip ID
         // ------------------------------------------------------------
-        lda     path_direction_for_actor,x
+        lda     facing_direction_for_actor,x
         bne     check_dir_left
 
         lda     #CLIP_STAND_RIGHT       // facing right
@@ -1359,7 +1359,7 @@ commit_standing_clip:
         sta     target_clip_id          // commit target clip
         lda     #ANIM_LOOP_FOREVER		// set clip to loop forever
         sta     clip_loop_cnt                 
-        jsr     apply_clip_set			// apply clip
+        jsr     assign_clip_to_costume			// apply clip
         ldx     actor                   // restore actor index
         rts
 /*
@@ -1375,13 +1375,13 @@ Arguments
 	X                            Actor index on entry
 
 Global Inputs
-	path_direction_for_actor[*]  Direction mask for each actor
+	facing_direction_for_actor[*]  Direction mask for each actor
 	actor                        Actor index selector for post-call restore
 
 Global Outputs
 	actor_target_clip[*]         Walking clip ID per actor
 	actor_clip_loop_cnt[*]       Set to ANIM_LOOP_FOREVER
-	(via setup_clip_set)         Applies clip to limbs for the active costume
+	(via init_limb_state_from_clip_set)         Applies clip to limbs for the active costume
 
 Returns
 	.X                           Restored to actor
@@ -1394,7 +1394,7 @@ Description
 			otherwise → CLIP_WALK_DOWN
 	- Store chosen clip in actor_target_clip[X].
 	- Set loop count to ANIM_LOOP_FOREVER.
-	- Call setup_clip_set to realize the clip on limbs.
+	- Call init_limb_state_from_clip_set to realize the clip on limbs.
 	- Restore X from actor and return.
 
 Notes
@@ -1407,7 +1407,7 @@ apply_walking_clip:
         // ------------------------------------------------------------
         // Map path direction mask to walking animation clip ID
         // ------------------------------------------------------------
-        lda     path_direction_for_actor,x
+        lda     facing_direction_for_actor,x
         bne     check_dir_left_2
 
         lda     #CLIP_WALK_RIGHT		// facing right
@@ -1434,7 +1434,7 @@ commit_walking_clip:
         sta     actor_target_clip,x     // commit target clip
         lda     #ANIM_LOOP_FOREVER		// set clip to loop forever
         sta     actor_clip_loop_cnt,x         
-        jsr     setup_clip_set			// setup clip
+        jsr     init_limb_state_from_clip_set			// setup clip
         ldx     actor                   // restore actor index
         rts
 		

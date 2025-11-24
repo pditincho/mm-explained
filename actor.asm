@@ -16,7 +16,7 @@ High-level flow per frame
 		• For each costume that has an actor and a loaded resource:
 			- apply_waypoint_update_if_needed
 			- update_actor_motion
-			- animate_actor_limbs
+			- step_actor_limb_animation
 		• No drawing here. It only advances state.
 
 
@@ -435,7 +435,7 @@ Description
 	- If a costume maps to an actor and its resource is resident:
 		• apply_waypoint_update_if_needed
 		• update_actor_motion
-		• animate_actor_limbs
+		• step_actor_limb_animation
 	- Repeat until all costumes processed; no drawing or sprite assignment here.
 ================================================================================
 */		
@@ -478,7 +478,7 @@ scan_costume_for_updates:
 		// ------------------------------------------------------------  
 		jsr     apply_waypoint_update_if_needed   // handle pending waypoint updates  
 		jsr     update_actor_motion               // update position and motion state  
-		jsr     animate_actor_limbs               // animate limbs based on motion state  
+		jsr     step_actor_limb_animation               // animate limbs based on motion state  
 
 		// ------------------------------------------------------------  
 		// Loop control  
@@ -633,7 +633,7 @@ Arguments
 Global Inputs
 	actor_for_costume[]           actor index mapped to each costume
 	actor_x_pos[], actor_y_pos[]  actor position tables
-	path_direction_for_actor[]    current facing direction bitmask
+	facing_direction_for_actor[]    current facing direction bitmask
 
 Global Outputs
 	costume_dest_x[], costume_dest_y[]  		snapshot of actor’s last position
@@ -706,7 +706,7 @@ detach_actor_from_costume:
 		// Converts the actor’s facing direction into its equivalent  
 		// standing clip ID and stores it in the costume entry.  
 		// ------------------------------------------------------------  
-		lda     path_direction_for_actor,y       // A := actor facing direction mask  
+		lda     facing_direction_for_actor,y       // A := actor facing direction mask  
 		jsr     map_dir_mask_to_standing_clip  // A := clip ID for that direction  
 		sta     costume_clip_set,x               // save as costume’s default clip  
 
@@ -1021,7 +1021,7 @@ init_each_limb_base_cel:
 		sta     target_clip_id                   // set target clip  
 		lda     #$01                             // one loop  
 		sta     clip_loop_cnt                    // init loop counter  
-		jsr     apply_clip_set                   // apply animation  
+		jsr     assign_clip_to_costume                   // apply animation  
 		rts                                     // done initializing actor
 /*
 ================================================================================
@@ -1093,7 +1093,7 @@ Arguments
 
 Returns
 	A  		Animation clip set index
-			CLIP_SET_LEFT, CLIP_SET_RIGHT, CLIP_SET_DOWN, or CLIP_SET_UP
+			CLIP_SET_STANDING_L, CLIP_SET_STANDING_R, CLIP_SET_STANDING_D, or CLIP_SET_STANDING_U
 
 Description
 	This lookup routine maps the low/high bits of the actor’s path direction
@@ -1111,20 +1111,20 @@ Notes
 map_dir_mask_to_standing_clip:
 		cmp     #DIR_RIGHT_MASK
 		bne     check_dir_left_3
-		lda     #CLIP_SET_RIGHT
+		lda     #CLIP_SET_STANDING_R
 		jmp     return_clip_set
 check_dir_left_3:
 		cmp     #DIR_LEFT_MASK
 		bne     check_dir_up_3
-		lda     #CLIP_SET_LEFT
+		lda     #CLIP_SET_STANDING_L
 		jmp     return_clip_set
 check_dir_up_3:
 		cmp     #DIR_UP_MASK
 		bne     use_dir_down_default
-		lda     #CLIP_SET_UP
+		lda     #CLIP_SET_STANDING_U
 		jmp     return_clip_set
 use_dir_down_default:
-		lda     #CLIP_SET_DOWN
+		lda     #CLIP_SET_STANDING_D
 return_clip_set:
 		rts
 /*

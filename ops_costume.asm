@@ -19,7 +19,7 @@ Global Inputs
         costume_room_idx         Room index for each costume
         costume_dest_x / _y      Destination coordinates
         costume_clip_set         Current active clip/animation per costume
-        path_direction_for_actor Facing direction mask for each actor
+        facing_direction_for_actor Facing direction mask for each actor
 
 Global Outputs
         game_vars                Script-accessible variable array
@@ -613,7 +613,7 @@ Description
         - Reads destination variable index from the script.
         - Loads costume index via script_load_operand_bit7.
         - If actor_for_costume[X] has bit7 set (moving), uses costume_clip_set[X].
-        - Else maps path_direction_for_actor[X] to a standing clip.
+        - Else maps facing_direction_for_actor[X] to a standing clip.
         - Stores the resolved clip id into game_vars[dest].
 ================================================================================
 */
@@ -641,7 +641,7 @@ op_get_costume_clip_set:
         // Not moving → map facing direction to standing clip id
         // ----------------------------
         tax                                    
-        lda     path_direction_for_actor,x     // A := path-facing mask
+        lda     facing_direction_for_actor,x     // A := path-facing mask
         jsr     map_dir_mask_to_standing_clip  // A := standing clip id
         jmp     ogccs_set_value_in_var               // store and exit
 
@@ -679,7 +679,7 @@ Description
         - If target_clip_id = #$FE → set mouth open and still.
         - If target_clip_id = #$FD → set mouth closed.
         - If target_clip_id = #$FF → reset actor render flags.
-        - Else call apply_clip_set.
+        - Else call assign_clip_to_costume.
 ================================================================================
 */
 * = $695A
@@ -757,7 +757,7 @@ apply_clip:
         // ---------------------------------------
         // Default — apply the clip set
         // ---------------------------------------
-        jsr     apply_clip_set
+        jsr     assign_clip_to_costume
 
 exit_oacc:
         rts

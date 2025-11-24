@@ -6,7 +6,7 @@
 
 * = $25EA
 unused_routine_1:
-    jsr     compute_actor_limbs_ofs
+    jsr     compute_actor_limb_slot_base
     clc
     adc     current_limb
     tax

@@ -1250,7 +1250,7 @@ limb_flip_tbl = $fc05				;#00 = no horizontal flip for the limb, #80 = horizonta
 actor_sprite_base = $fc2e						;Base address of the current sprite being drawn in memory
 active_costume = $fc30
 actor_sprite_index = $fc32
-actor_limbs_ofs = $fc36
+actor_limb_slot_base = $fc36
 character_sprite_y = $fc37
 current_limb = $fc41
 actor_limb_animation_frame = $fc42	;Which animation cell to use as _current_ for the actor limb
@@ -1308,7 +1308,7 @@ actor_sprite_x_lo = $fd60
 ;If low nibble is #00, update one or both axes
 ;
 ;When updating motion state:
-;	If bit 7 is set, will copy path_delta_directions_for_actor as path_direction_for_actor
+;	If bit 7 is set, will copy path_delta_directions_for_actor as facing_direction_for_actor
 ;When resetting animation state, the full value will be set to #02
 ;When advancing the characters animations, if motion state bits 6-0 are not equal to #02, 
 ;	it will skip updating the actor's sprites and positions
@@ -1364,7 +1364,7 @@ dest_y = $fde7
 clip_loop_cnt = $fde8 
 target_clip_id = $fde9
 room_destination = $fdea
-path_direction_for_actor = $fdeb		;#00 = right, #01 = left, #80 = down, #81 = up
+facing_direction_for_actor = $fdeb		;#00 = right, #01 = left, #80 = down, #81 = up
 path_delta_directions_for_actor = $fdef	;#00 = right, #01 = left, #80 = down, #81 = up
 actor_dda_dom_abs = $fdf3	;The dominant delta value (the largest between the deltas for the 2 axis)
 actor_dx_accum = $fdf7		;Value of delta x step (how much to move along this axis on each step to match the rate of motion on the other axis)
@@ -8627,7 +8627,7 @@ draw_actor:
 .C:229d  0A          ASL A
 .C:229e  0A          ASL A
 .C:229f  0A          ASL A
-.C:22a0  8D 36 FC    STA actor_limbs_ofs
+.C:22a0  8D 36 FC    STA actor_limb_slot_base
 ;Get the index for the actor's sprite
 .C:22a3  A6 D8       LDX actor
 .C:22a5  BC 32 FC    LDY actor_sprite_index,X
@@ -8912,7 +8912,7 @@ sprite_cell_ptr = $7e
 
 calculate_sprite_cell_ptr:
 ;Compute the actor_limb index into .X
-.C:23d8  AD 36 FC    LDA actor_limbs_ofs
+.C:23d8  AD 36 FC    LDA actor_limb_slot_base
 .C:23db  18          CLC
 .C:23dc  6D 41 FC    ADC current_limb
 .C:23df  AA          TAX
@@ -9184,22 +9184,22 @@ copy_offsets:
 ; Arguments:	active_costume
 ; Returns:		None
 ;===========================================
-animate_actor_limbs:
+step_actor_limb_animation:
 ;Setup the costume resource for the actor, if needed
 .C:2504  20 70 24    JSR setup_costume_for_actor
 ;Handle speaking animation, if needed
-.C:2507  20 F9 26    JSR animate_character_speaking
+.C:2507  20 F9 26    JSR apply_speaking_clip
 ;Setup the cell list for this actor
 .C:250a  20 DD 25    JSR setup_limb_cell_list
-.C:250d  20 D3 25    JSR compute_actor_limbs_ofs
+.C:250d  20 D3 25    JSR compute_actor_limb_slot_base
 ;Init current_limb to #00
 .C:2510  A9 00       LDA #$00
 .C:2512  8D 41 FC    STA current_limb
 animate_actor_limb:
 ;Update the base cell for this limb
-.C:2515  20 8E 25    JSR update_limb_base_cell
+.C:2515  20 8E 25    JSR apply_pending_cel_sequencel
 ;Animate the limb as needed
-.C:2518  20 26 25    JSR animate_limb
+.C:2518  20 26 25    JSR step_limb_frame
 ;Move to the next limb
 .C:251b  EE 41 FC    INC current_limb
 ;Are there limbs pending? If so, continue - otherwise, exit
@@ -9218,7 +9218,7 @@ animate_actor_limb:
 ;	-repeat the animation from the first frame (argument == #FF)
 ;	-or stop the animation (argument == #00)
 ;
-; Arguments:	actor_limbs_ofs
+; Arguments:	actor_limb_slot_base
 ;				current_limb
 ;				actor_limb_animation_frame
 ;				actor_limb_current_cell
@@ -9229,9 +9229,9 @@ actor_limb_animation_frame = $fc42
 actor_limb_temp = $2502
 previous_actor_limb_frame = $fc3b
 
-animate_limb:
+step_limb_frame:
 ;Compute the actor_limb index into .X
-.C:2526  AD 36 FC    LDA actor_limbs_ofs
+.C:2526  AD 36 FC    LDA actor_limb_slot_base
 .C:2529  18          CLC
 .C:252a  6D 41 FC    ADC current_limb
 .C:252d  AA          TAX
@@ -9299,7 +9299,7 @@ exit:
 ; Updates a base cell for an actor limb, if needed
 ;
 ; 
-; Arguments:	actor_limbs_ofs
+; Arguments:	actor_limb_slot_base
 ;				current_limb
 ;				limb_target_base_cel_id
 ;				limb_tgt_loop_cnt
@@ -9307,9 +9307,9 @@ exit:
 limb_cell_list = $84
 limb_current_base_cel_id = $fc82
 
-update_limb_base_cell:
+apply_pending_cel_sequencel:
 ;Compute the actor_limb index into .X
-.C:258e  AD 36 FC    LDA actor_limbs_ofs
+.C:258e  AD 36 FC    LDA actor_limb_slot_base
 .C:2591  18          CLC
 .C:2592  6D 41 FC    ADC current_limb
 .C:2595  AA          TAX
@@ -9364,15 +9364,15 @@ compute_actor_limb_current_cell:
 ; This is used in multiple animation routines.
 ;
 ; Arguments:	actor
-; Returns:		actor_limbs_ofs
+; Returns:		actor_limb_slot_base
 ;===========================================
-compute_actor_limbs_ofs:
+compute_actor_limb_slot_base:
 .C:25d3  A5 D8       LDA actor
 .C:25d5  18          CLC
 .C:25d6  0A          ASL A
 .C:25d7  0A          ASL A
 .C:25d8  0A          ASL A
-.C:25d9  8D 36 FC    STA actor_limbs_ofs
+.C:25d9  8D 36 FC    STA actor_limb_slot_base
 .C:25dc  60          RTS
 ;===========================================
 ; Set the current limb cell list address for the current actor.
@@ -9393,7 +9393,7 @@ setup_limb_cell_list:
 ; Unused routine
 ;===========================================
 ;Compute the actor_limb index into .X
-.C:25ea  20 D3 25    JSR compute_actor_limbs_ofs
+.C:25ea  20 D3 25    JSR compute_actor_limb_slot_base
 .C:25ed  18          CLC
 .C:25ee  6D 41 FC    ADC current_limb
 .C:25f1  AA          TAX
@@ -9466,8 +9466,8 @@ assign_new_animation_set:
 .C:2623  0A          ASL A
 .C:2624  0A          ASL A
 .C:2625  A8          TAY
-;Pre-compute actor_limbs_ofs = actor index * 8 
-.C:2626  20 D3 25    JSR compute_actor_limbs_ofs
+;Pre-compute actor_limb_slot_base = actor index * 8 
+.C:2626  20 D3 25    JSR compute_actor_limb_slot_base
 ;-----------------------------------------------------
 ;Use .X as limb index
 .C:2629  A2 00       LDX #$00
@@ -9476,7 +9476,7 @@ prepare_limb_frame:
 ;Compute "actor_limb" index into .X = actor * 8 + limb_index
 .C:262e  18          CLC
 .C:262f  AD 03 25    LDA limb_index
-.C:2632  6D 36 FC    ADC actor_limbs_ofs
+.C:2632  6D 36 FC    ADC actor_limb_slot_base
 .C:2635  AA          TAX
 .C:2636  AD 03 25    LDA limb_index ;Redundant code
 ;Load the frame for this limb in this animation set
@@ -9590,7 +9590,7 @@ move_actor:
 .C:26db  99 3D FD    STA actor_y_pos,Y
 ;Set default direction to down
 .C:26de  A9 80       LDA #$80
-.C:26e0  99 EB FD    STA path_direction_for_actor,Y
+.C:26e0  99 EB FD    STA facing_direction_for_actor,Y
 ;Release it (assuming that it's not in the current room)
 .C:26e3  20 E4 38    JSR detach_actor_from_costume
 check_current_room:
@@ -9620,7 +9620,7 @@ exit:
 ;
 ; The resulting value will be the speaking animation set, which will be setup as needed.
 ;===========================================
-animate_character_speaking:
+apply_speaking_clip:
 ;Check if the character animates when speaking (bit 7 clear of costume_anim_attrs)
 .C:26F9  AE 30 FC    LDX active_costume
 .C:26fc  BD D9 F0    LDA costume_anim_attrs,X
@@ -9713,7 +9713,7 @@ default:
 direction_determined:
 ;Save the overall direction for this actor and exit
 .C:2762  A6 D8       LDX actor
-.C:2764  9D EB FD    STA path_direction_for_actor,X
+.C:2764  9D EB FD    STA facing_direction_for_actor,X
 .C:2767  4C 7D 27    JMP exit
 ;-------------------------
 ;The actor is not visible right now - assign the animation set directly
@@ -9746,7 +9746,7 @@ exit:
 ;	#81		-> 	#03		up
 ;===========================================
 get_animation_set_for_direction:
-.C:277e  BD EB FD    LDA path_direction_for_actor,X
+.C:277e  BD EB FD    LDA facing_direction_for_actor,X
 .C:2781  C9 01       CMP #$01
 .C:2783  D0 02       BNE check_00
 ;Actor moving left
@@ -10621,7 +10621,7 @@ clear_bit6_layer2:
 ;--------------------------------------------
 compare_directions_with_attribute:
 .C:2b81  BD EF FD    LDA path_delta_directions_for_actor,X
-.C:2b84  DD EB FD    CMP path_direction_for_actor,X
+.C:2b84  DD EB FD    CMP facing_direction_for_actor,X
 ;If directions and attributes are equal, clear the "turning" state bit
 .C:2b87  F0 38       BEQ clear_turning_state_bit
 ;--------------------------------------------
@@ -10630,7 +10630,7 @@ compare_directions_with_attribute:
 .C:2b8c  30 22       BMI set_directions_as_attribute
 ;--------------------------------------------
 ;Actor not turning
-.C:2b8e  BD EB FD    LDA path_direction_for_actor,X
+.C:2b8e  BD EB FD    LDA facing_direction_for_actor,X
 .C:2b91  29 80       AND #$80
 .C:2b93  8D 3B FC    STA attribute_bit7
 .C:2b96  BD EF FD    LDA path_delta_directions_for_actor,X
@@ -10641,7 +10641,7 @@ compare_directions_with_attribute:
 .C:2ba3  4C B3 2B    JMP set_attribute
 ;--------------------------------------------
 flip_bit7_clear_bit0:
-.C:2ba6  BD EB FD    LDA path_direction_for_actor,X
+.C:2ba6  BD EB FD    LDA facing_direction_for_actor,X
 .C:2ba9  49 80       EOR #$80
 .C:2bab  29 FE       AND #$FE
 .C:2bad  4C B3 2B    JMP set_attribute
@@ -10650,7 +10650,7 @@ set_directions_as_attribute:
 .C:2bb0  BD EF FD    LDA path_delta_directions_for_actor,X
 ;--------------------------------------------
 set_attribute:
-.C:2bb3  9D EB FD    STA path_direction_for_actor,X
+.C:2bb3  9D EB FD    STA facing_direction_for_actor,X
 ;--------------------------------------------
 set_turning_state_bit:
 ;Set bit 7, which represents if an actor is turning
@@ -10675,7 +10675,7 @@ target_clip_id = $fde9
 apply_standing_clip:
 ;Map the path direction bitmask to an animation set for the walking direction 
 ;(00,01,80,81 -> 05,04,06,07)
-.C:2bca  BD EB FD    LDA path_direction_for_actor,X
+.C:2bca  BD EB FD    LDA facing_direction_for_actor,X
 check_00:
 .C:2bcd  D0 05       BNE check_01
 ;------------------------------------------
@@ -10718,7 +10718,7 @@ set_animation_mode:
 apply_walking_clip:
 ;Map the path direction bitmask to an animation set for the walking direction 
 ;(00,01,80,81 -> 01,00,02,03)
-.C:2bf6  BD EB FD    LDA path_direction_for_actor,X
+.C:2bf6  BD EB FD    LDA facing_direction_for_actor,X
 .C:2bf9  D0 05       BNE check_01
 ;--------------------------------------------
 map_00:
@@ -12398,7 +12398,7 @@ check_character:
 ;Move the actor along the path
 .C:337b  20 F8 29    JSR update_actor_motion
 ;Animate the actor's limbs
-.C:337e  20 04 25    JSR animate_actor_limbs
+.C:337e  20 04 25    JSR step_actor_limb_animation
 next_character:
 ;Move to the next character
 .C:3381  EE 5E 33    INC character_index
@@ -13480,7 +13480,7 @@ detach_actor_from_costume:	;Should be renamed to "assign_actor", unassign, relea
 .C:38fe  9D 57 FE    STA actor_for_costume,X
 .C:3901  99 53 FE    STA costume_for_actor,Y
 ;Convert actor's direction to an animation set and save it
-.C:3904  B9 EB FD    LDA path_direction_for_actor,Y
+.C:3904  B9 EB FD    LDA facing_direction_for_actor,Y
 .C:3907  20 DF 3B    JSR map_dir_mask_to_standing_clip
 .C:390a  9D 47 FF    STA costume_clip_set,X
 ;Assign sprites to all actors
@@ -24108,7 +24108,7 @@ destination_variable = $d0
 .C:6945  30 0A       BMI actor_moving
 ;Actor not moving, compute facing side
 .C:6947  AA          TAX
-.C:6948  BD EB FD    LDA path_direction_for_actor,X
+.C:6948  BD EB FD    LDA facing_direction_for_actor,X
 .C:694b  20 DF 3B    JSR map_dir_mask_to_standing_clip
 .C:694e  4C 54 69    JMP set_value_in_var
 actor_moving:
@@ -25411,7 +25411,7 @@ loop:
 .C:85c4  A2 03       LDX #$03
 reset_actor:
 .C:85c6  A9 80       LDA #$80
-.C:85c8  9D EB FD    STA path_direction_for_actor,X
+.C:85c8  9D EB FD    STA facing_direction_for_actor,X
 ;Set all actors as "not in use"
 .C:85cb  A9 FF       LDA #$FF
 .C:85cd  9D 53 FE    STA costume_for_actor,X

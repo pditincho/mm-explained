@@ -961,7 +961,7 @@ Global Outputs
 	 cam_current_pos            set to CAMERA_INIT_POS
 	 costume_clip_set[0..COSTUME_MAX_INDEX] = CLIP_STAND_DOWN
 	 actor_for_costume[0..COSTUME_MAX_INDEX] = NO_ACTOR
-	 path_direction_for_actor[0..ACTOR_MAX_INDEX] = DIRECTION_DOWN
+	 facing_direction_for_actor[0..ACTOR_MAX_INDEX] = DIRECTION_DOWN
 	 costume_for_actor[0..ACTOR_MAX_INDEX] = NO_COSTUME
 	 random_1, random_2         set to RNG_SEED_1 / RNG_SEED_2
 
@@ -1050,7 +1050,7 @@ loop_init_costumes:
         ldx     #ACTOR_MAX_INDEX                            
 reset_actors:
         lda     #DIRECTION_DOWN
-        sta     path_direction_for_actor,x      // default direction: down
+        sta     facing_direction_for_actor,x      // default direction: down
         lda     #NO_COSTUME
         sta     costume_for_actor,x             // mark actor unused
         dex

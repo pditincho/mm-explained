@@ -374,19 +374,23 @@ Values observed
 // ===========================================================
 // Actor limbs
 // ===========================================================
-.label current_limb = $fc41
-.label actor_limbs_ofs = $fc36
-.label limb_frame_idx = $fc42					// Which animation cel to use as _current_ for the actor limb
-.label limb_current_cel = $fc62						// Current cel sequence _offset_ for each limb - read the detail in the data structures file
-.label limb_target_cel_seq = $fca2			// Which animation cel to use as _base_ for the actor limb
-.label limb_current_cel_seq = $fc82
-.label limb_flip_tbl = $fc05					// #00 = no horizontal flip for the limb, #80 = horizontal flip for the limb
+.label current_limb = $FC41
+
+.label actor_limb_slot_base = $FC36		//Base slot index into per-limb tables (listed below), for the current actor
+//Per-limb tables
+//Each table has 8 limb slots for each of the 4 actors, for a total of 32 limb slots
+.label limb_frame_idx = $FC42			// Which animation cel to use as _current_ for the actor limb
+.label limb_current_cel = $FC62			// Current cel sequence _offset_ for each limb - read the detail in the data structures file
+.label limb_current_cel_seq = $FC82		// Current cel sequence
+.label limb_target_cel_seq = $FCA2		// Target cel sequence
 // Loop count:
 // #00 = stop animation when frames are exhausted
 // #FF = loop animation from the first frame when frames are exhausted
 // any other value - loop once, decrement counter
-.label limb_cur_loop_cnt = $fcc2		
-.label limb_tgt_loop_cnt = $fce2
+.label limb_cur_loop_cnt = $FCC2		// Current loop count
+.label limb_tgt_loop_cnt = $FCE2		// Target loop count
+
+.label limb_flip_tbl = $FC05			// Horizontal flipping: #00 = unflipped, #80 = flipped
 
 // ===========================================================
 // Costume and actor rendering states and flags
@@ -507,7 +511,7 @@ Possible mouth state values
 .label dda_dominant_axis = $cb66	//Which axis of movement is dominant, #00 = horizontal, #01 = vertical
 
 //Possible rename: actor_facing_mask
-.label path_direction_for_actor = $fdeb		//#00 = right, #01 = left, #80 = down, #81 = up
+.label facing_direction_for_actor = $fdeb		//#00 = right, #01 = left, #80 = down, #81 = up
 .label path_delta_directions_for_actor = $fdef	//#00 = right, #01 = left, #80 = down, #81 = up
 .label actor_dda_dom_abs = $fdf3	//The dominant delta value (the largest between the deltas for the 2 axis)
 .label actor_dx_accum = $fdf7		//Value of delta x step (how much to move along this axis on each step to match the rate of motion on the other axis)

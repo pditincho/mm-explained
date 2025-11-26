@@ -20,13 +20,13 @@ Core concept:
 
 Global data used:
 	- active_costume / costume_room_idx[...]  current and target costume state
-	- dest_x, dest_y, room_destination         destination parameters
+	- target_x, target_y, target_room         destination parameters
 	- actor_for_costume[...]                   actor mapping per costume
 	- inlined_positive_walking_offset,
 	  inlined_negative_walking_offset          local movement offsets
 	- resolve_object_resource					support routines for resource lookup,
-	  set_actor_destination						pathfinding, and relocation management.
-	  teleport_costume_to_destination
+	  set_costume_target						pathfinding, and relocation management.
+	  place_costume_at_target
 	  refresh_script_addresses_if_moved        
 	  
 
@@ -78,7 +78,7 @@ Global Inputs:
 Global Outputs:
 	active_costume              Set from the script operand.
 	x_destination, y_destination (via helper)  Computed near the target object.
-	(actor movement state)      Updated by set_actor_destination to begin walking.
+	(actor movement state)      Updated by set_costume_target to begin walking.
 
 Description:
 	* Selects object space:
@@ -87,7 +87,7 @@ Description:
 	* Reads costume index and object index from the script.
 	* Calls resolve_object_resource using (X=object_lo, A=space selector).
 	* If the object exists, computes a nearby destination and calls
-	set_actor_destination to path the costume there; otherwise returns.
+	set_costume_target to path the costume there; otherwise returns.
 ================================================================================
 */
 * = $6653
@@ -122,10 +122,10 @@ walk_costume_to_object_common:
 		beq     owctio_exit                            // no → nothing to do
 
 		// Compute x/y near object
-		jsr     set_actor_destination_to_object      
+		jsr     set_approach_point_for_object      
 		
 		// Pathfind and walk to (x,y)
-		jsr     set_actor_destination       
+		jsr     set_costume_target       
 
 owctio_exit:
 		rts
@@ -149,17 +149,17 @@ Global Inputs:
 	costume_room_idx[...]      Read to derive the destination room for the costume.
 
 Global Outputs:
-	dest_x              	   Set to object-derived or fallback X.
-	dest_y              	   Set to object-derived or fallback Y.
-	room_destination           Set to the costume’s current room.
-	(actor position state)     Updated by teleport_costume_to_destination.
+	target_x              	   Set to object-derived or fallback X.
+	target_y              	   Set to object-derived or fallback Y.
+	target_room           Set to the costume’s current room.
+	(actor position state)     Updated by place_costume_at_target.
 	(script addresses)         May be refreshed by handle_script_relocation.
 
 Description:
 	* Pushes the “movable/immovable” selector and reads costume and object indices.
 	* Resolves the object in inventory space. If found, computes destination from it;
 	  otherwise uses a fixed fallback coordinate pair.
-	* Teleports the costume to (dest_x, dest_y) in room_destination.
+	* Teleports the costume to (target_x, target_y) in target_room.
 	* Refreshes script pointers if any resource loads caused relocation.
 ================================================================================
 */
@@ -195,24 +195,24 @@ put_costume_at_object_common:
 		beq     default_destination             // no → use fallback destination
 
 		// Compute x/y based on object
-		jsr     set_actor_destination_to_object      
+		jsr     set_approach_point_for_object      
 		jmp     move_costume
 
 default_destination:
 		// Object not found - use fallback coordinates
 		lda     #COSTUME_FALLBACK_X_DEST
-		sta     dest_x
+		sta     target_x
 		lda     #COSTUME_FALLBACK_Y_DEST
-		sta     dest_y
+		sta     target_y
 
 move_costume:
 		// Fetch current room of costume
 		ldx     active_costume                  
 		lda     costume_room_idx,x              
-		sta     room_destination                
+		sta     target_room                
 	
-		// Move costume to (x,y,room_destination)
-		jsr     teleport_costume_to_destination 
+		// Move costume to (x,y,target_room)
+		jsr     place_costume_at_target 
 		
 		// Fix relocated script pointers
 		jsr     refresh_script_addresses_if_moved        
@@ -239,15 +239,15 @@ Global Outputs:
 	active_costume            Set to the active costume index.
 	inlined_positive_walking_offset  Saved +offset from script.
 	inlined_negative_walking_offset  Saved two’s-complement −offset.
-	(destination state)       Programmed by set_actor_destination_adjacent_to_actor.
-	(actor movement state)    Updated by set_actor_destination.
+	(destination state)       Programmed by set_approach_point_for_actor.
+	(actor movement state)    Updated by set_costume_target.
 
 Description:
 	* Read active costume. If its actor is unassigned, skip a 2-byte offset and exit.
 	* Read other costume. If its actor is unassigned, consume one data byte and exit.
 	* Read the unsigned offset, store it, then compute and store its negative form.
-	* Call set_actor_destination_adjacent_to_actor to compute the target near the other actor.
-	* Invoke set_actor_destination to pathfind and start movement.
+	* Call set_approach_point_for_actor to compute the target near the other actor.
+	* Invoke set_costume_target to pathfind and start movement.
 	* Notes on script consumption:
 		• Active actor missing → script_skip_offset (2 bytes).
 		• Other actor missing  → script_read_byte (1 byte).
@@ -297,8 +297,8 @@ both_actors_assigned:
 		sta     actor_approach_x_offset_neg_byte // save −offset
 
 		// Program the destination and walk
-		jsr     set_actor_destination_adjacent_to_actor
-		jsr     set_actor_destination
+		jsr     set_approach_point_for_actor
+		jsr     set_costume_target
 		rts
 /*
 ================================================================================
@@ -313,9 +313,9 @@ Global Inputs:
 
 Global Outputs:
 	active_costume             Set to target costume index.
-	dest_x              	   Set from operand.
-	dest_y              	   Set from operand.
-	(actor movement state)     Updated by set_actor_destination.
+	target_x              	   Set from operand.
+	target_y              	   Set from operand.
+	(actor movement state)     Updated by set_costume_target.
 
 Description:
 	* Read costume index, X, and Y from the script.
@@ -331,14 +331,14 @@ op_walk_costume_to_location:
 
 		// Resolve X
 		jsr     script_load_operand_bit6       
-		sta     dest_x
+		sta     target_x
 
 		// Resolve Y
 		jsr     script_load_operand_bit5       
-		sta     dest_y
+		sta     target_y
 
 		// Pathfind and walk to (x,y)
-		jsr     set_actor_destination      
+		jsr     set_costume_target      
 		rts
 /*
 ================================================================================
@@ -354,16 +354,16 @@ Global Inputs:
 	(script stream)            Supplies costume index, X, and Y via operand readers.
 
 Global Outputs:
-	dest_x              	   Set from operand.
-	dest_y              	   Set from operand.
-	room_destination           Set to the costume’s current room.
-	(active position state)    Updated by teleport_costume_to_destination.
+	target_x              	   Set from operand.
+	target_y              	   Set from operand.
+	target_room           Set to the costume’s current room.
+	(active position state)    Updated by place_costume_at_target.
 	(script pointers)          May be refreshed by handle_script_relocation.
 
 Description:
 	* Read costume index, X, and Y from the script stream.
-	* Look up the costume’s current room and use it as room_destination.
-	* Teleport the costume to (dest_x, dest_y) in that room.
+	* Look up the costume’s current room and use it as target_room.
+	* Teleport the costume to (target_x, target_y) in that room.
 	* Refresh script addresses if any resources moved during the operation.
 ================================================================================
 */
@@ -375,19 +375,19 @@ op_put_costume_at:
 
 		// Resolve X
 		jsr     script_load_operand_bit6       
-		sta     dest_x
+		sta     target_x
 
 		// Resolve Y
 		jsr     script_load_operand_bit5       
-		sta     dest_y
+		sta     target_y
 
 		// Fetch current costume's room
 		ldx     active_costume                 
 		lda     costume_room_idx,x             
-		sta     room_destination               
+		sta     target_room               
 
-		// Move costume to (x,y,room_destination)
-		jsr     teleport_costume_to_destination 
+		// Move costume to (x,y,target_room)
+		jsr     place_costume_at_target 
 		
 		// Fix pointers if resources moved
 		jsr     refresh_script_addresses_if_moved       		

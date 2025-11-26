@@ -861,9 +861,9 @@ obj_left_col_tbl = $715d
 obj_top_row_tbl = $7179
 obj_width_tbl = $7195
 obj_height_tbl = $71b1
-object_x_destination = $71cd
-object_y_destination = $71e9
-object_destination_active = $7205
+obj_approach_x = $71cd
+obj_approach_y = $71e9
+obj_has_explicit_approach = $7205
 room_obj_idx_hi = $7221
 room_obj_idx_lo = $723d
 parent_object = $7259
@@ -994,8 +994,8 @@ dir_x_bit = $cb58	;#00 = left, #01 = right
 dir_y_bit = $cb59	;#00 = up, #01 = down	
 dda_dominant_axis = $cb66	;Which axis of movement is dominant, #00 = horizontal, #01 = vertical
 
-saved_actor_x_pos = $cb5a
-saved_actor_y_pos = $cb5b
+saved_actor_pos_x = $cb5a
+saved_actor_pos_y = $cb5b
 saved_actor_box_attr = $cb5d
 saved_actor_box_cur = $cb5e
 saved_actor_path_update_flag = $cb5f
@@ -1273,14 +1273,14 @@ sprite_bank_sel = $fd14		;Sprite buffer index (#00 or #01)
 actor_box_attr = $fd18
 actor_tgt_sprite_x_lo = $fd1c
 actor_tgt_sprite_x_hi = $fd39
-actor_active_wpt_x = $fd25
-actor_active_wpt_y = $fd2d
+actor_cur_waypoint_x = $fd25
+actor_cur_waypoint_y = $fd2d
 actor_tgt_waypoint_x = $fd29
 actor_tgt_waypoint_y = $fd31
-actor_y_pos = $fd3d
-actor_x_pos = $fd41
-position_to_waypoint_x_for_actor = $fd45
-position_to_waypoint_y_for_actor = $fd49
+actor_pos_y = $fd3d
+actor_pos_x = $fd41
+actor_path_probe_x = $fd45
+actor_path_probe_y = $fd49
 actor_sprite_x_hi = $fd58
 actor_sprite_x_lo = $fd60
 ;===========================================================
@@ -1308,7 +1308,7 @@ actor_sprite_x_lo = $fd60
 ;If low nibble is #00, update one or both axes
 ;
 ;When updating motion state:
-;	If bit 7 is set, will copy path_delta_directions_for_actor as facing_direction_for_actor
+;	If bit 7 is set, will copy actor_tgt_facing_direction as actor_cur_facing_direction
 ;When resetting animation state, the full value will be set to #02
 ;When advancing the characters animations, if motion state bits 6-0 are not equal to #02, 
 ;	it will skip updating the actor's sprites and positions
@@ -1351,21 +1351,21 @@ actor_render_flags = $FD97
 ;===========================================================
 actor_box_handler_idx = $fda0
 actor_box_facing_override = $fda4
-actor_box_fg_masking = $fda8
+actor_box_fg_occlusion = $fda8
 closest_box_index = $fdac
-actor_destination_box = $fdd5
+actor_target_box = $fdd5
 actor_box_cur = $fdcd
 actor_box_prev = $fdd1
-actor_x_dest = $fdd9
-actor_y_dest = $fddd
+actor_target_x = $fdd9
+actor_target_y = $fddd
 actor_path_update_flag = $fde1
-dest_x = $fde6
-dest_y = $fde7
+target_x = $fde6
+target_y = $fde7
 clip_loop_cnt = $fde8 
 target_clip_id = $fde9
-room_destination = $fdea
-facing_direction_for_actor = $fdeb		;#00 = right, #01 = left, #80 = down, #81 = up
-path_delta_directions_for_actor = $fdef	;#00 = right, #01 = left, #80 = down, #81 = up
+target_room = $fdea
+actor_cur_facing_direction = $fdeb		;#00 = right, #01 = left, #80 = down, #81 = up
+actor_tgt_facing_direction = $fdef	;#00 = right, #01 = left, #80 = down, #81 = up
 actor_dda_dom_abs = $fdf3	;The dominant delta value (the largest between the deltas for the 2 axis)
 actor_dx_accum = $fdf7		;Value of delta x step (how much to move along this axis on each step to match the rate of motion on the other axis)
 actor_dy_accum = $fdfb		;Value of delta y step
@@ -1479,8 +1479,8 @@ engine_vars = $feac
 actor_vars = $fee3
 ;The current room for each costume
 costume_room_idx = $fefc		;The CURRENT room for a costume (not to be confused with costume_room_idx_tbl, which stores the parent room resource for a costume)
-costume_dest_y = $ff15
-costume_dest_x = $ff2e
+costume_target_y = $ff15
+costume_target_x = $ff2e
 costume_clip_set = $ff47		;The animation set for a costume, limited to the standing range of sets (#04-#07)
 										;This is used by scripts to determine the direction a costume is facing 
 										;See the details for "animation sets"
@@ -1503,8 +1503,8 @@ var_camera_position = $ff69			;This would be var[2]
 var_msg_flag = $ff6a				;This would be var[3]
 var_current_room = $ff6b			;This would be var[4]
 var_active_io_id_lo = $ff6c	;This would be var[5]
-var_destination_x = $ff6d			;This would be var[6]
-var_destination_y = $ff6e			;This would be var[7]
+var_target_x = $ff6d			;This would be var[6]
+var_target_y = $ff6e			;This would be var[7]
 var_music_playback_in_progress = $ff6f	;This would be var[8]
 var_active_verb_id = $ff70				;This would be var[9]
 var_message_length = $ff71			;This would be var[10]
@@ -2090,7 +2090,7 @@ next_actor:
 .C:0581  10 EE       BPL flip_mouth_state
 ;--------------------------------------------------
 ;Update all characters positions and limbs
-.C:0583  20 61 33    JSR step_actor_motion_and_limbs
+.C:0583  20 61 33    JSR step_actor_motion_and_animation
 ;Move camera as needed to pan or track actors
 .C:0586  20 71 06    JSR move_camera
 ;Set scroll flag to "no scroll"
@@ -2127,7 +2127,7 @@ next_actor:
 ;--------------------------------------------------
 advance_animation:
 ;Advance all actor's animation counters, moves sprites as needed
-.C:05b5  20 44 30    JSR refresh_visibility_and_tick_sprites
+.C:05b5  20 44 30    JSR step_actor_visibility_and_sprites
 ;Toggle the frame buffer used for the room scene, for the next frame
 .C:05b8  20 4E 07    JSR alternate_frame_buffer
 ;--------------------------------------------------
@@ -2239,7 +2239,7 @@ check_if_costume_gets_drawn:
 .C:0643  C9 FF       CMP #$FF
 .C:0645  F0 06       BEQ next_costume
 ;Convert the actor's position to a sprite position
-.C:0647  20 15 30    JSR actor_room_to_sprite_coords
+.C:0647  20 15 30    JSR map_room_to_sprite_coords
 ;Draw the actor
 .C:064a  20 52 22    JSR draw_actor
 next_costume:
@@ -2308,7 +2308,7 @@ camera_mode_follow:
 .C:0697  AE 6B 06    LDX camera_costume_to_follow
 .C:069a  BD 57 FE    LDA actor_for_costume,X
 .C:069d  AA          TAX
-.C:069e  BD 41 FD    LDA actor_x_pos,X
+.C:069e  BD 41 FD    LDA actor_pos_x,X
 ;Check if the position of the actor has exceeded the "camera follow thresholds"
 ;That is, if the actor went too far to one side, the camera needs to follow it
 ;
@@ -2337,7 +2337,7 @@ is_pan_needed:
 .C:06c1  F0 1D       BEQ camera_boundary_check
 ;We need to pan
 ;Compare the actor position and the camera position
-.C:06c3  BD 41 FD    LDA actor_x_pos,X
+.C:06c3  BD 41 FD    LDA actor_pos_x,X
 .C:06c6  CD 66 06    CMP cam_target_pos
 .C:06c9  D0 08       BNE actor_pos_ne_camera_pos
 ;Actor and camera positions are equal
@@ -2707,7 +2707,7 @@ finalize_processing:
 ;Verb is "Walk to"
 ;Clear destination entity
 .C:086b  A9 00       LDA #$00
-.C:086d  8D 51 FE    STA destination_entity
+.C:086d  8D 51 FE    STA target_entity
 ;Rebuild the action sentence
 .C:0870  A9 01       LDA #$01
 .C:0872  85 95       STA needs_sentence_rebuild
@@ -3382,8 +3382,8 @@ refresh_sentence_bar_trampoline:
 ;
 ; For everything else, add all of the sentence parts to the sentence parts queue.
 ;===========================================
-destination_obj_lo = $fe4f
-destination_obj_hi = $fe50
+target_obj_lo = $fe4f
+target_obj_hi = $fe50
 
 dispatch_or_enqueue_action:
 .C:0af3  A9 06       LDA #$06
@@ -3418,17 +3418,17 @@ is_verb_walk_to:
 .C:0b1b  86 D8       STX actor
 ;Get destination coordinates from cursor's coordinates
 .C:0b1d  AD 80 FE    LDA cursor_x_pos_quarter_absolute
-.C:0b20  8D E6 FD    STA dest_x
+.C:0b20  8D E6 FD    STA target_x
 .C:0b23  AD 7F FE    LDA cursor_y_pos_half_off_by_8
-.C:0b26  8D E7 FD    STA dest_y
+.C:0b26  8D E7 FD    STA target_y
 ;Adjust destination based on boundary boxes
 .C:0b29  20 9B 1A    JSR snap_coords_to_walkbox
 ;Copy destination coordinates to debug variables
 .C:0b2c  A6 D8       LDX actor
-.C:0b2e  AD E6 FD    LDA dest_x
-.C:0b31  8D 6D FF    STA var_destination_x
-.C:0b34  AD E7 FD    LDA dest_y
-.C:0b37  8D 6E FF    STA var_destination_y
+.C:0b2e  AD E6 FD    LDA target_x
+.C:0b31  8D 6D FF    STA var_target_x
+.C:0b34  AD E7 FD    LDA target_y
+.C:0b37  8D 6E FF    STA var_target_y
 ;Check if kid is frozen (when captured by an enemy)
 ;If so, we can't move, exit
 .C:0b3a  AE 67 FF    LDX current_kid_idx
@@ -3437,12 +3437,12 @@ is_verb_walk_to:
 .C:0b42  D0 11       BNE exit
 ;Copy the destination coordinates to the actor's destination coords
 .C:0b44  A6 D8       LDX actor
-.C:0b46  AD E6 FD    LDA dest_x
-.C:0b49  9D D9 FD    STA actor_x_dest,X
-.C:0b4c  AD E7 FD    LDA dest_y
-.C:0b4f  9D DD FD    STA actor_y_dest,X
+.C:0b46  AD E6 FD    LDA target_x
+.C:0b49  9D D9 FD    STA actor_target_x,X
+.C:0b4c  AD E7 FD    LDA target_y
+.C:0b4f  9D DD FD    STA actor_target_y,X
 ;Build a path to the destination
-.C:0b52  20 4A 1C    JSR snap_and_stage_path_update
+.C:0b52  20 4A 1C    JSR stage_actor_path_to_target
 exit:
 .C:0b55  60          RTS
 ;----------------------------------------------
@@ -3477,7 +3477,7 @@ queue_sentence:
 exit:
 ;Clear destination entity
 .C:0b96  A9 00       LDA #$00
-.C:0b98  8D 51 FE    STA destination_entity
+.C:0b98  8D 51 FE    STA target_entity
 .C:0b9b  60          RTS
 ;===========================================
 ; Handles the sentence queue
@@ -3502,12 +3502,12 @@ exit:
 ;	-if it is in the inventory, then all parts are present, it will continue with the verb handler
 ;	
 ;===========================================
-destination_entity = $fe51
+target_entity = $fe51
 
 process_sentence_queue_entry:
 ;Is there a destination entity?
 ;If it's #00, Z will be set, BEQ will be taken
-.C:0b9c  AD 51 FE    LDA destination_entity
+.C:0b9c  AD 51 FE    LDA target_entity
 .C:0b9f  F0 01       BEQ check_sentstk_top_idx
 ;Destination entity set, exit
 .C:0ba1  60          RTS
@@ -3643,18 +3643,18 @@ walk_to_indirect_object:
 ;Set the active indirect object as the destination object
 .C:0c58  AE 1D FE    LDX active_io_id_lo
 .C:0c5b  AD 1E FE    LDA active_io_id_hi
-.C:0c5e  8E 4F FE    STX destination_obj_lo
-.C:0c61  8D 50 FE    STA destination_obj_hi
+.C:0c5e  8E 4F FE    STX target_obj_lo
+.C:0c61  8D 50 FE    STA target_obj_hi
 ;Set the destination for approaching the indirect object
-.C:0c64  20 32 0F    JSR route_destination_by_entity_type
+.C:0c64  20 32 0F    JSR set_approach_point
 ;Copy the sentence index (still in .Y) to the destination entity 
-.C:0c67  8C 51 FE    STY destination_entity
+.C:0c67  8C 51 FE    STY target_entity
 ;--------------------------------------------------
 ;Set debugging vars
-.C:0c6a  AD E6 FD    LDA dest_x
-.C:0c6d  8D 6D FF    STA var_destination_x
-.C:0c70  AD E7 FD    LDA dest_y
-.C:0c73  8D 6E FF    STA var_destination_y
+.C:0c6a  AD E6 FD    LDA target_x
+.C:0c6d  8D 6D FF    STA var_target_x
+.C:0c70  AD E7 FD    LDA target_y
+.C:0c73  8D 6E FF    STA var_target_y
 .C:0c76  AD 67 FF    LDA current_kid_idx
 .C:0c79  8D 30 FC    STA active_costume
 .C:0c7c  AA          TAX
@@ -3665,7 +3665,7 @@ walk_to_indirect_object:
 .C:0c80  29 40       AND ACTOR_IS_FROZEN
 .C:0c82  D0 03       BNE exit_2
 ;Otherwise, walk actor to destination
-.C:0c84  20 1F 1C    JSR set_actor_destination
+.C:0c84  20 1F 1C    JSR set_costume_target
 exit_2:
 .C:0c87  4C CF 0C    JMP exit
 ;--------------------------------------------------
@@ -3686,7 +3686,7 @@ check_walk_to_direct_object:
 .C:0c97  20 C5 0D    JSR execute_verb_handler_for_object
 ;In keypad mode we don't queue sentences, so clear the destination entity
 .C:0c9a  A9 00       LDA #$00
-.C:0c9c  8D 51 FE    STA destination_entity
+.C:0c9c  8D 51 FE    STA target_entity
 .C:0c9f  60          RTS
 ;--------------------------------------------------
 ; All other control modes
@@ -3695,18 +3695,18 @@ walk_to_direct_object:
 ;Set the active direct object as the destination object
 .C:0ca0  AE 1A FE    LDX active_do_id_lo
 .C:0ca3  AD 1B FE    LDA active_do_id_hi
-.C:0ca6  8E 4F FE    STX destination_obj_lo
-.C:0ca9  8D 50 FE    STA destination_obj_hi
+.C:0ca6  8E 4F FE    STX target_obj_lo
+.C:0ca9  8D 50 FE    STA target_obj_hi
 ;Set the destination for approaching the direct object
-.C:0cac  20 32 0F    JSR route_destination_by_entity_type
+.C:0cac  20 32 0F    JSR set_approach_point
 ;Copy the sentence index (still in .Y) to the destination entity 
-.C:0caf  8C 51 FE    STY destination_entity
+.C:0caf  8C 51 FE    STY target_entity
 ;--------------------------------------------------
 ;Set debugging variables
-.C:0cb2  AD E6 FD    LDA dest_x
-.C:0cb5  8D 6D FF    STA var_destination_x
-.C:0cb8  AD E7 FD    LDA dest_y
-.C:0cbb  8D 6E FF    STA var_destination_y
+.C:0cb2  AD E6 FD    LDA target_x
+.C:0cb5  8D 6D FF    STA var_target_x
+.C:0cb8  AD E7 FD    LDA target_y
+.C:0cbb  8D 6E FF    STA var_target_y
 ;--------------------------------------------------
 ;Check if current kid is frozen
 ;If so, exit
@@ -3717,19 +3717,19 @@ walk_to_direct_object:
 .C:0cc8  29 40       AND ACTOR_IS_FROZEN
 .C:0cca  D0 03       BNE exit
 ;Otherwise, walk actor to destination
-.C:0ccc  20 1F 1C    JSR set_actor_destination
+.C:0ccc  20 1F 1C    JSR set_costume_target
 exit:
 .C:0ccf  60          RTS
 ;===========================================
 ; Walks towards a destination entity and triggers a queued action upon contact
 ;===========================================
-destination_obj_lo = $fe4f
-destination_obj_hi = $fe50
-destination_entity = $fe51
+target_obj_lo = $fe4f
+target_obj_hi = $fe50
+target_entity = $fe51
 
 handle_entity_approach_and_trigger:
 ;Is there a destination entity? If not, exit
-.C:0cd0  AD 51 FE    LDA destination_entity
+.C:0cd0  AD 51 FE    LDA target_entity
 .C:0cd3  D0 03       BNE entry
 .C:0cd5  4C 48 0D    JMP exit
 ;-------------------------------------------------------
@@ -3743,31 +3743,31 @@ entry:
 .C:0ce2  C9 02       CMP #$02
 .C:0ce4  D0 62       BNE exit
 ;Have we made contact with the entity? (#FE)
-.C:0ce6  AD 51 FE    LDA destination_entity
+.C:0ce6  AD 51 FE    LDA target_entity
 .C:0ce9  C9 FE       CMP #$FE
 .C:0ceb  D0 08       BNE $0CF5
 ;We made contact
 ;Clear the entity
 .C:0ced  A9 00       LDA #$00
-.C:0cef  8D 51 FE    STA destination_entity
+.C:0cef  8D 51 FE    STA target_entity
 ;Execute the queued action for this object
 .C:0cf2  4C C5 0D    JMP execute_verb_handler_for_object
 ;-------------------------------------------------------
 approach_entity:
 ;We haven't made contact yet, keep moving towards entity
-.C:0cf5  AE 4F FE    LDX destination_obj_lo
-.C:0cf8  AD 50 FE    LDA destination_obj_hi
-.C:0cfb  AC 51 FE    LDY destination_entity
-.C:0cfe  20 32 0F    JSR route_destination_by_entity_type
+.C:0cf5  AE 4F FE    LDX target_obj_lo
+.C:0cf8  AD 50 FE    LDA target_obj_hi
+.C:0cfb  AC 51 FE    LDY target_entity
+.C:0cfe  20 32 0F    JSR set_approach_point
 ;Get the actor for the current kid
 .C:0d01  AE 67 FF    LDX current_kid_idx
 .C:0d04  BD 57 FE    LDA actor_for_costume,X
 .C:0d07  AA          TAX
 check_delta_x:
 ;Compute the difference between the actor's position and destination in the X axis
-.C:0d08  AD E6 FD    LDA dest_x
+.C:0d08  AD E6 FD    LDA target_x
 .C:0d0b  38          SEC
-.C:0d0c  FD 41 FD    SBC actor_x_pos,X
+.C:0d0c  FD 41 FD    SBC actor_pos_x,X
 .C:0d0f  B0 05       BCS check_x_threshold
 ;If negative, make positive
 .C:0d11  49 FF       EOR #$FF
@@ -3782,9 +3782,9 @@ check_x_threshold:
 ;If we're closer than the threshold, check the other axis
 check_delta_y:
 ;Compute the difference between the actor's position and destination in the Y axis
-.C:0d1c  AD E7 FD    LDA dest_y
+.C:0d1c  AD E7 FD    LDA target_y
 .C:0d1f  38          SEC
-.C:0d20  FD 3D FD    SBC actor_y_pos,X
+.C:0d20  FD 3D FD    SBC actor_pos_y,X
 .C:0d23  B0 05       BCS check_y_threshold
 ;If negative, make positive
 .C:0d25  49 FF       EOR #$FF
@@ -3799,18 +3799,18 @@ check_y_threshold:
 ;If we're closer than the threshold, setup the animation set facing the entity
 walk_to_destination:
 ;Setup the animation set facing the entity
-.C:0d30  20 49 0D    JSR apply_facing_toward_destination
+.C:0d30  20 49 0D    JSR face_toward_target
 ;We have made contact with the entity, mark that situation to trigger any queued action (#FE)
 .C:0d33  A9 FE       LDA #$FE
-.C:0d35  8D 51 FE    STA destination_entity
+.C:0d35  8D 51 FE    STA target_entity
 .C:0d38  4C 48 0D    JMP exit
 clear_flag_2:
 .C:0d3b  A9 00       LDA #$00
-.C:0d3d  8D 51 FE    STA destination_entity
+.C:0d3d  8D 51 FE    STA target_entity
 .C:0d40  4C 48 0D    JMP exit
 clear_flag:
 .C:0d43  A9 00       LDA #$00
-.C:0d45  8D 51 FE    STA destination_entity
+.C:0d45  8D 51 FE    STA target_entity
 exit:
 .C:0d48  60          RTS
 ;===========================================
@@ -3819,13 +3819,13 @@ exit:
 ; If the destination is another actor, make the standing actor
 ; face towards the walking actor.
 ;===========================================
-destination_obj_hi = $fe50
-destination_obj_lo = $fe4f
+target_obj_hi = $fe50
+target_obj_lo = $fe4f
 walking_actor_animation_set = $0fc8
 
-apply_facing_toward_destination:
+face_toward_target:
 ;Get the animation set for the destination object (facing the correct side)
-.C:0d49  20 82 0D    JSR select_facing_clip_for_destination
+.C:0d49  20 82 0D    JSR select_facing_clip_for_target
 .C:0d4c  8D C8 0F    STA walking_actor_animation_set
 .C:0d4f  8D E9 FD    STA target_clip_id
 ;Set animation argument to #00 (don't loop)
@@ -3837,12 +3837,12 @@ apply_facing_toward_destination:
 ;Setup the animation set
 .C:0d5d  20 20 27    JSR apply_animation_set
 ;Is the destination object an actor? If not, exit
-.C:0d60  AD 50 FE    LDA destination_obj_hi
+.C:0d60  AD 50 FE    LDA target_obj_hi
 .C:0d63  C9 02       CMP #$02
 .C:0d65  D0 1A       BNE exit
 ;Destination is an actor
 ;Set the destination actor to the costume in action
-.C:0d67  AD 4F FE    LDA destination_obj_lo
+.C:0d67  AD 4F FE    LDA target_obj_lo
 .C:0d6a  8D 30 FC    STA active_costume
 ;Is it the plant? If so, exit
 .C:0d6d  C9 13       CMP #$13
@@ -3875,29 +3875,29 @@ exit:
 ; If the destination is an object, the destination will be forced to "looking down/south",
 ; unless the object has an explicit animation set.
 ;===========================================
-destination_obj_hi = $fe50
-destination_obj_lo = $fe4f
+target_obj_hi = $fe50
+target_obj_lo = $fe4f
 
-select_facing_clip_for_destination:
-.C:0d82  AD 50 FE    LDA destination_obj_hi
+select_facing_clip_for_target:
+.C:0d82  AD 50 FE    LDA target_obj_hi
 .C:0d85  C9 02       CMP #$02
 .C:0d87  D0 28       BNE is_not_a_character
 ;-------------------------------------------
 object_is_a_character:
 ;Get character's X position
-.C:0d89  AE 4F FE    LDX destination_obj_lo
+.C:0d89  AE 4F FE    LDX target_obj_lo
 .C:0d8c  BD 57 FE    LDA actor_for_costume,X
 .C:0d8f  AA          TAX
-.C:0d90  BD 41 FD    LDA actor_x_pos,X
+.C:0d90  BD 41 FD    LDA actor_pos_x,X
 ;Save it as X destination
-.C:0d93  8D E6 FD    STA dest_x
+.C:0d93  8D E6 FD    STA target_x
 ;Get current kid's X position
 .C:0d96  AE 67 FF    LDX current_kid_idx
 .C:0d99  BD 57 FE    LDA actor_for_costume,X
 .C:0d9c  AA          TAX
-.C:0d9d  BD 41 FD    LDA actor_x_pos,X
+.C:0d9d  BD 41 FD    LDA actor_pos_x,X
 ;Compare X position with X destination
-.C:0da0  CD E6 FD    CMP dest_x
+.C:0da0  CD E6 FD    CMP target_x
 .C:0da3  90 07       BCC return_animation_to_the_right
 .C:0da5  F0 05       BEQ return_animation_to_the_right
 ;-------------------------------------------
@@ -3914,11 +3914,11 @@ return_animation_to_the_right:
 ;-------------------------------------------
 object_is_not_a_character:
 ;Get the destination object index
-.C:0db1  AC 51 FE    LDY destination_entity
+.C:0db1  AC 51 FE    LDY target_entity
 .C:0db4  C0 FF       CPY #$FF
 .C:0db6  F0 0A       BEQ return_06
 ;Is there an explicit destination active for this object?
-.C:0db8  B9 05 72    LDA object_destination_active,Y
+.C:0db8  B9 05 72    LDA obj_has_explicit_approach,Y
 ;If so, return that value
 .C:0dbb  D0 02       BNE exit_2
 ;Otherwise, return animation for "Standing looking down" (#06)
@@ -4283,11 +4283,11 @@ queue_pickup:
 ; the destination entity is an object or an actor.
 ;===========================================
 temp_y = $0fc9
-route_destination_by_entity_type:
+set_approach_point:
 .C:0f32  8C C9 0F    STY temp_y
 ;Is the entity type an object or an actor?
 .C:0f35  C9 02       CMP #$02
-.C:0f37  D0 3C       BNE set_actor_destination_to_object
+.C:0f37  D0 3C       BNE set_approach_point_for_object
 ;-------------------
 ; Actor
 ;-------------------
@@ -4311,20 +4311,20 @@ route_destination_by_entity_type:
 ;	Arguments:	.X	destination costume
 ;				.Y	costume being moved
 ;===========================================
-set_actor_destination_adjacent_to_actor:
+set_approach_point_for_actor:
 ;Load actors' indexes
 .C:0f46  B9 57 FE    LDA actor_for_costume,Y
 .C:0f49  A8          TAY
 .C:0f4a  BD 57 FE    LDA actor_for_costume,X
 .C:0f4d  AA          TAX
 ;Load destination positions
-.C:0f4e  BD 3D FD    LDA actor_y_pos,X
-.C:0f51  8D E7 FD    STA dest_y
-.C:0f54  BD 41 FD    LDA actor_x_pos,X
-.C:0f57  8D E6 FD    STA dest_x
+.C:0f4e  BD 3D FD    LDA actor_pos_y,X
+.C:0f51  8D E7 FD    STA target_y
+.C:0f54  BD 41 FD    LDA actor_pos_x,X
+.C:0f57  8D E6 FD    STA target_x
 ;Check motion direction by comparing X positions
-.C:0f5a  B9 41 FD    LDA actor_x_pos,Y
-.C:0f5d  CD E6 FD    CMP dest_x
+.C:0f5a  B9 41 FD    LDA actor_pos_x,Y
+.C:0f5d  CD E6 FD    CMP target_x
 .C:0f60  90 07       BCC position_is_le
 .C:0f62  F0 05       BEQ position_is_le
 actor_approach_x_offset_pos_byte = $0f65
@@ -4337,19 +4337,19 @@ actor_approach_x_offset_neg_byte = $0f6a
 .C:0f69  A9 FC       LDA #$FC
 add_offset_to_destination:
 .C:0f6b  18          CLC
-.C:0f6c  6D E6 FD    ADC dest_x
-.C:0f6f  8D E6 FD    STA dest_x
+.C:0f6c  6D E6 FD    ADC target_x
+.C:0f6f  8D E6 FD    STA target_x
 ;Adjust target coordinate based on boundary boxes
-.C:0f72  4C A3 0F    JMP snap_destination_to_walkbox
+.C:0f72  4C A3 0F    JMP snap_target_to_walkbox
 ;===========================================
 ; Set destination for object
 ;
 ;	Arguments:	.X	actor to be moved
 ;				.Y	destination object
 ;===========================================
-set_actor_destination_to_object:
+set_approach_point_for_object:
 ;Is there an explicit destination coordinate for the object?
-.C:0f75  B9 05 72    LDA object_destination_active,Y
+.C:0f75  B9 05 72    LDA obj_has_explicit_approach,Y
 .C:0f78  D0 1B       BNE explicit_destination
 ;---------------------------------------------------
 ; No explicit destination coordinates for the object
@@ -4363,7 +4363,7 @@ no_explicit_destination:
 .C:0f7e  18          CLC
 .C:0f7f  79 5D 71    ADC obj_left_col_tbl,Y
 ;Set as X destination
-.C:0f82  8D E6 FD    STA dest_x
+.C:0f82  8D E6 FD    STA target_x
 ;Compute object middle Y position = height/2 + y_start
 .C:0f85  B9 B1 71    LDA obj_height_tbl,Y
 .C:0f88  4A          LSR A
@@ -4373,30 +4373,30 @@ no_explicit_destination:
 .C:0f8d  0A          ASL A
 .C:0f8e  0A          ASL A
 ;Set as Y destination
-.C:0f8f  8D E7 FD    STA dest_y
-.C:0f92  4C A3 0F    JMP snap_destination_to_walkbox
+.C:0f8f  8D E7 FD    STA target_y
+.C:0f92  4C A3 0F    JMP snap_target_to_walkbox
 ;---------------------------------------------------
 ;There's an explicit destination set of coordinates, use them
 ;---------------------------------------------------
 explicit_destination:
-.C:0f95  B9 CD 71    LDA object_x_destination,Y
-.C:0f98  8D E6 FD    STA dest_x
-.C:0f9b  B9 E9 71    LDA object_y_destination,Y
+.C:0f95  B9 CD 71    LDA obj_approach_x,Y
+.C:0f98  8D E6 FD    STA target_x
+.C:0f9b  B9 E9 71    LDA obj_approach_y,Y
 .C:0f9e  0A          ASL A
 .C:0f9f  0A          ASL A
-.C:0fa0  8D E7 FD    STA dest_y
-;Fall through to snap_destination_to_walkbox
+.C:0fa0  8D E7 FD    STA target_y
+;Fall through to snap_target_to_walkbox
 ;===========================================
 ; Adjust the target coordinates based on boundary boxes
 ;===========================================
 box_check_x = $fe72
 box_check_y = $fe73
 
-snap_destination_to_walkbox:
+snap_target_to_walkbox:
 ;Copy the destination coordinates into box_check_x/y
-.C:0fa3  AD E6 FD    LDA dest_x
+.C:0fa3  AD E6 FD    LDA target_x
 .C:0fa6  8D 72 FE    STA box_check_x
-.C:0fa9  AD E7 FD    LDA dest_y
+.C:0fa9  AD E7 FD    LDA target_y
 .C:0fac  8D 73 FE    STA box_check_y
 ;Copy the current_room as the walkbox_room
 .C:0faf  AD 49 71    LDA current_room
@@ -4405,9 +4405,9 @@ snap_destination_to_walkbox:
 .C:0fb5  20 9B 1A    JSR snap_coords_to_walkbox
 ;Copy the adjusted coordinates back to the destination coordinates
 .C:0fb8  AD 72 FE    LDA box_check_x
-.C:0fbb  8D E6 FD    STA dest_x
+.C:0fbb  8D E6 FD    STA target_x
 .C:0fbe  AD 73 FE    LDA box_check_y
-.C:0fc1  8D E7 FD    STA dest_y
+.C:0fc1  8D E7 FD    STA target_y
 ;Restore saved .Y value
 .C:0fc4  AC C9 0F    LDY temp_y
 .C:0fc7  60          RTS
@@ -5997,7 +5997,7 @@ unpause_game:
 ; Build a path of connected walkboxes to the destination walkbox for this actor
 ;
 ; Arguments:	actor_box_cur
-;				actor_destination_box
+;				actor_target_box
 ;===========================================
 box_data_ptr = $17
 adjacent_boxes_ptr = $7c
@@ -6038,7 +6038,7 @@ init_search:
 .C:1911  8D D0 CA    STA return_value
 .C:1914  BD CD FD    LDA actor_box_cur,X
 .C:1917  8D D3 CA    STA current_box
-.C:191a  BD D5 FD    LDA actor_destination_box,X
+.C:191a  BD D5 FD    LDA actor_target_box,X
 .C:191d  8D D1 CA    STA destination_box
 ;-----------------------------------------------
 next_iteration:
@@ -6397,13 +6397,13 @@ read_next_byte:
 ;===========================================
 ; Adjust an actor's destination based on walk boxes
 ;===========================================
-adjust_actor_destination:
+snap_actor_target:
 ;Get the current actor's destination coordinates
 ;Save them as the coordinates to check for adjustment
 .C:1a68  A6 D8       LDX actor
-.C:1a6a  BD D9 FD    LDA actor_x_dest,X
+.C:1a6a  BD D9 FD    LDA actor_target_x,X
 .C:1a6d  8D 72 FE    STA box_check_x
-.C:1a70  BD DD FD    LDA actor_y_dest,X
+.C:1a70  BD DD FD    LDA actor_target_y,X
 .C:1a73  8D 73 FE    STA box_check_y
 ;Get the current actor's room, set it as the walkbox room
 .C:1a76  AE 30 FC    LDX active_costume
@@ -6422,9 +6422,9 @@ adjustment_needed:
 .C:1a8a  BD 57 FE    LDA actor_for_costume,X
 .C:1a8d  AA          TAX
 .C:1a8e  AD 72 FE    LDA box_check_x
-.C:1a91  9D D9 FD    STA actor_x_dest,X
+.C:1a91  9D D9 FD    STA actor_target_x,X
 .C:1a94  AD 73 FE    LDA box_check_y
-.C:1a97  9D DD FD    STA actor_y_dest,X
+.C:1a97  9D DD FD    STA actor_target_y,X
 .C:1a9a  60          RTS
 ;===========================================
 ; Adjust coordinates according to walk boxes
@@ -6844,16 +6844,16 @@ diagonal_edge_offset:
 ; Walk actor to a destination
 ;
 ;===========================================
-set_actor_destination:
+set_costume_target:
 .C:1c1f  AE 30 FC    LDX active_costume
 .C:1c22  BD 57 FE    LDA actor_for_costume,X
 .C:1c25  10 0D       BPL actor_onscreen
 actor_offscreen:
 ;Actor is offscreen, so just set the destination coordinates directly (no need for path finding now)
-.C:1c27  AD E6 FD    LDA dest_x
-.C:1c2a  9D 2E FF    STA costume_dest_x,X
-.C:1c2d  AD E7 FD    LDA dest_y
-.C:1c30  9D 15 FF    STA costume_dest_y,X
+.C:1c27  AD E6 FD    LDA target_x
+.C:1c2a  9D 2E FF    STA costume_target_x,X
+.C:1c2d  AD E7 FD    LDA target_y
+.C:1c30  9D 15 FF    STA costume_target_y,X
 .C:1c33  60          RTS
 actor_onscreen:
 ;Actor is onscreen
@@ -6861,12 +6861,12 @@ actor_onscreen:
 .C:1c34  AA          TAX
 .C:1c35  86 D8       STX actor
 .C:1c37  20 9B 1A    JSR snap_coords_to_walkbox
-.C:1c3a  AD E6 FD    LDA dest_x
-.C:1c3d  9D D9 FD    STA actor_x_dest,X
-.C:1c40  AD E7 FD    LDA dest_y
-.C:1c43  9D DD FD    STA actor_y_dest,X
+.C:1c3a  AD E6 FD    LDA target_x
+.C:1c3d  9D D9 FD    STA actor_target_x,X
+.C:1c40  AD E7 FD    LDA target_y
+.C:1c43  9D DD FD    STA actor_target_y,X
 ;Build the walkbox path
-.C:1c46  4C 4A 1C    JMP snap_and_stage_path_update
+.C:1c46  4C 4A 1C    JMP stage_actor_path_to_target
 ;.C:1c49  60          RTS	;Unreachable code
 ;===========================================
 ; Build a path to a destination coordinate for an actor
@@ -6880,9 +6880,9 @@ actor_onscreen:
 ;	-mark that the actor needs a path update
 ;	-???
 ;===========================================
-snap_and_stage_path_update:
+stage_actor_path_to_target:
 ;Adjust the destination as needed based on walkboxes
-.C:1c4a  20 68 1A    JSR adjust_actor_destination
+.C:1c4a  20 68 1A    JSR snap_actor_target
 ;Did we find the closest walkbox?
 .C:1c4d  A6 D8       LDX actor
 .C:1c4f  AD AC FD    LDA closest_box_index
@@ -6892,7 +6892,7 @@ snap_and_stage_path_update:
 .C:1c56  60          RTS
 box_found:
 ;Save the box found as the destination box for this actor
-.C:1c57  9D D5 FD    STA actor_destination_box,X
+.C:1c57  9D D5 FD    STA actor_target_box,X
 ;Is it the current one?
 .C:1c5a  DD CD FD    CMP actor_box_cur,X
 .C:1c5d  F0 08       BEQ closest_box_is_current
@@ -6935,7 +6935,7 @@ update_actor_path_vars:
 ; Returns:		actor_tgt_waypoint_x
 ;				actor_tgt_waypoint_y
 ;===========================================
-apply_waypoint_update_if_needed:
+apply_pending_waypoint_update:
 ;Does the actor need a path update?
 .C:1c81  A6 D8       LDX actor
 .C:1c83  BD E1 FD    LDA actor_path_update_flag,X
@@ -6945,16 +6945,16 @@ apply_waypoint_update_if_needed:
 .C:1c88  A9 00       LDA #$00
 .C:1c8a  9D E1 FD    STA actor_path_update_flag,X
 ;Build a path using the walkboxes
-.C:1c8d  20 A3 1C    JSR build_waypoint_from_path
+.C:1c8d  20 A3 1C    JSR compute_waypoint_from_path
 ;Did we find a new path?
 .C:1c90  C9 FF       CMP #$FF
 ;If so, exit
 .C:1c92  D0 0E       BNE exit
 ;No new path, set the original destination as the path
 .C:1c94  A6 D8       LDX actor
-.C:1c96  BD D9 FD    LDA actor_x_dest,X
+.C:1c96  BD D9 FD    LDA actor_target_x,X
 .C:1c99  9D 29 FD    STA actor_tgt_waypoint_x,X
-.C:1c9c  BD DD FD    LDA actor_y_dest,X
+.C:1c9c  BD DD FD    LDA actor_target_y,X
 .C:1c9f  9D 31 FD    STA actor_tgt_waypoint_y,X
 exit:
 .C:1ca2  60          RTS
@@ -6990,7 +6990,7 @@ offset_copy = $1e8f
 unused_var = $cad4
 box_relative_position = $cad6
 
-build_waypoint_from_path:
+compute_waypoint_from_path:
 .C:1ca3  A6 D8       LDX actor
 ;CAD4 seems to have been used as a debugging variable - unused everywhere else
 .C:1ca5  A9 FF       LDA #$FF
@@ -7119,13 +7119,13 @@ no_overlap:
 ;Check if there's any adjustment in the trajectory to be made
 ; Returns:		.A		#FF		adjustment needed
 ;						#00		no adjustments needed
-.C:1d41  20 07 1E    JSR evaluate_path_adjustment_need
+.C:1d41  20 07 1E    JSR check_path_requires_corner_adjustment
 .C:1d44  D0 0F       BNE adjust_path
 no_adjustment:
 ;There are no trajectory adjustments to be made, so simply copy the destination as the path
-.C:1d46  BD D9 FD    LDA actor_x_dest,X
+.C:1d46  BD D9 FD    LDA actor_target_x,X
 .C:1d49  9D 29 FD    STA actor_tgt_waypoint_x,X
-.C:1d4c  BD DD FD    LDA actor_y_dest,X
+.C:1d4c  BD DD FD    LDA actor_target_y,X
 .C:1d4f  9D 31 FD    STA actor_tgt_waypoint_y,X
 .C:1d52  A9 00       LDA #$00
 .C:1d54  60          RTS
@@ -7147,7 +7147,7 @@ vertical_relative_position:
 .C:1d61  D0 06       BNE actor_coord_outside_target_box_1
 actor_coord_inside_target_box_1:
 ;If it's inside, pick the actor's coordinate to keep it unchanged
-.C:1d63  BD 41 FD    LDA actor_x_pos,X
+.C:1d63  BD 41 FD    LDA actor_pos_x,X
 .C:1d66  4C 6C 1D    JMP set_path_to_target_corner
 ;---------------------------------------------
 actor_coord_outside_target_box_1:
@@ -7178,7 +7178,7 @@ horizontal_relative_position:
 .C:1d81  D0 06       BNE actor_coord_outside_target_box_2
 actor_coord_inside_target_box_2:
 ;If it's inside, pick the actor's coordinate to keep it unchanged
-.C:1d83  BD 3D FD    LDA actor_y_pos,X
+.C:1d83  BD 3D FD    LDA actor_pos_y,X
 .C:1d86  4C 8E 1D    JMP set_path_to_target_corner_2
 ;---------------------------------------------
 actor_coord_outside_target_box_2:
@@ -7427,12 +7427,12 @@ classify_actor_axis_vs_box:
 set_x:
 ;Relative position is horizontal
 ;Load the actor's X coordinate
-.C:1de1  BD 41 FD    LDA actor_x_pos,X
+.C:1de1  BD 41 FD    LDA actor_pos_x,X
 .C:1de4  4C EA 1D    JMP set_actor_coordinate
 set_y:
 ;Relative position is vertical
 ;Load the actor's Y coordinate
-.C:1de7  BD 3D FD    LDA actor_y_pos,X
+.C:1de7  BD 3D FD    LDA actor_pos_y,X
 set_actor_coordinate:
 ;Set the coordinate as the actor coordinate
 .C:1dea  8D D5 CA    STA actor_coordinate
@@ -7491,7 +7491,7 @@ first_edge = $1e04
 second_edge = $1e05
 other_destination_coord = $fc3f
 
-evaluate_path_adjustment_need:
+check_path_requires_corner_adjustment:
 ;Is the actor's destination coordinate inside the target box range? (#02)
 .C:1e07  AD 3B FC    LDA actor_relative_position
 .C:1e0a  C9 02       CMP #$02
@@ -7583,11 +7583,11 @@ set_second_edge:
 ;---------------------------------------
 use_actor_horizontal:
 ;Bit 1 is clear, use actor's horizontal destination coordinate
-.C:1e37  BD D9 FD    LDA actor_x_dest,X
+.C:1e37  BD D9 FD    LDA actor_target_x,X
 .C:1e3a  4C 40 1E    JMP compare_lower_edge
 use_actor_vertical:
 ;Bit 1 is set, use actor's vertical destination coordinate
-.C:1e3d  BD DD FD    LDA actor_y_dest,X
+.C:1e3d  BD DD FD    LDA actor_target_y,X
 ;---------------------------------------
 compare_lower_edge:
 ;Compare with first_edge
@@ -7625,7 +7625,7 @@ select_other_axis:
 ;---------------------------------------
 vertical:
 ;Use the vertical destination as the other coordinate to check
-.C:1e55  BD DD FD    LDA actor_y_dest,X
+.C:1e55  BD DD FD    LDA actor_target_y,X
 ;Load the relative position (#00 or #01) and add 2 to compute the offset to the first vertical coordinate
 .C:1e58  AC D6 CA    LDY box_relative_position
 .C:1e5b  C8          INY
@@ -7634,7 +7634,7 @@ vertical:
 ;---------------------------------------
 horizontal:
 ;Use the horizontal destination as the other coordinate to check
-.C:1e60  BD D9 FD    LDA actor_x_dest,X
+.C:1e60  BD D9 FD    LDA actor_target_x,X
 ;Load the relative position (#02 or #03) and subtract 2 to compute the offset to the first horizontal coordinate
 .C:1e63  AC D6 CA    LDY box_relative_position
 .C:1e66  88          DEY
@@ -9184,7 +9184,7 @@ copy_offsets:
 ; Arguments:	active_costume
 ; Returns:		None
 ;===========================================
-step_actor_limb_animation:
+step_actor_animation:
 ;Setup the costume resource for the actor, if needed
 .C:2504  20 70 24    JSR setup_costume_for_actor
 ;Handle speaking animation, if needed
@@ -9556,46 +9556,46 @@ exit:
 unused_var_1 = $26f7
 unused_var_2 = $26f8
 
-teleport_costume_to_destination:
+place_costume_at_target:
 ;Copy the room for this costume
 .C:269c  AE 30 FC    LDX active_costume
-.C:269f  AD EA FD    LDA room_destination
+.C:269f  AD EA FD    LDA target_room
 .C:26a2  9D FC FE    STA costume_room_idx,X
 ;Copy the destination coordinates
-.C:26a5  AD E6 FD    LDA dest_x
-.C:26a8  9D 2E FF    STA costume_dest_x,X
-.C:26ab  AD E7 FD    LDA dest_y
-.C:26ae  9D 15 FF    STA costume_dest_y,X
+.C:26a5  AD E6 FD    LDA target_x
+.C:26a8  9D 2E FF    STA costume_target_x,X
+.C:26ab  AD E7 FD    LDA target_y
+.C:26ae  9D 15 FF    STA costume_target_y,X
 ;Unused variables
-.C:26b1  AD E6 FD    LDA dest_x
+.C:26b1  AD E6 FD    LDA target_x
 .C:26b4  8D F7 26    STA unused_var_1
-.C:26b7  AD E7 FD    LDA dest_y
+.C:26b7  AD E7 FD    LDA target_y
 .C:26ba  8D F8 26    STA unused_var_2
 ;Is there an assigned actor for this costume?
 .C:26bd  BC 57 FE    LDY actor_for_costume,X
 .C:26c0  30 24       BMI check_current_room
 ;An actor is assigned
 ;Is the destination the same as the current position? If so, exit
-.C:26c2  BD 2E FF    LDA costume_dest_x,X
-.C:26c5  D9 41 FD    CMP actor_x_pos,Y
+.C:26c2  BD 2E FF    LDA costume_target_x,X
+.C:26c5  D9 41 FD    CMP actor_pos_x,Y
 .C:26c8  D0 08       BNE move_actor
-.C:26ca  BD 15 FF    LDA costume_dest_y,X
-.C:26cd  D9 3D FD    CMP actor_y_pos,Y
+.C:26ca  BD 15 FF    LDA costume_target_y,X
+.C:26cd  D9 3D FD    CMP actor_pos_y,Y
 .C:26d0  F0 24       BEQ exit
 move_actor:
 ;Destination not the same, set the position
-.C:26d2  BD 2E FF    LDA costume_dest_x,X
-.C:26d5  99 41 FD    STA actor_x_pos,Y
-.C:26d8  BD 15 FF    LDA costume_dest_y,X
-.C:26db  99 3D FD    STA actor_y_pos,Y
+.C:26d2  BD 2E FF    LDA costume_target_x,X
+.C:26d5  99 41 FD    STA actor_pos_x,Y
+.C:26d8  BD 15 FF    LDA costume_target_y,X
+.C:26db  99 3D FD    STA actor_pos_y,Y
 ;Set default direction to down
 .C:26de  A9 80       LDA #$80
-.C:26e0  99 EB FD    STA facing_direction_for_actor,Y
+.C:26e0  99 EB FD    STA actor_cur_facing_direction,Y
 ;Release it (assuming that it's not in the current room)
 .C:26e3  20 E4 38    JSR detach_actor_from_costume
 check_current_room:
 ;Is the destination rooom the current room? If not, exit
-.C:26e6  AD EA FD    LDA room_destination
+.C:26e6  AD EA FD    LDA target_room
 .C:26e9  F0 0B       BEQ exit
 .C:26eb  CD 49 71    CMP current_room
 .C:26ee  D0 06       BNE exit
@@ -9713,7 +9713,7 @@ default:
 direction_determined:
 ;Save the overall direction for this actor and exit
 .C:2762  A6 D8       LDX actor
-.C:2764  9D EB FD    STA facing_direction_for_actor,X
+.C:2764  9D EB FD    STA actor_cur_facing_direction,X
 .C:2767  4C 7D 27    JMP exit
 ;-------------------------
 ;The actor is not visible right now - assign the animation set directly
@@ -9746,7 +9746,7 @@ exit:
 ;	#81		-> 	#03		up
 ;===========================================
 get_animation_set_for_direction:
-.C:277e  BD EB FD    LDA facing_direction_for_actor,X
+.C:277e  BD EB FD    LDA actor_cur_facing_direction,X
 .C:2781  C9 01       CMP #$01
 .C:2783  D0 02       BNE check_00
 ;Actor moving left
@@ -10086,7 +10086,7 @@ keyboard_handle_one_key:
 .C:28e5  9D D9 70    STA task_state_tbl,X
 ;Set debugging variable to #01
 .C:28e8  A9 01       LDA #$01
-.C:28ea  8D 6D FF    STA var_destination_x
+.C:28ea  8D 6D FF    STA var_target_x
 ;Clear interrupted script offset
 .C:28ed  A9 00       LDA #$00
 .C:28ef  8D A4 FE    STA interrupted_pc_lo
@@ -10271,7 +10271,7 @@ change_to_new_kid:
 init_sentence_ui_and_stack:
 ;Clear the destination entity
 .C:29cc  A9 00       LDA #$00
-.C:29ce  8D 51 FE    STA destination_entity
+.C:29ce  8D 51 FE    STA target_entity
 .C:29d1  A9 01       LDA #$01
 .C:29d3  8D 49 FE    STA sentence_bar_needs_refresh
 ;Reset the sentence queue capacity
@@ -10294,15 +10294,15 @@ init_sentence_ui_and_stack:
 ;===========================================
 motion_needed = $fc3b
 
-update_actor_motion:
+step_actor_motion:
 ;Is the active waypoint the desired waypoint?
 ;If not, process the new desired waypoint
 .C:29f8  A6 D8       LDX actor
 .C:29fa  BD 29 FD    LDA actor_tgt_waypoint_x,X
-.C:29fd  DD 25 FD    CMP actor_active_wpt_x,X
+.C:29fd  DD 25 FD    CMP actor_cur_waypoint_x,X
 .C:2a00  D0 25       BNE set_new_active_waypoint
 .C:2a02  BD 31 FD    LDA actor_tgt_waypoint_y,X
-.C:2a05  DD 2D FD    CMP actor_active_wpt_y,X
+.C:2a05  DD 2D FD    CMP actor_cur_waypoint_y,X
 .C:2a08  D0 1D       BNE set_new_active_waypoint
 ;--------------------------------------------
 ;The desired waypoint is the currently active one
@@ -10317,10 +10317,10 @@ update_actor_motion:
 ;Has it reached the final position for this waypoint?
 ;If not, continue animating the actor by walking
 .C:2a13  BD 31 FD    LDA actor_tgt_waypoint_y,X
-.C:2a16  DD 3D FD    CMP actor_y_pos,X
+.C:2a16  DD 3D FD    CMP actor_pos_y,X
 .C:2a19  D0 09       BNE animate_actor
 .C:2a1b  BD 29 FD    LDA actor_tgt_waypoint_x,X
-.C:2a1e  DD 41 FD    CMP actor_x_pos,X
+.C:2a1e  DD 41 FD    CMP actor_pos_x,X
 .C:2a21  D0 01       BNE animate_actor
 .C:2a23  60          RTS
 ;--------------------------------------------
@@ -10330,9 +10330,9 @@ animate_actor:
 set_new_active_waypoint:
 ;Copy the new active path
 .C:2a27  BD 29 FD    LDA actor_tgt_waypoint_x,X
-.C:2a2a  9D 25 FD    STA actor_active_wpt_x,X
+.C:2a2a  9D 25 FD    STA actor_cur_waypoint_x,X
 .C:2a2d  BD 31 FD    LDA actor_tgt_waypoint_y,X
-.C:2a30  9D 2D FD    STA actor_active_wpt_y,X
+.C:2a30  9D 2D FD    STA actor_cur_waypoint_y,X
 ;--------------------------------------------
 set_state_to_moving:
 ;Set state to "moving" (#00)
@@ -10342,10 +10342,10 @@ set_state_to_moving:
 .C:2a3a  9D 68 FD    STA actor_motion_state,X
 ;--------------------------------------------
 ;Copy the current position to the "position to waypoint"
-.C:2a3d  BD 41 FD    LDA actor_x_pos,X
-.C:2a40  9D 45 FD    STA position_to_waypoint_x_for_actor,X
-.C:2a43  BD 3D FD    LDA actor_y_pos,X
-.C:2a46  9D 49 FD    STA position_to_waypoint_y_for_actor,X
+.C:2a3d  BD 41 FD    LDA actor_pos_x,X
+.C:2a40  9D 45 FD    STA actor_path_probe_x,X
+.C:2a43  BD 3D FD    LDA actor_pos_y,X
+.C:2a46  9D 49 FD    STA actor_path_probe_y,X
 ;--------------------------------------------
 ;Compute the path deltas
 ;Result = #00 if there's at least one real delta (motion needed)
@@ -10384,9 +10384,9 @@ y_direction_up:
 .C:2a7a  A9 81       LDA #$81
 set_delta_directions_for_actor:
 ;Set the resulting bitmask
-.C:2a7c  9D EF FD    STA path_delta_directions_for_actor,X
+.C:2a7c  9D EF FD    STA actor_tgt_facing_direction,X
 ;--------------------------------------------
-.C:2a7f  BD A8 FD    LDA actor_box_fg_masking,X	;Redundant code
+.C:2a7f  BD A8 FD    LDA actor_box_fg_occlusion,X	;Redundant code
 .C:2a82  C9 03       CMP #$03		;Redundant code
 .C:2a84  D0 00       BNE $2A86		;Redundant code
 .C:2a86  20 22 2C    JSR do_nothing
@@ -10443,7 +10443,7 @@ check_if_about_to_stop:
 .C:2aa6  C9 01       CMP #$01
 .C:2aa8  D0 03       BNE is_actor_walking
 ;It's about to stop, reset animation
-.C:2aaa  4C 23 2C    JMP reset_actor_render_flags
+.C:2aaa  4C 23 2C    JMP set_actor_stopped_and_render
 ;--------------------------------------------
 is_actor_walking:
 ;Is actor not turning? 
@@ -10468,7 +10468,7 @@ set_walking_limbs:
 .C:2ac2  20 F6 2B    JSR apply_walking_clip
 actor_is_walking:
 .C:2ac5  A6 D8       LDX actor
-.C:2ac7  BD A8 FD    LDA actor_box_fg_masking,X	;Redundant code
+.C:2ac7  BD A8 FD    LDA actor_box_fg_occlusion,X	;Redundant code
 .C:2aca  C9 03       CMP #$03
 .C:2acc  D0 00       BNE $2ACE
 ;
@@ -10480,13 +10480,13 @@ check_vertical_traversal:
 ;Is the actor traversing an intermediate box vertically?
 .C:2ad3  C9 03       CMP #$03
 .C:2ad5  D0 03       BNE check_horizontal_traversal
-.C:2ad7  4C 36 2C    JMP traverse_horizontally
+.C:2ad7  4C 36 2C    JMP resolve_walkbox_with_step_x_then_y
 ;--------------------------------------------
 check_horizontal_traversal:
 ;Is the actor traversing an intermediate box horizontally?
 .C:2ada  C9 04       CMP #$04
 .C:2adc  D0 03       BNE check_regular_motion
-.C:2ade  4C A3 2C    JMP traverse_vertically
+.C:2ade  4C A3 2C    JMP resolve_walkbox_with_step_y_then_x
 check_regular_motion:
 ;Is the actor just moving "normally"?
 .C:2ae1  C9 00       CMP #$00
@@ -10526,7 +10526,7 @@ y_position_not_reached:
 .C:2b04  C9 04       CMP #$04
 .C:2b06  D0 03       BNE exit_2
 ;If so, reset the animation state
-.C:2b08  4C 23 2C    JMP reset_actor_render_flags
+.C:2b08  4C 23 2C    JMP set_actor_stopped_and_render
 exit_2:
 ;We're not traversing into a new walkbox, we're simply moving vertically, exit
 .C:2b0b  60          RTS
@@ -10549,18 +10549,18 @@ x_position_not_reached:
 direction_down:
 ;Set direction to #80 (down)
 .C:2b23  A9 80       LDA #$80
-.C:2b25  9D EF FD    STA path_delta_directions_for_actor,X
+.C:2b25  9D EF FD    STA actor_tgt_facing_direction,X
 .C:2b28  4C 30 2B    JMP path_direction_y_set
 direction_up:
 ;Set direction to #81 (up)
 .C:2b2b  A9 81       LDA #$81
-.C:2b2d  9D EF FD    STA path_delta_directions_for_actor,X
+.C:2b2d  9D EF FD    STA actor_tgt_facing_direction,X
 path_direction_y_set:
 ;Update motion state and update limbs for walking
 .C:2b30  20 70 2B    JSR resolve_turning_and_facing
 .C:2b33  20 F6 2B    JSR apply_walking_clip
 ;We're traversing into a new walkbox horizontally, so continue at that routine
-.C:2b36  4C 36 2C    JMP traverse_horizontally
+.C:2b36  4C 36 2C    JMP resolve_walkbox_with_step_x_then_y
 ;--------------------------------------------
 x_walkbox_not_changed:
 ;We have not reached the waypoint's X position yet
@@ -10588,18 +10588,18 @@ y_walkbox_changed:
 direction_right:
 ;Set direction to #00 (right)
 .C:2b59  A9 00       LDA #$00
-.C:2b5b  9D EF FD    STA path_delta_directions_for_actor,X
+.C:2b5b  9D EF FD    STA actor_tgt_facing_direction,X
 .C:2b5e  4C 66 2B    JMP path_direction_x_set
 direction_left:
 ;Set direction to #01 (left)
 .C:2b61  A9 01       LDA #$01
-.C:2b63  9D EF FD    STA path_delta_directions_for_actor,X
+.C:2b63  9D EF FD    STA actor_tgt_facing_direction,X
 path_direction_x_set:
 ;Update motion state and update limbs for walking
 .C:2b66  20 70 2B    JSR resolve_turning_and_facing
 .C:2b69  20 F6 2B    JSR apply_walking_clip
 ;We're traversing into a new walkbox vertically, so continue at that routine
-.C:2b6c  4C A3 2C    JMP traverse_vertically
+.C:2b6c  4C A3 2C    JMP resolve_walkbox_with_step_y_then_x
 exit:
 .C:2b6f  60          RTS
 ;===========================================
@@ -10617,11 +10617,11 @@ clear_bit6_layer2:
 ;Clear bit 6 and set as path delta directions
 .C:2b79  BD A4 FD    LDA actor_box_facing_override,X
 .C:2b7c  29 BF       AND #$BF
-.C:2b7e  9D EF FD    STA path_delta_directions_for_actor,X
+.C:2b7e  9D EF FD    STA actor_tgt_facing_direction,X
 ;--------------------------------------------
 compare_directions_with_attribute:
-.C:2b81  BD EF FD    LDA path_delta_directions_for_actor,X
-.C:2b84  DD EB FD    CMP facing_direction_for_actor,X
+.C:2b81  BD EF FD    LDA actor_tgt_facing_direction,X
+.C:2b84  DD EB FD    CMP actor_cur_facing_direction,X
 ;If directions and attributes are equal, clear the "turning" state bit
 .C:2b87  F0 38       BEQ clear_turning_state_bit
 ;--------------------------------------------
@@ -10630,27 +10630,27 @@ compare_directions_with_attribute:
 .C:2b8c  30 22       BMI set_directions_as_attribute
 ;--------------------------------------------
 ;Actor not turning
-.C:2b8e  BD EB FD    LDA facing_direction_for_actor,X
+.C:2b8e  BD EB FD    LDA actor_cur_facing_direction,X
 .C:2b91  29 80       AND #$80
 .C:2b93  8D 3B FC    STA attribute_bit7
-.C:2b96  BD EF FD    LDA path_delta_directions_for_actor,X
+.C:2b96  BD EF FD    LDA actor_tgt_facing_direction,X
 .C:2b99  29 80       AND #$80
 .C:2b9b  CD 3B FC    CMP attribute_bit7
 .C:2b9e  F0 06       BEQ flip_bit7_clear_bit0
-.C:2ba0  BD EF FD    LDA path_delta_directions_for_actor,X
+.C:2ba0  BD EF FD    LDA actor_tgt_facing_direction,X
 .C:2ba3  4C B3 2B    JMP set_attribute
 ;--------------------------------------------
 flip_bit7_clear_bit0:
-.C:2ba6  BD EB FD    LDA facing_direction_for_actor,X
+.C:2ba6  BD EB FD    LDA actor_cur_facing_direction,X
 .C:2ba9  49 80       EOR #$80
 .C:2bab  29 FE       AND #$FE
 .C:2bad  4C B3 2B    JMP set_attribute
 ;--------------------------------------------
 set_directions_as_attribute:
-.C:2bb0  BD EF FD    LDA path_delta_directions_for_actor,X
+.C:2bb0  BD EF FD    LDA actor_tgt_facing_direction,X
 ;--------------------------------------------
 set_attribute:
-.C:2bb3  9D EB FD    STA facing_direction_for_actor,X
+.C:2bb3  9D EB FD    STA actor_cur_facing_direction,X
 ;--------------------------------------------
 set_turning_state_bit:
 ;Set bit 7, which represents if an actor is turning
@@ -10675,7 +10675,7 @@ target_clip_id = $fde9
 apply_standing_clip:
 ;Map the path direction bitmask to an animation set for the walking direction 
 ;(00,01,80,81 -> 05,04,06,07)
-.C:2bca  BD EB FD    LDA facing_direction_for_actor,X
+.C:2bca  BD EB FD    LDA actor_cur_facing_direction,X
 check_00:
 .C:2bcd  D0 05       BNE check_01
 ;------------------------------------------
@@ -10718,7 +10718,7 @@ set_animation_mode:
 apply_walking_clip:
 ;Map the path direction bitmask to an animation set for the walking direction 
 ;(00,01,80,81 -> 01,00,02,03)
-.C:2bf6  BD EB FD    LDA facing_direction_for_actor,X
+.C:2bf6  BD EB FD    LDA actor_cur_facing_direction,X
 .C:2bf9  D0 05       BNE check_01
 ;--------------------------------------------
 map_00:
@@ -10763,7 +10763,7 @@ do_nothing:
 ; The motion state gets reset to stopped.
 ; The animation state gets set to "refresh needed" and "actor needs to be drawn".
 ;===========================================
-reset_actor_render_flags:
+set_actor_stopped_and_render:
 .C:2c23  A6 D8       LDX actor
 .C:2c25  20 CA 2B    JSR apply_standing_clip
 ;Set motion state to stopped (#02)
@@ -10777,25 +10777,25 @@ reset_actor_render_flags:
 ;===========================================
 ; Traverse an intermediate walkbox horizontally
 ;===========================================
-traverse_horizontally:
+resolve_walkbox_with_step_x_then_y:
 .C:2c36  A6 D8       LDX actor
-.C:2c38  20 1B 2F    JSR snapshot_actor_path_state
+.C:2c38  20 1B 2F    JSR save_actor_path_state
 ;Check the X direction
 .C:2c3b  BD 07 FE    LDA actor_dir_x_bit,X
 .C:2c3e  D0 06       BNE move_right
 ;----------------------------------------------------
 move_left:
-.C:2c40  DE 41 FD    DEC actor_x_pos,X
+.C:2c40  DE 41 FD    DEC actor_pos_x,X
 .C:2c43  4C 49 2C    JMP update_depth
 ;----------------------------------------------------
 move_right:
-.C:2c46  FE 41 FD    INC actor_x_pos,X
+.C:2c46  FE 41 FD    INC actor_pos_x,X
 ;----------------------------------------------------
 update_depth:
 ;Returns #FF if the current box could not be determined
-.C:2c49  20 F4 2C    JSR update_actor_walkbox_state
+.C:2c49  20 F4 2C    JSR resolve_actor_walkbox_and_behavior
 ;Is layer_3 #03?
-.C:2c4c  BC A8 FD    LDY actor_box_fg_masking,X
+.C:2c4c  BC A8 FD    LDY actor_box_fg_occlusion,X
 .C:2c4f  C0 03       CPY #$03
 .C:2c51  D0 0F       BNE check_layer3_ff
 ;layer_3 == #03
@@ -10803,89 +10803,89 @@ update_depth:
 .C:2c56  F0 08       BEQ $2C60
 ;Clear layer_3
 .C:2c58  A9 00       LDA #$00
-.C:2c5a  9D A8 FD    STA actor_box_fg_masking,X
+.C:2c5a  9D A8 FD    STA actor_box_fg_occlusion,X
 .C:2c5d  4C 62 2C    JMP check_layer3_ff
 :
 .C:2c60  A9 FF       LDA #$FF
 check_layer3_ff:
 .C:2c62  C9 FF       CMP #$FF
 .C:2c64  F0 06       BEQ current_box_not_determined
-.C:2c66  20 48 2F    JSR restore_actor_path_snapshot
+.C:2c66  20 48 2F    JSR restore_actor_path_state
 .C:2c69  4C 33 2A    JMP set_state_to_moving
 ;----------------------------------------------------
 current_box_not_determined:
-.C:2c6c  20 48 2F    JSR restore_actor_path_snapshot
+.C:2c6c  20 48 2F    JSR restore_actor_path_state
 ;Have we reached the waypoint's Y coordinate?
-.C:2c6f  BD 2D FD    LDA actor_active_wpt_y,X
-.C:2c72  DD 49 FD    CMP position_to_waypoint_y_for_actor,X
+.C:2c6f  BD 2D FD    LDA actor_cur_waypoint_y,X
+.C:2c72  DD 49 FD    CMP actor_path_probe_y,X
 .C:2c75  D0 03       BNE check_y_direction
 ;Y coordinate of waypoint reached - reset animation
-.C:2c77  4C 23 2C    JMP reset_actor_render_flags
+.C:2c77  4C 23 2C    JMP set_actor_stopped_and_render
 check_y_direction:
 .C:2c7a  BD 0B FE    LDA actor_dir_y_bit,X
 .C:2c7d  D0 06       BNE move_down
 ;----------------------------------------------------
 ;Waypoint Y coordinate not reached yet - move position
 move_up:
-.C:2c7f  DE 49 FD    DEC position_to_waypoint_y_for_actor,X
+.C:2c7f  DE 49 FD    DEC actor_path_probe_y,X
 .C:2c82  4C 88 2C    JMP update_current_box_2
 ;----------------------------------------------------
 move_down:
-.C:2c85  FE 49 FD    INC position_to_waypoint_y_for_actor,X
+.C:2c85  FE 49 FD    INC actor_path_probe_y,X
 ;----------------------------------------------------
 update_current_box_2:
-.C:2c88  20 1B 2F    JSR snapshot_actor_path_state
-.C:2c8b  20 F4 2C    JSR update_actor_walkbox_state
+.C:2c88  20 1B 2F    JSR save_actor_path_state
+.C:2c8b  20 F4 2C    JSR resolve_actor_walkbox_and_behavior
 ;Has a box been determined? If so, exit
 .C:2c8e  C9 FF       CMP #$FF
 .C:2c90  D0 06       BNE exit
 ;Box not determined - reset animation
-.C:2c92  20 48 2F    JSR restore_actor_path_snapshot
-.C:2c95  4C 23 2C    JMP reset_actor_render_flags
+.C:2c92  20 48 2F    JSR restore_actor_path_state
+.C:2c95  4C 23 2C    JMP set_actor_stopped_and_render
 ;Redundant section of code
 .C:2c98  C9 FF       CMP #$FF
 .C:2c9a  D0 06       BNE $2CA2
-.C:2c9c  20 48 2F    JSR restore_actor_path_snapshot
-.C:2c9f  4C 23 2C    JMP reset_actor_render_flags
+.C:2c9c  20 48 2F    JSR restore_actor_path_state
+.C:2c9f  4C 23 2C    JMP set_actor_stopped_and_render
 exit:
 .C:2ca2  60          RTS
 ;===========================================
 ; Traverse an intermediate walkbox vertically
 ;===========================================
-traverse_vertically:
+resolve_walkbox_with_step_y_then_x:
 .C:2ca3  A6 D8       LDX actor
-.C:2ca5  20 1B 2F    JSR snapshot_actor_path_state
+.C:2ca5  20 1B 2F    JSR save_actor_path_state
 ;Check the Y direction
 check_y_direction:
 .C:2ca8  BD 0B FE    LDA actor_dir_y_bit,X
 .C:2cab  D0 06       BNE move_down
 ;----------------------------------------------------
 move_up:
-.C:2cad  DE 3D FD    DEC actor_y_pos,X
+.C:2cad  DE 3D FD    DEC actor_pos_y,X
 .C:2cb0  4C B6 2C    JMP update_depth
 ;----------------------------------------------------
 move_down:
-.C:2cb3  FE 3D FD    INC actor_y_pos,X
+.C:2cb3  FE 3D FD    INC actor_pos_y,X
 ;----------------------------------------------------
 update_depth:
 ;Returns #FF if the current box could not be determined
-.C:2cb6  20 F4 2C    JSR update_actor_walkbox_state
+.C:2cb6  20 F4 2C    JSR resolve_actor_walkbox_and_behavior
 ;Has the current box been determined?
 .C:2cb9  C9 FF       CMP #$FF
 .C:2cbb  F0 0A       BEQ current_box_not_determined
 .C:2cbd  C9 FF       CMP #$FF		;Redundant code
 .C:2cbf  F0 06       BEQ $2CC7
-.C:2cc1  20 48 2F    JSR restore_actor_path_snapshot
+.C:2cc1  20 48 2F    JSR restore_actor_path_state
 .C:2cc4  4C 33 2A    JMP set_state_to_moving
 ;----------------------------------------------------
 current_box_not_determined:
-.C:2cc7  20 48 2F    JSR restore_actor_path_snapshot
+.C:2cc7  20 48 2F    JSR restore_actor_path_state
 ;Have we reached the waypoint's X coordinate?
-.C:2cca  BD 25 FD    LDA actor_active_wpt_x,X
-.C:2ccd  DD 45 FD    CMP position_to_waypoint_x_for_actor,X
+.C:2cca  BD 25 FD    LDA actor_cur_waypoint_x,X
+.C:2ccd  DD 45 FD    CMP actor_path_probe_x,X
 .C:2cd0  D0 03       BNE check_x_direction
 ;X coordinate of waypoint reached - reset animation
-.C:2cd2  4C 23 2C    JMP reset_actor_render_flags
+.C:2cd2  4C 23 2C    JMP set_actor_stopped_and_render
 ;----------------------------------------------------
 ;Waypoint X coordinate not reached yet - move position
 check_x_direction:
@@ -10893,21 +10893,21 @@ check_x_direction:
 .C:2cd8  D0 06       BNE move_right
 ;----------------------------------------------------
 move_left:
-.C:2cda  DE 45 FD    DEC position_to_waypoint_x_for_actor,X
+.C:2cda  DE 45 FD    DEC actor_path_probe_x,X
 .C:2cdd  4C E3 2C    JMP update_current_box_2
 ;----------------------------------------------------
 move_right:
-.C:2ce0  FE 45 FD    INC position_to_waypoint_x_for_actor,X
+.C:2ce0  FE 45 FD    INC actor_path_probe_x,X
 ;----------------------------------------------------
 update_current_box_2:
-.C:2ce3  20 1B 2F    JSR snapshot_actor_path_state
-.C:2ce6  20 F4 2C    JSR update_actor_walkbox_state
+.C:2ce3  20 1B 2F    JSR save_actor_path_state
+.C:2ce6  20 F4 2C    JSR resolve_actor_walkbox_and_behavior
 ;Has a box been determined? If so, exit
 .C:2ce9  C9 FF       CMP #$FF
 .C:2ceb  D0 06       BNE exit
 ;Box not determined - reset animation
-.C:2ced  20 48 2F    JSR restore_actor_path_snapshot
-.C:2cf0  4C 23 2C    JMP reset_actor_render_flags
+.C:2ced  20 48 2F    JSR restore_actor_path_state
+.C:2cf0  4C 23 2C    JMP set_actor_stopped_and_render
 exit:
 .C:2cf3  60          RTS
 ;===========================================
@@ -10924,7 +10924,7 @@ active_layer_1 = $fc3d
 box_vertical_edge = $fc3f
 current_box_index = $fdac
 
-update_actor_walkbox_state:
+resolve_actor_walkbox_and_behavior:
 .C:2cf4  A6 D8       LDX actor
 ;Load the walkboxes for the active costume
 .C:2cf6  20 B1 2D    JSR get_walkboxes_for_costume
@@ -11050,7 +11050,7 @@ check_layer_depth:
 ;--------------------------------------------------------
 ;It's not #FF but has bit 7 set
 ;Update the actor layer
-.C:2d8c  20 D7 2D    JSR select_actor_box_handler
+.C:2d8c  20 D7 2D    JSR apply_behavior
 .C:2d8f  A6 D8       LDX actor
 ;Return #01 as the current box has changed
 .C:2d91  A9 01       LDA #$01
@@ -11140,7 +11140,7 @@ exit:
 ;===========================================
 ; Arguments:	.A	layer_depth 
 ;===========================================
-select_actor_box_handler:
+apply_behavior:
 ;Clear bits 7, 1 and 0
 .C:2dd7  29 7C       AND #$7C
 ;Shift right twice
@@ -11179,7 +11179,7 @@ inlined_layer_subroutine = $2e0d
 .C:2e0c  20 00 00    JSR $0000
 .C:2e0f  60          RTS
 ;===========================================
-; Clears actor_box_handler_idx, actor_box_facing_override and actor_box_fg_masking by
+; Clears actor_box_handler_idx, actor_box_facing_override and actor_box_fg_occlusion by
 ; writing a #00 value to each of them.
 ;
 ; Arguments:	.X	actor index
@@ -11241,7 +11241,7 @@ debug_semaphore = $2f
 set_layer_3_as_3:
 .C:2e4d  A6 D8       LDX actor
 .C:2e4f  A9 03       LDA #$03
-.C:2e51  9D A8 FD    STA actor_box_fg_masking,X
+.C:2e51  9D A8 FD    STA actor_box_fg_occlusion,X
 ;-------------------------------------
 ;I highly suspect debug_semaphore was intended to halt execution and inspect data while debugging
 ;Is the semaphore bit 7 set? If so, exit
@@ -11328,11 +11328,11 @@ step_actor_x_dda:
 .C:2e9d  D0 06       BNE move_right
 ;------------------------------------------------------------
 move_left:
-.C:2e9f  DE 45 FD    DEC position_to_waypoint_x_for_actor,X
+.C:2e9f  DE 45 FD    DEC actor_path_probe_x,X
 .C:2ea2  4C A8 2E    JMP adjust_accumulated_after_motion
 ;------------------------------------------------------------
 move_right:
-.C:2ea5  FE 45 FD    INC position_to_waypoint_x_for_actor,X
+.C:2ea5  FE 45 FD    INC actor_path_probe_x,X
 ;------------------------------------------------------------
 adjust_accumulated_after_motion:
 ;After moving, we have to deduct the dominant rate of motion to the accumulated delta
@@ -11344,18 +11344,18 @@ adjust_accumulated_after_motion:
 update_delta_x_step:
 .C:2eac  9D F7 FD    STA actor_dx_accum,X
 ;------------------------------------------------------------
-.C:2eaf  20 1B 2F    JSR snapshot_actor_path_state
-.C:2eb2  20 F4 2C    JSR update_actor_walkbox_state
+.C:2eaf  20 1B 2F    JSR save_actor_path_state
+.C:2eb2  20 F4 2C    JSR resolve_actor_walkbox_and_behavior
 .C:2eb5  C9 FF       CMP #$FF
 .C:2eb7  D0 06       BNE has_waypoint_pos_been_reached
-.C:2eb9  20 48 2F    JSR restore_actor_path_snapshot
+.C:2eb9  20 48 2F    JSR restore_actor_path_state
 ;The walkbox has changed - return #03
 .C:2ebc  A9 03       LDA #$03
 .C:2ebe  60          RTS
 ;------------------------------------------------------------
 has_waypoint_pos_been_reached:
-.C:2ebf  BD 45 FD    LDA position_to_waypoint_x_for_actor,X
-.C:2ec2  DD 25 FD    CMP actor_active_wpt_x,X
+.C:2ebf  BD 45 FD    LDA actor_path_probe_x,X
+.C:2ec2  DD 25 FD    CMP actor_cur_waypoint_x,X
 .C:2ec5  D0 03       BNE pos_not_reached
 ;------------------------------------------------------------
 pos_reached:
@@ -11392,11 +11392,11 @@ step_actor_y_dda:
 .C:2edc  D0 06       BNE move_up
 ;------------------------------------------------------------
 move_down:
-.C:2ede  DE 49 FD    DEC position_to_waypoint_y_for_actor,X
+.C:2ede  DE 49 FD    DEC actor_path_probe_y,X
 .C:2ee1  4C E7 2E    JMP adjust_accumulated_after_motion
 ;------------------------------------------------------------
 move_up:
-.C:2ee4  FE 49 FD    INC position_to_waypoint_y_for_actor,X
+.C:2ee4  FE 49 FD    INC actor_path_probe_y,X
 ;------------------------------------------------------------
 adjust_accumulated_after_motion:
 ;After moving, we have to deduct the dominant rate of motion to the accumulated delta
@@ -11408,11 +11408,11 @@ adjust_accumulated_after_motion:
 update_delta_y_step:
 .C:2eeb  9D FB FD    STA actor_dy_accum,X
 ;------------------------------------------------------------
-.C:2eee  20 1B 2F    JSR snapshot_actor_path_state
-.C:2ef1  20 F4 2C    JSR update_actor_walkbox_state
+.C:2eee  20 1B 2F    JSR save_actor_path_state
+.C:2ef1  20 F4 2C    JSR resolve_actor_walkbox_and_behavior
 .C:2ef4  C9 FF       CMP #$FF
 .C:2ef6  D0 06       BNE depth_determined
-.C:2ef8  20 48 2F    JSR restore_actor_path_snapshot
+.C:2ef8  20 48 2F    JSR restore_actor_path_state
 ;The walkbox has changed - return #04
 .C:2efb  A9 04       LDA #$04
 .C:2efd  60          RTS
@@ -11422,14 +11422,14 @@ depth_determined:
 .C:2f01  F0 0A       BEQ has_waypoint_pos_been_reached
 .C:2f03  C9 FF       CMP #$FF
 .C:2f05  D0 06       BNE has_waypoint_pos_been_reached
-.C:2f07  20 48 2F    JSR restore_actor_path_snapshot
+.C:2f07  20 48 2F    JSR restore_actor_path_state
 ;Return #04
 .C:2f0a  A9 04       LDA #$04
 .C:2f0c  60          RTS
 ;------------------------------------------------------------
 has_waypoint_pos_been_reached:
-.C:2f0d  BD 49 FD    LDA position_to_waypoint_y_for_actor,X
-.C:2f10  DD 2D FD    CMP actor_active_wpt_y,X
+.C:2f0d  BD 49 FD    LDA actor_path_probe_y,X
+.C:2f10  DD 2D FD    CMP actor_cur_waypoint_y,X
 .C:2f13  D0 03       BNE pos_not_reached
 ;------------------------------------------------------------
 pos_reached:
@@ -11443,23 +11443,23 @@ pos_not_reached:
 ; Saves an actor's path data variables
 ;
 ; Also sets the current position variables to use the "copy" sets
-; That is: actor_x_pos = position_to_waypoint_x_for_actor (and accordingly for the Y axis)
+; That is: actor_pos_x = actor_path_probe_x (and accordingly for the Y axis)
 ;===========================================
-snapshot_actor_path_state:
+save_actor_path_state:
 .C:2f1b  A6 D8       LDX actor
 ;Save actor's X and Y position
-.C:2f1d  BD 41 FD    LDA actor_x_pos,X
-.C:2f20  8D 5A CB    STA saved_actor_x_pos
-.C:2f23  BD 3D FD    LDA actor_y_pos,X
-.C:2f26  8D 5B CB    STA saved_actor_y_pos
+.C:2f1d  BD 41 FD    LDA actor_pos_x,X
+.C:2f20  8D 5A CB    STA saved_actor_pos_x
+.C:2f23  BD 3D FD    LDA actor_pos_y,X
+.C:2f26  8D 5B CB    STA saved_actor_pos_y
 ;Save layer depth
 .C:2f29  BD 18 FD    LDA actor_box_attr,X
 .C:2f2c  8D 5D CB    STA saved_actor_box_attr
 ;Set position to use the copy values
-.C:2f2f  BD 45 FD    LDA position_to_waypoint_x_for_actor,X
-.C:2f32  9D 41 FD    STA actor_x_pos,X
-.C:2f35  BD 49 FD    LDA position_to_waypoint_y_for_actor,X
-.C:2f38  9D 3D FD    STA actor_y_pos,X
+.C:2f2f  BD 45 FD    LDA actor_path_probe_x,X
+.C:2f32  9D 41 FD    STA actor_pos_x,X
+.C:2f35  BD 49 FD    LDA actor_path_probe_y,X
+.C:2f38  9D 3D FD    STA actor_pos_y,X
 ;Save current box and path update
 .C:2f3b  BD CD FD    LDA actor_box_cur,X
 .C:2f3e  8D 5E CB    STA saved_actor_box_cur
@@ -11469,15 +11469,15 @@ snapshot_actor_path_state:
 ;===========================================
 ; Restores an actor's path data variables
 ;===========================================
-restore_actor_path_snapshot:
+restore_actor_path_state:
 .C:2f48  A6 D8       LDX actor
 ;Restore the saved position
-.C:2f4a  AD 5A CB    LDA saved_actor_x_pos
-.C:2f4d  9D 41 FD    STA actor_x_pos,X
-.C:2f50  9D 45 FD    STA position_to_waypoint_x_for_actor,X
-.C:2f53  AD 5B CB    LDA saved_actor_y_pos
-.C:2f56  9D 3D FD    STA actor_y_pos,X
-.C:2f59  9D 49 FD    STA position_to_waypoint_y_for_actor,X
+.C:2f4a  AD 5A CB    LDA saved_actor_pos_x
+.C:2f4d  9D 41 FD    STA actor_pos_x,X
+.C:2f50  9D 45 FD    STA actor_path_probe_x,X
+.C:2f53  AD 5B CB    LDA saved_actor_pos_y
+.C:2f56  9D 3D FD    STA actor_pos_y,X
+.C:2f59  9D 49 FD    STA actor_path_probe_y,X
 ;Restore layer depth
 .C:2f5c  AD 5D CB    LDA saved_actor_box_attr
 .C:2f5f  9D 18 FD    STA actor_box_attr,X
@@ -11491,10 +11491,10 @@ restore_actor_path_snapshot:
 ;========================================================================================
 ; Set path delta variables for an actor, given its current position and path destination
 ;
-; Arguments:		actor_active_wpt_x
-;					actor_active_wpt_y
-;					position_to_waypoint_x_for_actor
-;					position_to_waypoint_y_for_actor
+; Arguments:		actor_cur_waypoint_x
+;					actor_cur_waypoint_y
+;					actor_path_probe_x
+;					actor_path_probe_y
 ;
 ; Returns:	.A		#00	if there's at least one non-zero delta (movement needed)
 ;					#01	if both deltas (vertical and horizontal) are zero (movement not needed)
@@ -11523,14 +11523,14 @@ init_dda_for_path:
 ;-----------------------------------------------
 ;Compare X position vs. path X destination
 .C:2f7a  A6 D8       LDX actor
-.C:2f7c  BD 25 FD    LDA actor_active_wpt_x,X
-.C:2f7f  DD 45 FD    CMP position_to_waypoint_x_for_actor,X
+.C:2f7c  BD 25 FD    LDA actor_cur_waypoint_x,X
+.C:2f7f  DD 45 FD    CMP actor_path_probe_x,X
 .C:2f82  90 09       BCC path_x_le_pos
 ;-----------------------------------------------
 path_x_gt_pos:
 ;Path >= position
 ;Do: path - position to compute the delta
-.C:2f84  FD 45 FD    SBC position_to_waypoint_x_for_actor,X
+.C:2f84  FD 45 FD    SBC actor_path_probe_x,X
 ;As position < path, the position - path subtraction doesn't need a borrow
 ;This means the carry, after subtraction, is set
 ;Rotate the carry into dir_x_bit
@@ -11541,9 +11541,9 @@ path_x_gt_pos:
 path_x_le_pos:
 ;Path < position
 ;Do: position - path to compute the delta
-.C:2f8d  BD 45 FD    LDA position_to_waypoint_x_for_actor,X
+.C:2f8d  BD 45 FD    LDA actor_path_probe_x,X
 .C:2f90  38          SEC
-.C:2f91  FD 25 FD    SBC actor_active_wpt_x,X
+.C:2f91  FD 25 FD    SBC actor_cur_waypoint_x,X
 ;Note: Carry #01 is NOT set into dir_x_bit
 ;This keeps the delta X direction at its current value of #00 (left)
 ;-----------------------------------------------
@@ -11551,14 +11551,14 @@ set_path_delta_x:
 .C:2f94  8D 62 CB    STA path_delta_x
 ;-----------------------------------------------
 ;Repeat the same logic with the Y coordinates
-.C:2f97  BD 2D FD    LDA actor_active_wpt_y,X
-.C:2f9a  DD 49 FD    CMP position_to_waypoint_y_for_actor,X
+.C:2f97  BD 2D FD    LDA actor_cur_waypoint_y,X
+.C:2f9a  DD 49 FD    CMP actor_path_probe_y,X
 .C:2f9d  90 09       BCC path_y_le_pos
 ;-----------------------------------------------
 path_y_gt_pos:
 ;Path destination >= position
 ;Do: path - position to compute the delta
-.C:2f9f  FD 49 FD    SBC position_to_waypoint_y_for_actor,X
+.C:2f9f  FD 49 FD    SBC actor_path_probe_y,X
 ;Rotate the carry (#01 as there was no borrow) into dir_y_bit
 ;This sets the delta Y direction to #01 (down)
 .C:2fa2  2E 59 CB    ROL dir_y_bit
@@ -11567,9 +11567,9 @@ path_y_gt_pos:
 path_y_le_pos:
 ;Path destination < position
 ;Do: position - path to compute the delta
-.C:2fa8  BD 49 FD    LDA position_to_waypoint_y_for_actor,X
+.C:2fa8  BD 49 FD    LDA actor_path_probe_y,X
 .C:2fab  38          SEC
-.C:2fac  FD 2D FD    SBC actor_active_wpt_y,X
+.C:2fac  FD 2D FD    SBC actor_cur_waypoint_y,X
 ;Delta Y direction value remains at #00 (up)
 set_path_delta_y:
 .C:2faf  8D 61 CB    STA path_delta_y
@@ -11640,15 +11640,15 @@ set_delta_dominant:
 ;===========================================
 ; Converts an actor's position to a sprite position
 ;===========================================
-actor_room_to_sprite_coords:
-.C:3015  20 F7 3F    JSR compute_actor_visibility
+map_room_to_sprite_coords:
+.C:3015  20 F7 3F    JSR update_actor_visibility
 ;Clear the actor's sprite's hi byte for the X coordinate
 .C:3018  A6 D8       LDX actor
 .C:301a  A9 00       LDA #$00
 .C:301c  9D 39 FD    STA actor_tgt_sprite_x_hi,X
 ;Convert the actor's X coordinate to sprite coordinate
 ;Subtract the room's visible left edge
-.C:301f  BD 41 FD    LDA actor_x_pos,X
+.C:301f  BD 41 FD    LDA actor_pos_x,X
 .C:3022  38          SEC
 .C:3023  ED 64 06    SBC room_scene_left_edge
 ;Add 3
@@ -11668,7 +11668,7 @@ actor_room_to_sprite_coords:
 .C:3035  DE 1C FD    DEC actor_tgt_sprite_x_lo,X
 ;Convert the actor's Y coordinate to sprite coordinate
 ;Multiply by 2 and add 2
-.C:3038  BD 3D FD    LDA actor_y_pos,X
+.C:3038  BD 3D FD    LDA actor_pos_y,X
 .C:303b  0A          ASL A
 .C:303c  18          CLC
 .C:303d  69 02       ADC #$02
@@ -11689,7 +11689,7 @@ actor_room_to_sprite_coords:
 ;===========================================
 actor_index = $3043
 
-refresh_visibility_and_tick_sprites:
+step_actor_visibility_and_sprites:
 ;Use active_costume as costume index
 .C:3044  A9 00       LDA #$00
 .C:3046  8D 30 FC    STA active_costume
@@ -11701,7 +11701,7 @@ check_character:
 .C:304f  30 05       BMI next_character
 .C:3051  85 D8       STA actor
 ;Update the actor's visiblity in the room scene
-.C:3053  20 F7 3F    JSR compute_actor_visibility
+.C:3053  20 F7 3F    JSR update_actor_visibility
 next_character:
 ;If more characters are pending, continue
 .C:3056  EE 30 FC    INC active_costume
@@ -11710,7 +11710,7 @@ next_character:
 .C:305e  D0 E9       BNE check_character
 ;------------------------------------------------
 ;Assign sprites to all actors
-.C:3060  20 D3 3E    JSR assign_and_order_sprites
+.C:3060  20 D3 3E    JSR sync_sprites_with_actors
 ;Use actor_index as actor index
 .C:3063  A2 00       LDX #$00
 .C:3065  8E 43 30    STX actor_index
@@ -11747,7 +11747,7 @@ move_actor_sprite:
 .C:308e  D0 12       BNE next_actor
 ;Bits are equal - actor is stopped
 ;Convert the actor's position to a sprite position
-.C:3090  20 15 30    JSR actor_room_to_sprite_coords
+.C:3090  20 15 30    JSR map_room_to_sprite_coords
 ;Copy the new sprite's coordinates
 .C:3093  BD 1C FD    LDA actor_tgt_sprite_x_lo,X
 .C:3096  BC 32 FC    LDY actor_sprite_index,X
@@ -11776,7 +11776,7 @@ box_ptr = $17
 
 is_actor_pos_inside_box:
 ;Compare X against left edge
-.C:30ad  BD 41 FD    LDA actor_x_pos,X
+.C:30ad  BD 41 FD    LDA actor_pos_x,X
 .C:30b0  D1 17       CMP (box_ptr),Y
 ;If X < left edge, return #FF
 .C:30b2  90 19       BCC return_ff
@@ -11789,7 +11789,7 @@ is_actor_pos_inside_box:
 check_y:
 ;Check Y against top edge
 .C:30bb  C8          INY
-.C:30bc  BD 3D FD    LDA actor_y_pos,X
+.C:30bc  BD 3D FD    LDA actor_pos_y,X
 .C:30bf  D1 17       CMP (box_ptr),Y
 ;If Y < top edge, return #FF
 .C:30c1  90 0A       BCC return_ff
@@ -12377,7 +12377,7 @@ store_to_destination:
 ;===========================================
 character_index = $335e
 
-step_actor_motion_and_limbs:
+step_actor_motion_and_animation:
 ;Init character_index with #00
 .C:3361  A9 00       LDA #$00
 .C:3363  8D 5E 33    STA character_index
@@ -12394,11 +12394,11 @@ check_character:
 .C:3373  BD 61 78    LDA costume_ptr_hi_tbl,X
 .C:3376  F0 09       BEQ next_character
 ;Set the waypoint for this actor
-.C:3378  20 81 1C    JSR apply_waypoint_update_if_needed
+.C:3378  20 81 1C    JSR apply_pending_waypoint_update
 ;Move the actor along the path
-.C:337b  20 F8 29    JSR update_actor_motion
+.C:337b  20 F8 29    JSR step_actor_motion
 ;Animate the actor's limbs
-.C:337e  20 04 25    JSR step_actor_limb_animation
+.C:337e  20 04 25    JSR step_actor_animation
 next_character:
 ;Move to the next character
 .C:3381  EE 5E 33    INC character_index
@@ -12430,11 +12430,11 @@ check_actor:
 .C:33a4  29 FE       AND #$FE
 .C:33a6  9D 97 FD    STA actor_render_flags,X
 ;Update the actor's visibility in the scene
-.C:33a9  20 F7 3F    JSR compute_actor_visibility
+.C:33a9  20 F7 3F    JSR update_actor_visibility
 ;Convert the actor's position in the room to sprite's positions in the screen
-.C:33ac  20 15 30    JSR actor_room_to_sprite_coords
+.C:33ac  20 15 30    JSR map_room_to_sprite_coords
 ;Assign sprites to all actors
-.C:33af  20 D3 3E    JSR assign_and_order_sprites
+.C:33af  20 D3 3E    JSR sync_sprites_with_actors
 ;Is the actor visible in the scene? If not, continue with the next one
 .C:33b2  A6 D8       LDX actor
 .C:33b4  BD 6F FD    LDA actor_visible,X
@@ -12578,7 +12578,7 @@ load_room:
 .C:3468  20 CC 29    JSR init_sentence_ui_and_stack
 ;Execute the current room's exit script
 .C:346b  20 9D 3A    JSR execute_room_exit_script
-.C:346e  20 CE 3B    JSR hide_all_actors_and_release_sprites
+.C:346e  20 CE 3B    JSR hide_all_actors
 ;-----------------------------------------
 ;Release all costumes in use
 ;Use .X as costume index
@@ -13071,19 +13071,19 @@ set_result:
 ;Copy object's X destination coordinate
 .C:36e8  A0 0A       LDY #$0A
 .C:36ea  B1 15       LDA (read_ptr_lo),Y
-.C:36ec  9D CD 71    STA object_x_destination,X
+.C:36ec  9D CD 71    STA obj_approach_x,X
 ;Offset #0B encodes the preposition index in bits 7-5
 .C:36ef  A0 0B       LDY #$0B
 .C:36f1  B1 15       LDA (read_ptr_lo),Y
 ;Copy object's Y destination coordinate (bits 4-0)
 .C:36f3  29 1F       AND #$1F
-.C:36f5  9D E9 71    STA object_y_destination,X
+.C:36f5  9D E9 71    STA obj_approach_y,X
 ;Copy object's height and destination active flag from offset #0C
 .C:36f8  A0 0C       LDY #$0C
 .C:36fa  B1 15       LDA (read_ptr_lo),Y
 .C:36fc  48          PHA
 .C:36fd  29 07       AND #$07
-.C:36ff  9D 05 72    STA object_destination_active,X
+.C:36ff  9D 05 72    STA obj_has_explicit_approach,X
 .C:3702  68          PLA
 .C:3703  4A          LSR A
 .C:3704  4A          LSR A
@@ -13466,10 +13466,10 @@ detach_actor_from_costume:	;Should be renamed to "assign_actor", unassign, relea
 .C:38e4  BD 57 FE    LDA actor_for_costume,X
 .C:38e7  A8          TAY
 ;Save the actor's position into the costume position
-.C:38e8  B9 41 FD    LDA actor_x_pos,Y
-.C:38eb  9D 2E FF    STA costume_dest_x,X
-.C:38ee  B9 3D FD    LDA actor_y_pos,Y
-.C:38f1  9D 15 FF    STA costume_dest_y,X
+.C:38e8  B9 41 FD    LDA actor_pos_x,Y
+.C:38eb  9D 2E FF    STA costume_target_x,X
+.C:38ee  B9 3D FD    LDA actor_pos_y,Y
+.C:38f1  9D 15 FF    STA costume_target_y,X
 ;Set actor as not visible
 .C:38f4  A9 00       LDA #$00
 .C:38f6  99 6F FD    STA actor_visible,Y
@@ -13480,11 +13480,11 @@ detach_actor_from_costume:	;Should be renamed to "assign_actor", unassign, relea
 .C:38fe  9D 57 FE    STA actor_for_costume,X
 .C:3901  99 53 FE    STA costume_for_actor,Y
 ;Convert actor's direction to an animation set and save it
-.C:3904  B9 EB FD    LDA facing_direction_for_actor,Y
+.C:3904  B9 EB FD    LDA actor_cur_facing_direction,Y
 .C:3907  20 DF 3B    JSR map_facing_direction_to_standing_clip
 .C:390a  9D 47 FF    STA costume_clip_set,X
 ;Assign sprites to all actors
-.C:390d  20 D3 3E    JSR assign_and_order_sprites
+.C:390d  20 D3 3E    JSR sync_sprites_with_actors
 .C:3910  60          RTS
 ;===========================================
 ; Finds an available actor and assigns it to the costume, initializing it
@@ -13506,7 +13506,7 @@ check_if_actor_in_use:
 .C:3919  B9 53 FE    LDA costume_for_actor,Y
 .C:391c  10 04       BPL next_actor
 ;Actor available - assign it and initialize it
-.C:391e  20 27 39    JSR bind_actor_to_costume_and_init
+.C:391e  20 27 39    JSR initialize_actor_for_costume
 .C:3921  60          RTS
 next_actor:
 .C:3922  C8          INY
@@ -13519,7 +13519,7 @@ next_actor:
 ; Arguments: 	.X	costume index
 ;				.Y	actor index
 ;===========================================
-bind_actor_to_costume_and_init:
+initialize_actor_for_costume:
 ;Set the costume for this actor
 .C:3927  8A          TXA
 .C:3928  99 53 FE    STA costume_for_actor,Y
@@ -13531,9 +13531,9 @@ bind_actor_to_costume_and_init:
 ;Set the costume in action
 .C:3931  8E 30 FC    STX active_costume
 ;Set up arguments for the walkbox coordinates adjustment
-.C:3934  BD 2E FF    LDA costume_dest_x,X
+.C:3934  BD 2E FF    LDA costume_target_x,X
 .C:3937  8D 72 FE    STA box_check_x
-.C:393a  BD 15 FF    LDA costume_dest_y,X
+.C:393a  BD 15 FF    LDA costume_target_y,X
 .C:393d  8D 73 FE    STA box_check_y
 .C:3940  AD 49 71    LDA current_room
 .C:3943  8D 74 FE    STA walkbox_room
@@ -13544,15 +13544,15 @@ bind_actor_to_costume_and_init:
 .C:394c  A4 D8       LDY actor
 ;Copy the adjusted coordinates accordingly
 .C:394e  AD 72 FE    LDA box_check_x
-.C:3951  9D 2E FF    STA costume_dest_x,X
-.C:3954  99 41 FD    STA actor_x_pos,Y
-.C:3957  99 D9 FD    STA actor_x_dest,Y
-.C:395a  99 25 FD    STA actor_active_wpt_x,Y
+.C:3951  9D 2E FF    STA costume_target_x,X
+.C:3954  99 41 FD    STA actor_pos_x,Y
+.C:3957  99 D9 FD    STA actor_target_x,Y
+.C:395a  99 25 FD    STA actor_cur_waypoint_x,Y
 .C:395d  AD 73 FE    LDA box_check_y
-.C:3960  9D 15 FF    STA costume_dest_y,X
-.C:3963  99 3D FD    STA actor_y_pos,Y
-.C:3966  99 DD FD    STA actor_y_dest,Y
-.C:3969  99 2D FD    STA actor_active_wpt_y,Y
+.C:3960  9D 15 FF    STA costume_target_y,X
+.C:3963  99 3D FD    STA actor_pos_y,Y
+.C:3966  99 DD FD    STA actor_target_y,Y
+.C:3969  99 2D FD    STA actor_cur_waypoint_y,Y
 ;Set mouth state to #00 (closed)
 .C:396c  A9 00       LDA #$00
 .C:396e  99 9D FE    STA actor_mouth_state,Y
@@ -13615,7 +13615,7 @@ init_limb_cell:
 .C:39c3  99 CD FD    STA actor_box_cur,Y
 ;Save this box as the last box for the actor
 .C:39c6  99 D1 FD    STA actor_box_prev,Y
-.C:39c9  99 D5 FD    STA actor_destination_box,Y
+.C:39c9  99 D5 FD    STA actor_target_box,Y
 ;Get the boundary boxes for this room
 .C:39cc  A6 D8       LDX actor
 .C:39ce  20 B1 2D    JSR get_walkboxes_for_costume
@@ -13950,7 +13950,7 @@ game_paused_flag_msg:
 ;===========================================
 ; Clear all actors visibility in the scene
 ;===========================================
-hide_all_actors_and_release_sprites:
+hide_all_actors:
 .C:3bce  A9 00       LDA #$00
 .C:3bd0  A2 03       LDX #$03
 clear_visibility:
@@ -13958,7 +13958,7 @@ clear_visibility:
 .C:3bd5  CA          DEX
 .C:3bd6  10 FA       BPL clear_visibility
 ;Assign sprites to all actors
-.C:3bd8  20 D3 3E    JSR assign_and_order_sprites
+.C:3bd8  20 D3 3E    JSR sync_sprites_with_actors
 .C:3bdb  60          RTS
 ;===========================================
 ; Converts an actor's direction bitmask (00/01/80/81) to a costume's standing animation set (04/05/06/07)
@@ -14004,7 +14004,7 @@ check_actor_boundaries:
 .C:3c02  30 34       BMI next_actor
 ;-----------------------------------
 ;Check if the cursor's X coordinate falls within the actor's X range
-.C:3c04  BD 41 FD    LDA actor_x_pos,X
+.C:3c04  BD 41 FD    LDA actor_pos_x,X
 .C:3c07  CD 80 FE    CMP cursor_x_pos_quarter_absolute
 .C:3c0a  F0 02       BEQ check_right_edge
 .C:3c0c  B0 2A       BCS next_actor
@@ -14015,7 +14015,7 @@ check_right_edge:
 .C:3c14  90 22       BCC next_actor
 ;-----------------------------------
 ;The X coordinate is in range, now check the Y coordinate
-.C:3c16  BD 3D FD    LDA actor_y_pos,X
+.C:3c16  BD 3D FD    LDA actor_pos_y,X
 .C:3c19  CD 7F FE    CMP cursor_y_pos_half_off_by_8
 .C:3c1c  90 1A       BCC next_actor
 ;Subtract one row
@@ -14620,7 +14620,7 @@ actor_index_for_sprite = $cb76
 sprite_index_copy = $404c
 sprites_in_use_count = $cb7a
 
-assign_and_order_sprites:
+sync_sprites_with_actors:
 ;Use .X as actor index
 .C:3ed3  A2 00       LDX #$00
 check_sprite_assigned_to_invisible_actor:
@@ -14800,7 +14800,7 @@ check_actor_against_candidate:
 .C:3fa4  C9 13       CMP #$13
 .C:3fa6  F0 06       BEQ actor_is_plant
 ;It's not the plant, get its vertical position
-.C:3fa8  B9 3D FD    LDA actor_y_pos,Y
+.C:3fa8  B9 3D FD    LDA actor_pos_y,Y
 .C:3fab  4C B0 3F    JMP compare_position_y
 actor_is_plant:
 ;The actor is the plant, use #00 as its vertical position
@@ -14874,7 +14874,7 @@ next_sprite_3:
 ; Arguments:	active_costume
 ; Returns:	actor_visible	#00 if not visible, #01 if visible
 ;===========================================
-compute_actor_visibility:
+update_actor_visibility:
 ;Is there an assigned actor for the active costume?
 .C:3ff7  AE 30 FC    LDX active_costume
 .C:3ffa  BD 57 FE    LDA actor_for_costume,X
@@ -14886,7 +14886,7 @@ compute_actor_visibility:
 check_actor_position:
 ;Check the actor's position vs. the room's visible left edge by doing a subtraction
 .C:4004  A6 D8       LDX actor
-.C:4006  BD 41 FD    LDA actor_x_pos,X
+.C:4006  BD 41 FD    LDA actor_pos_x,X
 .C:4009  38          SEC
 .C:400a  ED 64 06    SBC room_scene_left_edge
 ;Subtraction < #FE? If not, check if it's fully to the left
@@ -19344,7 +19344,7 @@ mem_alloc:
 .C:54ef  20 D5 58    JSR mem_compact_then_release
 .C:54f2  D0 0C       BNE block_found
 ;Release one costume and try again
-.C:54f4  20 7B 56    JSR rsrc_unlock_or_unassign_costume
+.C:54f4  20 7B 56    JSR rsrc_unlock_or_detach_costume
 .C:54f7  AE 01 55    LDX temp_x
 .C:54fa  AC 02 55    LDY temp_y
 .C:54fd  4C E4 54    JMP mem_alloc
@@ -19632,7 +19632,7 @@ disk_id_mismatch:
 ;===========================================
 MAX_costume_index = #$18
 
-rsrc_unlock_or_unassign_costume:
+rsrc_unlock_or_detach_costume:
 .C:567b  A2 18       LDX MAX_costume_index
 check_costume:
 ;Check memory attribute of costume
@@ -19672,9 +19672,9 @@ check_eligibility:
 .C:56a2  AA          TAX
 ;Set default coordinates
 .C:56a3  A9 14       LDA #$14
-.C:56a5  9D 2E FF    STA costume_dest_x,X
+.C:56a5  9D 2E FF    STA costume_target_x,X
 .C:56a8  A9 3C       LDA #$3C
-.C:56aa  9D 15 FF    STA costume_dest_y,X
+.C:56aa  9D 15 FF    STA costume_target_y,X
 ;Set costume's room to #2C and exit
 .C:56ad  A9 2C       LDA #$2C
 .C:56af  9D FC FE    STA costume_room_idx,X
@@ -21831,28 +21831,28 @@ entry:
 ;They are both in the current room
 .C:5ff7  A6 19       LDX current_actor
 .C:5ff9  BC 57 FE    LDY actor_for_costume,X
-.C:5ffc  B9 41 FD    LDA actor_x_pos,Y
+.C:5ffc  B9 41 FD    LDA actor_pos_x,Y
 .C:5fff  85 1D       STA actor2_x
-.C:6001  B9 3D FD    LDA actor_y_pos,Y
+.C:6001  B9 3D FD    LDA actor_pos_y,Y
 .C:6004  85 1E       STA actor2_y
 .C:6006  A6 17       LDX reference_actor
 .C:6008  BC 57 FE    LDY actor_for_costume,X
-.C:600b  B9 41 FD    LDA actor_x_pos,Y
+.C:600b  B9 41 FD    LDA actor_pos_x,Y
 .C:600e  85 1B       STA actor1_x
-.C:6010  B9 3D FD    LDA actor_y_pos,Y
+.C:6010  B9 3D FD    LDA actor_pos_y,Y
 .C:6013  85 1C       STA actor1_y
 .C:6015  4C 30 60    JMP compute_x_distance
 ;---------------------------
 not_in_current_room:
 .C:6018  A6 19       LDX current_actor
-.C:601a  BD 2E FF    LDA costume_dest_x,X
+.C:601a  BD 2E FF    LDA costume_target_x,X
 .C:601d  85 1D       STA actor2_x
-.C:601f  BD 15 FF    LDA costume_dest_y,X
+.C:601f  BD 15 FF    LDA costume_target_y,X
 .C:6022  85 1E       STA actor2_y
 .C:6024  A6 17       LDX reference_actor
-.C:6026  BD 2E FF    LDA costume_dest_x,X
+.C:6026  BD 2E FF    LDA costume_target_x,X
 .C:6029  85 1B       STA actor1_x
-.C:602b  BD 15 FF    LDA costume_dest_y,X
+.C:602b  BD 15 FF    LDA costume_target_y,X
 .C:602e  85 1C       STA actor1_y
 ;---------------------------
 compute_x_distance:
@@ -22839,18 +22839,18 @@ entry:
 .C:635f  4C 8E 63    JMP exit
 object_found:
 ;Set the destination based on the object's position
-.C:6362  20 75 0F    JSR set_actor_destination_to_object
+.C:6362  20 75 0F    JSR set_approach_point_for_object
 ;Move the current kid to the position
 .C:6365  AD 67 FF    LDA current_kid_idx
 .C:6368  8D 30 FC    STA active_costume
 .C:636b  AD 49 71    LDA current_room
-.C:636e  8D EA FD    STA room_destination
-.C:6371  20 9C 26    JSR teleport_costume_to_destination
+.C:636e  8D EA FD    STA target_room
+.C:6371  20 9C 26    JSR place_costume_at_target
 ;Set the camera position at the kid's position
 .C:6374  AE 67 FF    LDX current_kid_idx
 .C:6377  BD 57 FE    LDA actor_for_costume,X
 .C:637a  AA          TAX
-.C:637b  BD 41 FD    LDA actor_x_pos,X
+.C:637b  BD 41 FD    LDA actor_pos_x,X
 .C:637e  8D 66 06    STA cam_target_pos
 ;Set default camera position
 .C:6381  A9 C8       LDA #$C8
@@ -23527,8 +23527,8 @@ common:
 .C:6668  C0 FF       CPY #$FF
 .C:666a  F0 06       BEQ exit
 ;Item is available, compute destination
-.C:666c  20 75 0F    JSR set_actor_destination_to_object
-.C:666f  20 1F 1C    JSR set_actor_destination
+.C:666c  20 75 0F    JSR set_approach_point_for_object
+.C:666f  20 1F 1C    JSR set_costume_target
 exit:
 .C:6672  60          RTS
 ;===========================================
@@ -23557,20 +23557,20 @@ common:
 .C:6688  C0 FF       CPY #$FF
 .C:668a  F0 06       BEQ default_destination
 ;Item is available, compute destination
-.C:668c  20 75 0F    JSR set_actor_destination_to_object
+.C:668c  20 75 0F    JSR set_approach_point_for_object
 .C:668f  4C 9C 66    JMP move_actor
 default_destination:
 .C:6692  A9 1E       LDA #$1E
-.C:6694  8D E6 FD    STA dest_x
+.C:6694  8D E6 FD    STA target_x
 .C:6697  A9 3C       LDA #$3C
-.C:6699  8D E7 FD    STA dest_y
+.C:6699  8D E7 FD    STA target_y
 move_actor:
 ;Set room destination as current room
 .C:669c  AE 30 FC    LDX active_costume
 .C:669f  BD FC FE    LDA costume_room_idx,X
-.C:66a2  8D EA FD    STA room_destination
+.C:66a2  8D EA FD    STA target_room
 ;Move actor to destination
-.C:66a5  20 9C 26    JSR teleport_costume_to_destination
+.C:66a5  20 9C 26    JSR place_costume_at_target
 .C:66a8  20 B4 5D    JSR refresh_script_addresses_if_moved
 .C:66ab  60          RTS
 ;===========================================
@@ -23607,9 +23607,9 @@ both_actors_assigned:
 .C:66d2  69 01       ADC #$01
 .C:66d4  8D 6A 0F    STA inlined_negative_walking_offset
 ;Set destination for actor
-.C:66d7  20 46 0F    JSR set_actor_destination_adjacent_to_actor
+.C:66d7  20 46 0F    JSR set_approach_point_for_actor
 ;Walk actor to destination
-.C:66da  20 1F 1C    JSR set_actor_destination
+.C:66da  20 1F 1C    JSR set_costume_target
 .C:66dd  60          RTS
 ;===========================================
 ;Opcode #1E, #3E, #5E, #7E, #9E, #BE, #DE, #FE - walk actor to location
@@ -23619,12 +23619,12 @@ both_actors_assigned:
 .C:66e1  8D 30 FC    STA active_costume
 ;Read X destination
 .C:66e4  20 90 5F    JSR script_load_operand_bit6
-.C:66e7  8D E6 FD    STA dest_x
+.C:66e7  8D E6 FD    STA target_x
 ;Read Y destination
 .C:66ea  20 88 5F    JSR script_load_operand_bit5
-.C:66ed  8D E7 FD    STA dest_y
+.C:66ed  8D E7 FD    STA target_y
 ;Walk actor to destination
-.C:66f0  20 1F 1C    JSR set_actor_destination
+.C:66f0  20 1F 1C    JSR set_costume_target
 .C:66f3  60          RTS
 ;===========================================
 ;Opcode #01, #21, #41, #61, #81, #A1, #C1, #E1 - put actor at location
@@ -23634,16 +23634,16 @@ both_actors_assigned:
 .C:66f7  8D 30 FC    STA active_costume
 ;Read X destination
 .C:66fa  20 90 5F    JSR script_load_operand_bit6
-.C:66fd  8D E6 FD    STA dest_x
+.C:66fd  8D E6 FD    STA target_x
 ;Read Y destination
 .C:6700  20 88 5F    JSR script_load_operand_bit5
-.C:6703  8D E7 FD    STA dest_y
+.C:6703  8D E7 FD    STA target_y
 ;Set room destination as current room
 .C:6706  AE 30 FC    LDX active_costume
 .C:6709  BD FC FE    LDA costume_room_idx,X
-.C:670c  8D EA FD    STA room_destination
+.C:670c  8D EA FD    STA target_room
 ;Move actor to destination
-.C:670f  20 9C 26    JSR teleport_costume_to_destination
+.C:670f  20 9C 26    JSR place_costume_at_target
 .C:6712  20 B4 5D    JSR refresh_script_addresses_if_moved
 .C:6715  60          RTS
 ;===========================================
@@ -23767,7 +23767,7 @@ save_sentence_part:
 ;Opcode #C0 - return from cutscene
 ;===========================================
 .C:67b0  A9 00       LDA #$00
-.C:67b2  8D 6D FF    STA var_destination_x
+.C:67b2  8D 6D FF    STA var_target_x
 .C:67b5  A9 00       LDA #$00
 .C:67b7  8D A6 FE    STA saved_task_idx
 .C:67ba  A9 00       LDA #$00
@@ -23878,7 +23878,7 @@ in_current_room:
 ;Fetch the X position of the actor to follow
 .C:6842  AE 6B 06    LDX camera_costume_to_follow
 .C:6845  BC 57 FE    LDY actor_for_costume,X
-.C:6848  B9 41 FD    LDA actor_x_pos,Y
+.C:6848  B9 41 FD    LDA actor_pos_x,Y
 ;Set camera at that position
 .C:684b  20 66 68    JSR cam_seek_to
 ;Set default camera position
@@ -24058,11 +24058,11 @@ destination_variable = $d0
 .C:6909  30 07       BMI actor_moving
 ;Actor not moving, fetch its position
 .C:690b  AA          TAX
-.C:690c  BD 41 FD    LDA actor_x_pos,X
+.C:690c  BD 41 FD    LDA actor_pos_x,X
 .C:690f  4C 15 69    JMP set_value_in_var
 actor_moving:
 ;Get the actor destination
-.C:6912  BD 2E FF    LDA costume_dest_x,X
+.C:6912  BD 2E FF    LDA costume_target_x,X
 set_value_in_var:
 ;Set result in variable
 .C:6915  A6 D0       LDX destination_variable
@@ -24083,11 +24083,11 @@ destination_variable = $d0
 .C:6927  30 07       BMI actor_moving
 ;Actor not moving, fetch its position
 .C:6929  AA          TAX
-.C:692a  BD 3D FD    LDA actor_y_pos,X
+.C:692a  BD 3D FD    LDA actor_pos_y,X
 .C:692d  4C 33 69    JMP set_value_in_var
 actor_moving:
 ;Get the actor destination
-.C:6930  BD 15 FF    LDA costume_dest_y,X
+.C:6930  BD 15 FF    LDA costume_target_y,X
 set_value_in_var:
 ;Set result in variable
 .C:6933  A6 D0       LDX destination_variable
@@ -24108,7 +24108,7 @@ destination_variable = $d0
 .C:6945  30 0A       BMI actor_moving
 ;Actor not moving, compute facing side
 .C:6947  AA          TAX
-.C:6948  BD EB FD    LDA facing_direction_for_actor,X
+.C:6948  BD EB FD    LDA actor_cur_facing_direction,X
 .C:694b  20 DF 3B    JSR map_facing_direction_to_standing_clip
 .C:694e  4C 54 69    JMP set_value_in_var
 actor_moving:
@@ -24188,7 +24188,7 @@ check_ff:
 .C:699a  BD 57 FE    LDA actor_for_costume,X
 .C:699d  30 05       BMI exit_3
 .C:699f  85 D8       STA actor
-.C:69a1  20 23 2C    JSR reset_actor_render_flags
+.C:69a1  20 23 2C    JSR set_actor_stopped_and_render
 exit_3:
 .C:69a4  4C AA 69    JMP exit
 ;---------------------------------------
@@ -25411,7 +25411,7 @@ loop:
 .C:85c4  A2 03       LDX #$03
 reset_actor:
 .C:85c6  A9 80       LDA #$80
-.C:85c8  9D EB FD    STA facing_direction_for_actor,X
+.C:85c8  9D EB FD    STA actor_cur_facing_direction,X
 ;Set all actors as "not in use"
 .C:85cb  A9 FF       LDA #$FF
 .C:85cd  9D 53 FE    STA costume_for_actor,X
@@ -25868,7 +25868,7 @@ prepare_video_for_new_room:
 .C:d69d  A9 01       LDA #$01
 .C:d69f  8D 6C 16    STA hide_cursor_flag
 ;Make all actors not visible
-.C:d6a2  20 CE 3B    JSR hide_all_actors_and_release_sprites
+.C:d6a2  20 CE 3B    JSR hide_all_actors
 .C:d6a5  A9 41       LDA #$41
 .C:d6a7  85 15       STA $15
 .C:d6a9  A9 F2       LDA #$F2

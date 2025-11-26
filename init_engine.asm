@@ -49,8 +49,6 @@
 .const TEXT_DELAY_DEFAULT          = $06      // Per-character delay factor
 .const DISK_ID_SIDE_2              = $32      // Game disk ID for side 2
 .const CAMERA_INIT_POS             = $C8      // Initial camera position
-.const NO_ACTOR                    = $FF      // Sentinel: no actor mapped
-.const NO_COSTUME                  = $FF      // Sentinel: actor has no costume
 .const RNG_SEED_1                  = $4D      // RNG seed byte 1
 .const RNG_SEED_2                  = $97      // RNG seed byte 2
 
@@ -961,7 +959,7 @@ Global Outputs
 	 cam_current_pos            set to CAMERA_INIT_POS
 	 costume_clip_set[0..COSTUME_MAX_INDEX] = CLIP_STAND_DOWN
 	 actor_for_costume[0..COSTUME_MAX_INDEX] = NO_ACTOR
-	 facing_direction_for_actor[0..ACTOR_MAX_INDEX] = DIRECTION_DOWN
+	 actor_cur_facing_direction[0..ACTOR_MAX_INDEX] = DIRECTION_DOWN
 	 costume_for_actor[0..ACTOR_MAX_INDEX] = NO_COSTUME
 	 random_1, random_2         set to RNG_SEED_1 / RNG_SEED_2
 
@@ -1050,7 +1048,7 @@ loop_init_costumes:
         ldx     #ACTOR_MAX_INDEX                            
 reset_actors:
         lda     #DIRECTION_DOWN
-        sta     facing_direction_for_actor,x      // default direction: down
+        sta     actor_cur_facing_direction,x      // default direction: down
         lda     #NO_COSTUME
         sta     costume_for_actor,x             // mark actor unused
         dex

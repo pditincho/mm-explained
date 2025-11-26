@@ -730,8 +730,8 @@ Arguments
 	X   			Actor index.
 	Y   			Offset to box data (relative to box_ptr).
 	box_ptr  		pointer to the start of the box table.
-	actor_x_pos[]  Actor horizontal positions.
-	actor_y_pos[]  Actor vertical positions.
+	actor_pos_x[]  Actor horizontal positions.
+	actor_pos_y[]  Actor vertical positions.
 
 Returns
 	A   			INSIDE_BOX 		if the actor is inside the box.
@@ -753,7 +753,7 @@ is_actor_pos_inside_box:
 		// Reads left edge at (box_ptr)+Y, then right edge at (box_ptr)+Y+1.
         // Early-out if outside on either edge test.
         // ------------------------------------------------------------
-        lda     actor_x_pos,x
+        lda     actor_pos_x,x
         cmp     (box_ptr),y                  // pos_x ? left
         bcc     return_outside               // pos_x < left → outside
 		
@@ -770,7 +770,7 @@ check_y:
         // Early-out if outside
         // ------------------------------------------------------------
         iny
-        lda     actor_y_pos,x
+        lda     actor_pos_y,x
         cmp     (box_ptr),y                  // pos_y ? top
         bcc     return_outside               // pos_y < top → outside
 		
@@ -865,8 +865,8 @@ function get_distance_to_box(pointX, pointY, box) -> (distance, nearestX, neares
 
 
 function is_actor_pos_inside_box(actorId, box) -> bool:
-    posX = actor_x_pos[actorId]
-    posY = actor_y_pos[actorId]
+    posX = actor_pos_x[actorId]
+    posY = actor_pos_y[actorId]
 
     left   = box.left
     right  = box.right

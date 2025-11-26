@@ -866,7 +866,125 @@ rsrc_hdr_init:
 		
 		// Unpause game
         jsr unpause_game
-        rts
+        rts		
+/*
+================================================================================
+  rsrc_unlock_or_detach_costume
+================================================================================
+Summary
+	Unlock a locked costume if possible; otherwise detach and park a non-kid,
+	resident costume. On total failure, enter a debug hang loop.
+
+Returns
+	On success: 	returns with X holding the unlocked or detached costume index
+	On failure: 	hangs
+
+Global Inputs
+	costume_liveness_tbl   Current per-costume lock/refcount/age state
+	costume_ptr_hi_tbl     Costume resource pointer table
+	current_kid_idx        Index of the active kid costume 
+
+Global Outputs
+	costume_liveness_tbl   Updated to clear the lock bit or fully cleared for a	detached costume.
+	costume_target_x/y       Reset to a default destination for a detached costume.
+	room_for_costume       Updated to park a detached costume in the holding room.
+
+Description
+	* Scan all costumes from COSTUME_MAX_INDEX downward.
+	* On the first locked entry, unlock it and return.
+	* If no locked costumes are found, scan kid costumes downward.
+	* Skip the active kid and any non-resident costumes.
+	* For the first eligible resident costume
+		* Clear its liveness
+		* Call detach_actor_from_costume
+		* Reset its default destination coordinates
+		* Park it in the holding room
+		* Return.
+	* If no candidate can be unlocked or detached, hang
+================================================================================
+*/
+* = $567B
+rsrc_unlock_or_detach_costume:
+		// Start at the highest costume index; scan downward one-by-one
+        ldx #COSTUME_MAX_INDEX            
+
+scan_locked_costumes:
+        // Costume unlocked? If so, skip
+        lda costume_liveness_tbl,x		// bit7 = 1 → locked (N=1)
+        bpl advance_lock_scan                 
+
+        // Costume locked - unlock it and return
+        and #RSRC_CLEAR_LOCK_MASK                         
+        sta costume_liveness_tbl,x          
+        rts                              
+
+advance_lock_scan:
+		// Next costume
+        dex
+        bne scan_locked_costumes        
+
+        // ------------------------------------------------------------		
+        // No locked costumes found - switch to detachment pass over the kids' costumes
+        // ------------------------------------------------------------
+        ldx #FIRST_NON_KID_INDEX
+scan_for_evict:
+        // Costume is the active kid? If so, skip it
+        cpx current_kid_idx
+        beq advance_costume_evict_scan
+
+        // Costume resident in memory? If not, skip it
+        lda costume_ptr_hi_tbl,x
+        beq advance_costume_evict_scan
+
+		// ------------------------------------------------------------
+		// Costume resident - Detach it from its actor
+		// ------------------------------------------------------------
+		// Clear its liveness
+        lda #$00
+        sta costume_liveness_tbl,x         
+
+        // Preserve loop index
+        txa                               
+        pha                               
+
+		// Detach actor from costume
+        jsr detach_actor_from_costume               
+
+        // Restore loop index
+        pla                               
+        tax                               
+
+        // ------------------------------------------------------------
+        // Set default destination for costume
+        // ------------------------------------------------------------
+        lda #COSTUME_DFLT_X_DEST        
+        sta costume_target_x,x
+        lda #COSTUME_DFLT_Y_DEST        
+        sta costume_target_y,x
+
+        // ------------------------------------------------------------
+        // Park the costume in the holding room and return.
+        // This de-associates it from the active room until explicitly reloaded.
+        // ------------------------------------------------------------
+        lda #COSTUME_HOLDING_ROOM       
+        sta room_for_costume,x
+        rts                               
+
+advance_costume_evict_scan:
+        dex
+        bne scan_for_evict            	// more candidates (X != 0) → continue first-8 scan
+
+		// ------------------------------------------------------------
+		// No eligible costume among kids - hangup
+		// ------------------------------------------------------------
+        lda #$05
+        sta debug_error_code             
+
+        ldy #MAP_IO_IN                   
+        sty cpu_port      
+costume_evict_hangup:
+        sta vic_border_color_reg      	
+        jmp costume_evict_hangup        		
 /*
 ================================================================================
   rsrc_update_ptr
@@ -1815,4 +1933,64 @@ function rsrc_release_evictable_scripts():
         mem_release(ptr)
         // mem_release should set rsrc_released_flag = true
         // Routine continues scanning and may free multiple scripts
+		
+function unlock_or_detach_costume_slot():
+    //----------------------------------------------------------------------
+    // 1) First pass: try to unlock a locked costume
+    //----------------------------------------------------------------------
+
+    // Scan from highest costume index down to 1
+    for costume_index from COSTUME_MAX_INDEX down to 1:
+        liveness = costume_liveness_tbl[costume_index]
+
+        // bit7 = lock bit; if clear, costume is unlocked → skip
+        if lock_bit_of(liveness) == 0:
+            continue
+
+        // Locked: clear lock bit and keep other fields (age/refcount/etc.)
+        liveness = liveness AND RSRC_CLEAR_LOCK_MASK
+        costume_liveness_tbl[costume_index] = liveness
+
+        // Success: we just unlocked one costume; return
+        return
+
+    //----------------------------------------------------------------------
+    // 2) Second pass: detach an eligible resident costume
+    //    (not the current kid, and actually resident)
+    //----------------------------------------------------------------------
+
+    // Scan from FIRST_NON_KID_INDEX down to 1
+    for costume_index from FIRST_NON_KID_INDEX down to 1:
+        // Never detach the currently active kid
+        if costume_index == current_kid_idx:
+            continue
+
+        // Only consider costumes that are resident in memory
+        if costume_ptr_hi_tbl[costume_index] == 0:
+            continue  // not resident → skip
+
+        // At this point:
+        // - costume_index is not the current kid
+        // - costume slot is resident → candidate for eviction
+
+        // 2a) Clear liveness: fully reset lock/refcount/age/etc.
+        costume_liveness_tbl[costume_index] = 0x00
+
+        // 2b) Detach any actor using this costume
+        detach_actor_from_costume(costume_index)
+
+        // 2c) Reset default “destination” for this costume
+        costume_target_x[costume_index] = COSTUME_DFLT_X_DEST
+        costume_target_y[costume_index] = COSTUME_DFLT_Y_DEST
+
+        // 2d) Park costume in the special holding room
+        room_for_costume[costume_index] = COSTUME_HOLDING_ROOM
+
+        // Success: we detached and parked one costume; return
+        return
+
+    //----------------------------------------------------------------------
+    // 3) Fatal failure: nothing to unlock or detach
+    //----------------------------------------------------------------------
+	hang
 */		

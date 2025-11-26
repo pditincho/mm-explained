@@ -16,7 +16,7 @@
  *   - All positions are “columns” in room space.
  *   - The visible window is 40 columns wide (0x28), centered at cam_target_pos.
  *   - VIEW_HALF_SPAN (0x14) is the center-to-edge offset; right edge is
- *     left + VIEW_FULL_SPAN_MINUS1 (0x27, inclusive).
+ *     left + VIEW_COL_MAX_IDX (0x27, inclusive).
  *
  * Behavior notes / edge cases:
  *   - cam_seek_to uses an absolute 8-bit distance (mod-256) against CAM_PAN_THRESHOLD;
@@ -63,7 +63,7 @@ right_follow_threshold: .byte $1E
  *   cam_pan_goal                     Target column for PAN mode.
  *   cam_follow_costume_id            Costume whose actor is followed (FOLLOW mode).
  *   actor_for_costume[ ]            Costume→actor slot map (FOLLOW mode).
- *   actor_x_pos[ ]         Actor X positions (FOLLOW mode).
+ *   actor_pos_x[ ]         Actor X positions (FOLLOW mode).
  *   viewport_left_col             Current left edge (for FOLLOW window tests).
  * Vars:
  *   left_follow_threshold            Columns from left edge that define left window bound.
@@ -74,7 +74,7 @@ right_follow_threshold: .byte $1E
  *   cam_target_pos                   Stepped toward goal/actor and clamped to bounds.
  *   actor_follow_needs_pan           Set/cleared when FOLLOW window is crossed/met.
  *   viewport_left_col             Updated from cam_target_pos (center - VIEW_HALF_SPAN).
- *   viewport_right_col            Updated from left_edge (+ VIEW_FULL_SPAN_MINUS1).
+ *   viewport_right_col            Updated from left_edge (+ VIEW_COL_MAX_IDX).
  *
  * Flags:
  *   Not preserved. Internal CMP/SBC/ADC modify NZCV.
@@ -143,7 +143,7 @@ mode_follow_actor:
 		ldx     cam_follow_costume_id         // costume id → actor slot map
 		lda     actor_for_costume,x           // A := actor slot for this costume
 		tax
-		lda     actor_x_pos,x        // A := actor_x (world/room coordinates)
+		lda     actor_pos_x,x        // A := actor_x (world/room coordinates)
 
 		// Left-side test:
 		//   delta_left := actor_x - viewport_left_col
@@ -177,7 +177,7 @@ handle_follow_pan:
 
 		// Decide pan direction from actor vs camera target:
 		//   CMP sets Z=1 when equal, C=1 when actor_x ≥ cam_target_pos
-		lda     actor_x_pos,x
+		lda     actor_pos_x,x
 		cmp     cam_target_pos
 		bne     pan_toward_actor            // not equal → take one step toward actor
 
@@ -236,7 +236,7 @@ check_right_clamp:
 		/*---------------------------------------
 		 * Compute visible room span from camera center.
 		 *  left  := cam_target_pos - VIEW_HALF_SPAN (0x14)
-		 *  right := left + VIEW_FULL_SPAN_MINUS1 (0x27)  // inclusive 40-col window
+		 *  right := left + VIEW_COL_MAX_IDX (0x27)  // inclusive 40-col window
 		 *  Flags: SBC uses SEC (C=1) for exact subtract; no borrow ⇒ C=1.
 		 *--------------------------------------*/
 update_visible_span:
@@ -245,7 +245,7 @@ update_visible_span:
 		sbc     #VIEW_HALF_SPAN             // A = center - 0x14 → left edge
 		sta     viewport_left_col
 		clc                                 // exact add
-		adc     #VIEW_FULL_SPAN_MINUS1      // A = left + 0x27 → right edge (inclusive)
+		adc     #VIEW_COL_MAX_IDX      // A = left + 0x27 → right edge (inclusive)
 		sta     viewport_right_col
 		rts
 
@@ -272,7 +272,7 @@ update_visible_span:
  *   2) Look up costume_room_idx[costume]; if it differs from current_room, prepare video
  *      state and load the target room. (Loader ABI expects room index in X.)
  *   3) Resolve the actor slot bound to that costume (actor_for_costume[costume]) and
- *      feed its X coordinate (actor_x_pos[y]) into cam_seek_to to pan/snap.
+ *      feed its X coordinate (actor_pos_x[y]) into cam_seek_to to pan/snap.
  *   4) Initialize cam_current_pos to a default baseline (prevents initial jitter).
  *   5) For actor slots 3..0: if assigned (costume_for_actor[x] bit7=0), set
  *      actor_render_flags[x].bit0 = 1 
@@ -324,7 +324,7 @@ room_is_current:
 		// Fetch actor’s X position from costume→actor map
         ldx     cam_follow_costume_id
         ldy     actor_for_costume,x
-        lda     actor_x_pos,y
+        lda     actor_pos_x,y
 		
 		// Center camera at that position
         jsr     cam_seek_to

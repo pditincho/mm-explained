@@ -294,7 +294,7 @@ Description
 		old commands cannot leak into the new scene.
 		• execute_room_exit_script to run the current room’s EXIT script
 		while its data is still valid.
-		• hide_all_actors_and_release_sprites to remove all on-screen
+		• hide_all_actors to remove all on-screen
 		actors/sprites and avoid one-frame carryover.
 		• Walk costume slots from $18 down to $01; for any slot whose
 		actor_for_costume[x].bit7==0 (assigned), call
@@ -337,7 +337,7 @@ switch_to_room:
 		// Teardown (in order) to leave no stale UI/actors before switching rooms
 		jsr     init_sentence_ui_and_stack      	// flush pending verb/noun input so scripts don’t consume old commands
 		jsr     execute_room_exit_script         	// run the CURRENT room’s exit logic while its data is still valid
-		jsr     hide_all_actors_and_release_sprites // hide all actors to avoid flicker during reload
+		jsr     hide_all_actors // hide all actors to avoid flicker during reload
 
 		// ------------------------------------------------------------
 		// Release any actor → costume bindings
@@ -1051,9 +1051,9 @@ Global Outputs
         obj_top_row_tbl[]               Initial Y positions.
         parent_idx_tbl[]                Parent object indices.
         ancestor_overlay_req_tbl[]      Parent-possible flag (bit7 encoded).
-        object_x_destination[]          Target X coordinate.
-        object_y_destination[]          Target Y coordinate (lower 5 bits).
-        object_destination_active[]     Destination-active flag (lower 3 bits).
+        obj_approach_x[]          Target X coordinate.
+        obj_approach_y[]          Target Y coordinate (lower 5 bits).
+        obj_has_explicit_approach[]     Destination-active flag (lower 3 bits).
 
 Description
         - Load room_base from room_ptr_*_tbl[current_room].
@@ -1236,13 +1236,13 @@ set_result:
 		// Fetch horizontal "destination" coordinate.
 		ldy     #OBJ_META_X_DEST_OFS
 		lda     (read_ptr_lo),y
-		sta     object_x_destination,x
+		sta     obj_approach_x,x
 
 		// Fetch vertical "destination" coordinate (bits 4-0).
 		ldy     #OBJ_META_Y_DEST_OFS
 		lda     (read_ptr_lo),y
 		and     #%0001_1111
-		sta     object_y_destination,x
+		sta     obj_approach_y,x
 
 		// Fetch packed height/destination active byte
 		//   - bits2..0 → destination_active (3-bit flag)
@@ -1251,7 +1251,7 @@ set_result:
 		lda     (read_ptr_lo),y
 		pha
 		and     #%0000_0111              
-		sta     object_destination_active,x
+		sta     obj_has_explicit_approach,x
 		pla
 		lsr     
 		lsr     
@@ -1768,7 +1768,7 @@ function switch_to_room(targetRoomIndex):
     // 1) Teardown current room
     init_sentence_ui_and_stack()          // clear pending UI/sentence state
     execute_room_exit_script()            // run EXIT script for current room
-    hide_all_actors_and_release_sprites() // hide actors and release sprites
+    hide_all_actors() // hide actors and release sprites
 
     // 2) Release any actor→costume bindings (slots 1..COSTUME_MAX_INDEX)
     for costumeIndex from COSTUME_MAX_INDEX downTo 1:
@@ -2058,18 +2058,18 @@ function load_room_objects():
 
         // X destination
         xDest = recordPtr[OBJ_META_X_DEST_OFS]
-        object_x_destination[i] = xDest
+        obj_approach_x[i] = xDest
 
         // Y destination (lower 5 bits)
         yDestPacked = recordPtr[OBJ_META_Y_DEST_OFS]
-        object_y_destination[i] = yDestPacked & $1F   // bits 0..4
+        obj_approach_y[i] = yDestPacked & $1F   // bits 0..4
 
         // Height and destination_active (packed)
         heightAndActive = recordPtr[OBJ_META_HEIGHT_OFS]
         destinationActive = heightAndActive & $07      // bits 0..2
         height = heightAndActive >> 3                  // bits 3..7
 
-        object_destination_active[i] = destinationActive
+        obj_has_explicit_approach[i] = destinationActive
         obj_height_tbl[i]             = height
 
         // Advance to next object

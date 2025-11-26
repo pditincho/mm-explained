@@ -173,7 +173,7 @@ Global Inputs:
 	stacked_io_id_hi[...]       – Snapshot buffer holding prior sentence parts.
 
 Global Outputs:
-	var_destination_x           – Cleared to 0.
+	var_target_x           – Cleared to 0.
 	saved_task_idx              – Cleared to 0.
 	interrupted_script_index    – Cleared to 0.
 	interrupted_pc_lo           – Cleared to 0.
@@ -201,11 +201,11 @@ op_exit_cutscene:
 		// ------------------------------------------------------------
 		// Clear transient destination and interrupt-return state
 		//
-		// Zero var_destination_x, saved_task_idx, interrupted_script_index,
+		// Zero var_target_x, saved_task_idx, interrupted_script_index,
 		// and interrupted_pc_lo/hi to discard cutscene bookkeeping.
 		// ------------------------------------------------------------
 		lda     #$00
-		sta     var_destination_x
+		sta     var_target_x
 		lda     #$00
 		sta     saved_task_idx
 		lda     #$00

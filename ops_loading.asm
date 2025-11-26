@@ -153,12 +153,12 @@ Global Inputs:
 	actor_vars              — Status flags for all actors.
 	current_room            — Active room identifier.
 	actor_for_costume       — Mapping from costume to actor index.
-	actor_x_pos             — X-coordinate table for actors.
+	actor_pos_x             — X-coordinate table for actors.
 
 Global Outputs:
 	costume_room_idx[]      — Updated with new room for current kid.
 	active_costume          — Set to current kid’s costume index.
-	room_destination         — Updated to the new room id.
+	target_room         — Updated to the new room id.
 	cam_target_pos           — Updated to the ego actor’s X position.
 	cam_current_pos          — Reset to CAM_DEFAULT_POS.
 	forced_sentence_trigger  — Cleared after relocation.
@@ -242,7 +242,7 @@ start_load_path:
 		// then warp costume to computed destination.
 		// ------------------------------------------------------------
 entry_object_found:
-        jsr     set_actor_destination_to_object // Compute target coords from entry object; updates destination vars
+        jsr     set_approach_point_for_object // Compute target coords from entry object; updates destination vars
 
 		// Set current kid as the active costume for movement/teleport
         lda     current_kid_idx                 
@@ -250,10 +250,10 @@ entry_object_found:
 
 		// Record current room as destination room for placement routine
         lda     current_room                    
-        sta     room_destination                
+        sta     target_room                
 
 		// Instantly place active costume at computed destination
-        jsr     teleport_costume_to_destination 
+        jsr     place_costume_at_target 
 
 		// ------------------------------------------------------------
 		// Align camera to ego and reset position
@@ -264,7 +264,7 @@ entry_object_found:
         ldx     current_kid_idx               // X := costume id of the active kid
         lda     actor_for_costume,x           // A := actor index mapped from that costume
         tax                                   // X := actor index
-        lda     actor_x_pos,x                 // A := actor’s current X position
+        lda     actor_pos_x,x                 // A := actor’s current X position
         sta     cam_target_pos                // camera target X := actor X
 
         lda     #CAM_DEFAULT_POS              // A := default camera position constant

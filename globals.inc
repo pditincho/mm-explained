@@ -291,9 +291,9 @@ Values observed
 .label obj_top_row_tbl = $7179		//Per-room object top row table (for rendering)
 .label obj_width_tbl = $7195		//Per-room object width in columns table (for rendering)
 .label obj_height_tbl = $71b1		//Per-room object height in rows table (for rendering)
-.label object_x_destination = $71cd
-.label object_y_destination = $71e9
-.label object_destination_active = $7205
+.label obj_approach_x = $71cd
+.label obj_approach_y = $71e9
+.label obj_has_explicit_approach = $7205
 .label parent_idx_tbl = $7259			//Room object index of the parent object - WARNING: it's the object index within a room's objects, NOT the object ID
 										//For instance, Room 1 (Mansion entrance) has 19 objects. Among them:
 										// Object index 3: key (Object ID 0-22)
@@ -337,10 +337,10 @@ Values observed
 .label room_for_costume = $FEFC
 .label costume_room_idx = $fefc	 //The CURRENT room where a costume is present
 .label current_room_rsrc = $715A	//Used by draw_room_scene to ensure residence of the room resources
-.label costume_dest_y = $ff15
-.label costume_dest_x = $ff2e
-.label dest_x = $fde6
-.label dest_y = $fde7
+.label costume_target_y = $ff15
+.label costume_target_x = $ff2e
+.label target_x = $fde6
+.label target_y = $fde7
 
 // ===========================================================
 // Actor-Costume bindings
@@ -480,16 +480,16 @@ Possible mouth state values
 // ===========================================================
 // Actor waypoints and positions
 // ===========================================================
-.label actor_active_wpt_x = $fd25
-.label actor_active_wpt_y = $fd2d
+.label actor_cur_waypoint_x = $fd25
+.label actor_cur_waypoint_y = $fd2d
 .label actor_tgt_waypoint_x = $fd29
 .label actor_tgt_waypoint_y = $fd31
-.label actor_y_pos = $fd3d
-.label actor_x_pos = $fd41
-.label actor_x_dest = $fdd9
-.label actor_y_dest = $fddd
-.label position_to_waypoint_x_for_actor = $fd45
-.label position_to_waypoint_y_for_actor = $fd49
+.label actor_pos_y = $fd3d
+.label actor_pos_x = $fd41
+.label actor_target_x = $fdd9
+.label actor_target_y = $fddd
+.label actor_path_probe_x = $fd45
+.label actor_path_probe_y = $fd49
 
 // ===========================================================
 // Actor walkbox search and traversal
@@ -497,8 +497,8 @@ Possible mouth state values
 .label actor_box_attr = $fd18
 .label actor_box_handler_idx = $fda0
 .label actor_box_facing_override = $fda4
-.label actor_box_fg_masking = $fda8
-.label actor_destination_box = $fdd5
+.label actor_box_fg_occlusion = $fda8
+.label actor_target_box = $fdd5
 .label actor_box_cur = $fdcd
 .label actor_box_prev = $fdd1
 .label actor_search_depth       = $FE75
@@ -511,8 +511,8 @@ Possible mouth state values
 .label dda_dominant_axis = $cb66	//Which axis of movement is dominant, #00 = horizontal, #01 = vertical
 
 //Possible rename: actor_facing_mask
-.label facing_direction_for_actor = $fdeb		//#00 = right, #01 = left, #80 = down, #81 = up
-.label path_delta_directions_for_actor = $fdef	//#00 = right, #01 = left, #80 = down, #81 = up
+.label actor_cur_facing_direction = $fdeb		//#00 = right, #01 = left, #80 = down, #81 = up
+.label actor_tgt_facing_direction = $fdef	//#00 = right, #01 = left, #80 = down, #81 = up
 .label actor_dda_dom_abs = $fdf3	//The dominant delta value (the largest between the deltas for the 2 axis)
 .label actor_dx_accum = $fdf7		//Value of delta x step (how much to move along this axis on each step to match the rate of motion on the other axis)
 .label actor_dy_accum = $fdfb		//Value of delta y step
@@ -520,8 +520,8 @@ Possible mouth state values
 .label actor_dx_abs = $fe03			//Absolute value of delta between current position and path destination (X axis)
 .label actor_dir_x_bit = $fe07 //#00 = left, #01 = right
 .label actor_dir_y_bit = $fe0b //#00 = up, #01 = down	
-.label saved_actor_x_pos = $cb5a
-.label saved_actor_y_pos = $cb5b
+.label saved_actor_pos_x = $cb5a
+.label saved_actor_pos_y = $cb5b
 .label saved_actor_box_attr = $cb5d
 .label saved_actor_box_cur = $cb5e
 .label saved_actor_path_update_flag = $cb5f
@@ -540,8 +540,8 @@ They were definitely intended as debugging aids.
 .label var_msg_flag = $ff6a				//This would be var[3]
 .label var_current_room = $ff6b			//This would be var[4]
 .label var_active_io_id_lo = $ff6c	//This would be var[5]
-.label var_destination_x = $ff6d			//This would be var[6]
-.label var_destination_y = $ff6e			//This would be var[7]
+.label var_target_x = $ff6d			//This would be var[6]
+.label var_target_y = $ff6e			//This would be var[7]
 .label var_music_playback_in_progress = $ff6f	//This would be var[8]
 .label var_active_verb_id = $ff70				//This would be var[9]
 .label var_message_length = $ff71			//This would be var[10]

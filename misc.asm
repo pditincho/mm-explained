@@ -150,35 +150,35 @@ Summary
 	contact sentinel so the queued verb handler executes on the next tick.
 
 Global Inputs
-	destination_entity         target entity id (#$00 none, #$FE contact)
-	destination_obj_lo         low byte of target object id for routing
-	destination_obj_hi         high byte of target object id for routing
+	target_entity         target entity id (#$00 none, #$FE contact)
+	target_obj_lo         low byte of target object id for routing
+	target_obj_hi         high byte of target object id for routing
 	current_kid_idx            active kid index
 	actor_for_costume[]        map: costume index → actor index
 	actor_motion_state[]       actor motion state array
-	dest_x, dest_y             routed destination coordinates
-	actor_x_pos[], actor_y_pos[] 	actor position arrays
+	target_x, target_y             routed destination coordinates
+	actor_pos_x[], actor_pos_y[] 	actor position arrays
 
 Global Outputs
-	destination_entity          set to ENTITY_CONTACT_SENTINEL (#$FE) on contact,
+	target_entity          set to ENTITY_CONTACT_SENTINEL (#$FE) on contact,
 								cleared to ENTITY_NONE (#$00) when out of range
 
 Description
 	- Guard: exit if no destination entity is set.
 	- Resolve actor for the current kid. Exit if the actor is not stopped
 	(actor_motion_state ≠ ACTOR_STATE_STOPPED).
-	- If destination_entity == ENTITY_CONTACT_SENTINEL, clear it and jump to
+	- If target_entity == ENTITY_CONTACT_SENTINEL, clear it and jump to
 	execute_verb_handler_for_object (consumes the queued action).
 	- Otherwise:
-		• Route destination by entity type → dest_x/dest_y.
-		• Compute |ΔX| = |dest_x − actor_x|:
+		• Route destination by entity type → target_x/target_y.
+		• Compute |ΔX| = |target_x − actor_x|:
 			- If |ΔX| > CONTACT_X_THRESHOLD, clear flag and return.
 			- If |ΔX| ≤ CONTACT_X_THRESHOLD, continue.
-		• Compute |ΔY| = |dest_y − actor_y|:
+		• Compute |ΔY| = |target_y − actor_y|:
 			- If |ΔY| > CONTACT_Y_THRESHOLD, clear flag and return.
 			- If |ΔY| ≤ CONTACT_Y_THRESHOLD:
-				· apply_facing_toward_destination
-				· destination_entity := ENTITY_CONTACT_SENTINEL (contact latched)
+				· face_toward_target
+				· target_entity := ENTITY_CONTACT_SENTINEL (contact latched)
 ================================================================================
 */
 
@@ -192,7 +192,7 @@ handle_entity_approach_and_trigger:
         // Guard: is there a destination entity?
         // If none, return_from_entity_contact immediately.
         // ----------------------------------------------------
-        lda     destination_entity
+        lda     target_entity
         bne     resolve_actor_and_validate_state
         jmp     return_from_entity_contact
 
@@ -215,22 +215,22 @@ resolve_actor_and_validate_state:
         // If entity already marked as contacted (#$FE),
         // clear flag and run queued action.
         // ----------------------------------------------------
-        lda     destination_entity
+        lda     target_entity
         cmp     #ENTITY_CONTACT_SENTINEL
         bne     route_and_check_proximity
 
         lda     #ENTITY_NONE
-        sta     destination_entity
+        sta     target_entity
         jmp     execute_verb_handler_for_object
 
 route_and_check_proximity:
         // ----------------------------------------------------
         // Route destination coordinates based on entity type
         // ----------------------------------------------------
-        ldx     destination_obj_lo
-        lda     destination_obj_hi
-        ldy     destination_entity
-        jsr     route_destination_by_entity_type
+        ldx     target_obj_lo
+        lda     target_obj_hi
+        ldy     target_entity
+        jsr     set_approach_point
 
         // ----------------------------------------------------
         // Re-resolve actor for current kid
@@ -242,9 +242,9 @@ route_and_check_proximity:
         // ----------------------------------------------------
         // Compute |ΔX| between actor and destination
         // ----------------------------------------------------
-        lda     dest_x
+        lda     target_x
         sec
-        sbc     actor_x_pos,x
+        sbc     actor_pos_x,x
         bcs     evaluate_x_threshold
         eor     #$FF
         clc
@@ -263,9 +263,9 @@ compute_y_distance:
         // ----------------------------------------------------
         // Compute |ΔY| between actor and destination
         // ----------------------------------------------------
-        lda     dest_y
+        lda     target_y
         sec
-        sbc     actor_y_pos,x
+        sbc     actor_pos_y,x
         bcs     evaluate_y_threshold
         eor     #$FF
         clc
@@ -283,19 +283,19 @@ align_facing_and_mark_contact:
         // ----------------------------------------------------
         // Set facing toward entity and mark contact (#$FE)
         // ----------------------------------------------------
-        jsr     apply_facing_toward_destination
+        jsr     face_toward_target
         lda     #ENTITY_CONTACT_SENTINEL
-        sta     destination_entity
+        sta     target_entity
         jmp     return_from_entity_contact
 
 clear_contact_flag_far_y:
         lda     #ENTITY_NONE
-        sta     destination_entity
+        sta     target_entity
         jmp     return_from_entity_contact
 
 clear_contact_flag_far_x:
         lda     #ENTITY_NONE
-        sta     destination_entity
+        sta     target_entity
 
 return_from_entity_contact:
         rts
@@ -407,7 +407,7 @@ Trade-offs vs a 16-bit indexed copy:
 */
 * = $1860
 copy_vic_color_ram:
-        ldy     #VIEW_FULL_SPAN_MINUS1          // Y := 39 (start at last column)
+        ldy     #VIEW_COL_MAX_IDX          // Y := 39 (start at last column)
 
 copy_color_column:
         lda     $6D89,y                         // Row 0 source → $D828
@@ -569,8 +569,8 @@ Summary
 
 Global Inputs
 	costume_for_actor[x]   			Usage flag (bit7) and actor id for slot x
-	actor_x_pos[x]         			Actor left X edge (quarter-char units)
-	actor_y_pos[x]         			Actor bottom Y (half-row off-by-8 domain)
+	actor_pos_x[x]         			Actor left X edge (quarter-char units)
+	actor_pos_y[x]         			Actor bottom Y (half-row off-by-8 domain)
 	cursor_x_pos_quarter_absolute  	Cursor X (quarter-char units)
 	cursor_y_pos_half_off_by_8     	Cursor Y (half-row off-by-8 domain)
 	current_kid_idx        			Index of the player-controlled kid to exclude
@@ -583,8 +583,8 @@ Returns
 Description
 	- Initialize X to ACTOR_MAX_INDEX and iterate down to 0.
 	- Skip unused slots where costume_for_actor bit7 = 1.
-	- Horizontal hit if cursor X ∈ [actor_x_pos .. actor_x_pos+ACTOR_X_RIGHT_PAD].
-	- Vertical hit if cursor Y ∈ [actor_y_pos−VIEW_COLS .. actor_y_pos],
+	- Horizontal hit if cursor X ∈ [actor_pos_x .. actor_pos_x+ACTOR_X_RIGHT_PAD].
+	- Vertical hit if cursor Y ∈ [actor_pos_y−VIEW_COLS .. actor_pos_y],
 	  with the lower bound clamped to CURSOR_Y_MIN_ROW on underflow.
 	- Exclude current_kid_idx from hits.
 	- On first qualifying hit: TAX to return the costume index and set A=FIND_ACTOR_FOUND.
@@ -592,7 +592,7 @@ Description
 ==============================================================================
 */
 .const ACTOR_X_RIGHT_PAD      = $03    // Inclusive right-edge pad (quarter-char units) for X hit test
-.const CURSOR_Y_MIN_ROW       = $01    // Clamp for top bound after (actor_y_pos - VIEW_COLS) underflow
+.const CURSOR_Y_MIN_ROW       = $01    // Clamp for top bound after (actor_pos_y - VIEW_COLS) underflow
 .const FIND_ACTOR_FOUND       = $02    // Return code in A when a valid actor is hit
 .const FIND_ACTOR_NOT_FOUND   = $00    // Return code in A when no actor is hit
 
@@ -613,12 +613,12 @@ test_actor_bounds:
 
         // ------------------------------------------------------------
         // Horizontal test: cursor_x_quarter must be within
-        // [actor_x_pos .. actor_x_pos+ACTOR_X_RIGHT_PAD]
+        // [actor_pos_x .. actor_pos_x+ACTOR_X_RIGHT_PAD]
         // ------------------------------------------------------------
-        lda     actor_x_pos,x                 // A := left X edge (quarter chars)
+        lda     actor_pos_x,x                 // A := left X edge (quarter chars)
         cmp     cursor_x_pos_quarter_absolute // cursor left-of-or-on left edge?
         beq     check_x_right_edge            // equal → still possible, check right edge
-        bcs     step_prev_actor_or_exit       // carry set → actor_x_pos > cursor_x → left of box
+        bcs     step_prev_actor_or_exit       // carry set → actor_pos_x > cursor_x → left of box
 
 check_x_right_edge:
         clc                                   
@@ -628,10 +628,10 @@ check_x_right_edge:
 
         // ------------------------------------------------------------
         // Vertical test: cursor_y_half_off8 must be within
-        // [actor_y_pos-#VIEW_COLS .. actor_y_pos]
+        // [actor_pos_y-#VIEW_COLS .. actor_pos_y]
         // Clamp lower bound to CURSOR_Y_MIN_ROW if subtraction underflows.
         // ------------------------------------------------------------
-        lda     actor_y_pos,x                 // A := bottom Y
+        lda     actor_pos_y,x                 // A := bottom Y
         cmp     cursor_y_pos_half_off_by_8    // cursor below bottom?
         bcc     step_prev_actor_or_exit       // cursor_y > bottom → no hit
 
@@ -1153,7 +1153,7 @@ prepare_video_for_new_room:
         sta     hide_cursor_flag
 
         // Hide all actors and free their sprites
-        jsr     hide_all_actors_and_release_sprites
+        jsr     hide_all_actors
 
         // Set src_msg_ptr := empty_msg for shutdown_topbar_talking
         lda     #<empty_msg

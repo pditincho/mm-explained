@@ -438,7 +438,7 @@ mem_alloc:
         bne mem_alloc_ok          
 
         // Recovery step 2: unlock or unassign a costume and retry original request.
-        jsr rsrc_unlock_or_unassign_costume
+        jsr rsrc_unlock_or_detach_costume
 
         // Restore original request size into X/Y and loop back to first attempt.
         ldx mem_req_size_lo
@@ -2197,7 +2197,7 @@ function mem_alloc(request_size: u16) -> Block* | null:
         return block
 
     // Recovery step 2: release one costume, restore the original size, and retry.
-    rsrc_unlock_or_unassign_costume()
+    rsrc_unlock_or_detach_costume()
 
     // Retry original request using best-fit again.
     return mem_alloc(mem_req_size)

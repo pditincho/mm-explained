@@ -53,7 +53,7 @@ Data model
     • Ownership and facing
         - Costumes are "owned" by actors via actor_for_costume.
         - Clips are attached at actor level (actor_target_clip, actor_current_clip).
-        - Standing clips update facing_direction_for_actor so facing is in sync
+        - Standing clips update actor_cur_facing_direction so facing is in sync
           with the chosen standing pose.
 
 ================================================================================
@@ -70,7 +70,7 @@ Data model
         4) Marks the actor as "needs redraw" if anything actually changed.
 
 High-level step-by-step
-    1) step_actor_limb_animation
+    1) step_actor_animation
         • Called once per frame for the current actor.
         • Makes sure the costume and clip data for this actor are set up.
         • Picks a speaking clip variant based on:
@@ -171,7 +171,7 @@ Responsibilities
     • Per-frame limb stepping
         - For the current actor, prepare costume/clip tables, cel sequence base,
           and per-limb index base, then iterate all limbs once per tick
-          (step_actor_limb_animation).
+          (step_actor_animation).
         - For each limb, apply any pending cel-sequence change and reset its
           local animation state when the base sequence changes
           (apply_pending_cel_sequence).
@@ -194,7 +194,7 @@ Responsibilities
           actor’s clip and the limb’s cel sequences, leaving the limb on its
           last valid frame.
 		  
-step_actor_limb_animation
+step_actor_animation
 ├── setup_costume_for_actor          
 ├── apply_speaking_clip
 │   ├── map_facing_direction_to_clip_variant
@@ -244,7 +244,7 @@ step_actor_limb_animation
 
 /*
 ================================================================================
-  step_actor_limb_animation
+  step_actor_animation
 ================================================================================
 Summary
     Drive a full animation tick for all limbs of the current actor. Prepares all
@@ -274,7 +274,7 @@ Description
 ================================================================================
 */
 * = $2504                        
-step_actor_limb_animation:
+step_actor_animation:
         // ------------------------------------------------------------
         // Prepare actor resources and per-limb bookkeeping
         // ------------------------------------------------------------
@@ -899,7 +899,7 @@ Global Inputs
 Global Outputs
     actor_target_clip           Per-actor target clip ID.
     actor_clip_loop_cnt         Per-actor clip loop count argument.
-    facing_direction_for_actor  Per-actor facing direction (for standing clip sets).
+    actor_cur_facing_direction  Per-actor facing direction (for standing clip sets).
     costume_clip_set            Per-costume standing clip cached for actor-less costumes.
 
 Description
@@ -909,7 +909,7 @@ Description
       actor’s clip state tables and call init_limb_state_from_clip_set to seed
       all limb animation parameters from the clip definition.
     • For standing clip sets, map the clip ID to a facing direction constant and
-      store it in facing_direction_for_actor for that actor.
+      store it in actor_cur_facing_direction for that actor.
     • For costumes without an assigned actor, accept only standing clip sets and
       cache them in costume_clip_set.
 ================================================================================
@@ -983,7 +983,7 @@ actc_exit_2:
 commit_direction_and_exit:
 		// Stash facing direction in the per-actor table
 		ldx     actor                        	
-		sta     facing_direction_for_actor,x   	
+		sta     actor_cur_facing_direction,x   	
 		jmp     actc_exit                       
 
 		// ------------------------------------------------------------
@@ -1020,13 +1020,13 @@ Arguments
     X                       Actor index whose facing direction is being mapped.
 
 Global Inputs
-    facing_direction_for_actor Per-actor facing direction; encoded as DIRECTION_*.
+    actor_cur_facing_direction Per-actor facing direction; encoded as DIRECTION_*.
 
 Returns
     A                       Clip direction variant (0..3) used in clip ID math.
 
 Description
-    • Read the actor’s current facing direction from facing_direction_for_actor[X].
+    • Read the actor’s current facing direction from actor_cur_facing_direction[X].
     • Compare it against the four cardinal DIRECTION_* constants.
     • Load the matching CLIP_OFS_DIR_* value into Y.
     • Return the chosen variant in A for downstream clip selection.
@@ -1034,7 +1034,7 @@ Description
 */
 * = $277E
 map_facing_direction_to_clip_variant:
-        lda     facing_direction_for_actor,x
+        lda     actor_cur_facing_direction,x
         cmp     #DIRECTION_LEFT
         bne     mfdtcv_check_right
         ldy     #CLIP_DIR_VARIANT_LEFT
@@ -1187,7 +1187,7 @@ Arguments
     X                       	Actor index whose standing pose should be applied.
 
 Global Inputs
-    facing_direction_for_actor  Per-actor facing direction (DIRECTION_* enum).
+    actor_cur_facing_direction  Per-actor facing direction (DIRECTION_* enum).
     actor                       Current actor index used to restore X after call.
 
 Global Outputs
@@ -1210,7 +1210,7 @@ apply_standing_clip:
         // ------------------------------------------------------------
         // Map path direction mask to standing clip ID
         // ------------------------------------------------------------
-        lda     facing_direction_for_actor,x
+        lda     actor_cur_facing_direction,x
         bne     check_dir_left
 
         lda     #CLIP_STAND_RIGHT       
@@ -1257,7 +1257,7 @@ Arguments
     X                       Actor index whose walking animation should be updated.
 
 Global Inputs
-    facing_direction_for_actor  Per-actor facing direction encoded as DIRECTION_*.
+    actor_cur_facing_direction  Per-actor facing direction encoded as DIRECTION_*.
     actor                       Current actor index, used to restore X after call.
 
 Global Outputs
@@ -1279,7 +1279,7 @@ apply_walking_clip:
         // ------------------------------------------------------------
         // Map path direction mask to walking clip ID
         // ------------------------------------------------------------
-        lda     facing_direction_for_actor,x
+        lda     actor_cur_facing_direction,x
         bne     check_dir_left_2
 
         lda     #CLIP_WALK_RIGHT		
@@ -1321,7 +1321,7 @@ commit_walking_clip:
 /*
 Pseudo-code
 
-procedure step_actor_limb_animation()
+procedure step_actor_animation()
     // Prepare per-actor state needed to drive limb animation this tick.
     setup_costume_for_actor()             // ensure costume + clip metadata is valid
     apply_speaking_clip()                 // choose speaking clip variant (direction + mouth)
@@ -1559,13 +1559,13 @@ procedure assign_clip_to_costume()
 
         // If this clip is one of the standing clip sets, update the actor’s facing.
         if    target_clip = CLIP_SET_STANDING_L then
-            facing_direction_for_actor[actor] := DIRECTION_LEFT
+            actor_cur_facing_direction[actor] := DIRECTION_LEFT
         elseif target_clip = CLIP_SET_STANDING_R then
-            facing_direction_for_actor[actor] := DIRECTION_RIGHT
+            actor_cur_facing_direction[actor] := DIRECTION_RIGHT
         elseif target_clip = CLIP_SET_STANDING_D then
-            facing_direction_for_actor[actor] := DIRECTION_DOWN
+            actor_cur_facing_direction[actor] := DIRECTION_DOWN
         elseif target_clip = CLIP_SET_STANDING_U then
-            facing_direction_for_actor[actor] := DIRECTION_UP
+            actor_cur_facing_direction[actor] := DIRECTION_UP
         else
             // Non-standing clips do not update facing.
         end if
@@ -1588,7 +1588,7 @@ end procedure
 
 
 function map_facing_direction_to_clip_variant(actor_index) -> clip_dir_variant
-    dir := facing_direction_for_actor[actor_index]
+    dir := actor_cur_facing_direction[actor_index]
 
     if dir = DIRECTION_LEFT then
         return CLIP_DIR_VARIANT_LEFT
@@ -1648,7 +1648,7 @@ end procedure
 
 procedure apply_standing_clip(actor_index_in_X)
     // Read the actor’s facing direction.
-    facing_dir := facing_direction_for_actor[X]
+    facing_dir := actor_cur_facing_direction[X]
 
     // Map facing direction → standing clip ID.
     if facing_dir = DIRECTION_RIGHT or facing_dir = 0 then
@@ -1678,7 +1678,7 @@ end procedure
 
 procedure apply_walking_clip(actor_index_in_X)
     // Read the actor’s facing direction.
-    facing_dir := facing_direction_for_actor[X]
+    facing_dir := actor_cur_facing_direction[X]
 
     // Map facing direction → walking clip ID.
     if facing_dir = DIRECTION_RIGHT or facing_dir = 0 then

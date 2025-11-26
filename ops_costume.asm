@@ -11,15 +11,15 @@ Summary
 
 Global Inputs
         actor_for_costume        Maps costume index → actor index or unused flag
-        actor_x_pos              Current X coordinate per actor
-        actor_y_pos              Current Y coordinate per actor
+        actor_pos_x              Current X coordinate per actor
+        actor_pos_y              Current Y coordinate per actor
         actor_motion_state       Motion state codes for each actor
         actor_mouth_state        Mouth animation state
         actor_vars               Actor variable array ($FEE3)
         costume_room_idx         Room index for each costume
-        costume_dest_x / _y      Destination coordinates
+        costume_target_x / _y      Destination coordinates
         costume_clip_set         Current active clip/animation per costume
-        facing_direction_for_actor Facing direction mask for each actor
+        actor_cur_facing_direction Facing direction mask for each actor
 
 Global Outputs
         game_vars                Script-accessible variable array
@@ -478,8 +478,8 @@ Returns
 Description
         - Reads destination variable index from the script.
         - Loads costume index via script_load_operand_bit7.
-        - If actor_for_costume[X] has bit7 set (moving), uses costume_dest_x[X].
-        - Else uses actor_x_pos[X].
+        - If actor_for_costume[X] has bit7 set (moving), uses costume_target_x[X].
+        - Else uses actor_pos_x[X].
         - Stores the X value into game_vars[dest].
 ================================================================================
 */
@@ -509,14 +509,14 @@ op_get_costume_x:
         // Not moving → return current X position
         // ----------------------------
         tax                                    
-        lda     actor_x_pos,x                  
+        lda     actor_pos_x,x                  
         jmp     ogcx_set_value_in_var          
 
 ogcx_actor_moving:
         // ----------------------------
         // Moving → return path destination X
         // ----------------------------
-        lda     costume_dest_x,x               
+        lda     costume_target_x,x               
 
 ogcx_set_value_in_var:
         // ----------------------------
@@ -545,8 +545,8 @@ Returns
 Description
         - Reads destination variable index from the script.
         - Loads costume index via script_load_operand_bit7.
-        - If actor_for_costume[X] has bit7 set (moving), uses costume_dest_y[X].
-        - Else uses actor_y_pos[X].
+        - If actor_for_costume[X] has bit7 set (moving), uses costume_target_y[X].
+        - Else uses actor_pos_y[X].
         - Stores the Y value into game_vars[dest].
 ================================================================================
 */
@@ -576,14 +576,14 @@ op_get_costume_y:
         // Not moving → return current Y position
         // ----------------------------
         tax                                    
-        lda     actor_y_pos,x                  
+        lda     actor_pos_y,x                  
         jmp     ogcy_set_value_in_var          
 
 ogcy_actor_moving:
         // ----------------------------
         // Moving → return path destination Y
         // ----------------------------
-        lda     costume_dest_y,x               
+        lda     costume_target_y,x               
 
 ogcy_set_value_in_var:
         // ----------------------------
@@ -613,7 +613,7 @@ Description
         - Reads destination variable index from the script.
         - Loads costume index via script_load_operand_bit7.
         - If actor_for_costume[X] has bit7 set (moving), uses costume_clip_set[X].
-        - Else maps facing_direction_for_actor[X] to a standing clip.
+        - Else maps actor_cur_facing_direction[X] to a standing clip.
         - Stores the resolved clip id into game_vars[dest].
 ================================================================================
 */
@@ -641,7 +641,7 @@ op_get_costume_clip_set:
         // Not moving → map facing direction to standing clip id
         // ----------------------------
         tax                                    
-        lda     facing_direction_for_actor,x     // A := path-facing mask
+        lda     actor_cur_facing_direction,x     // A := path-facing mask
         jsr     map_facing_direction_to_standing_clip  // A := standing clip id
         jmp     ogccs_set_value_in_var               // store and exit
 
@@ -749,7 +749,7 @@ check_arg_reset:
         bmi     done_reset                    // no actor assigned → exit
 		
         sta     actor                         
-        jsr     reset_actor_render_flags
+        jsr     set_actor_stopped_and_render
 done_reset:
         jmp     exit_oacc
 

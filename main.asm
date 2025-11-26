@@ -128,7 +128,7 @@ next_mouth_actor:
         // --------------------------------------------------
         // Actor movement, camera, room redraw
         // --------------------------------------------------
-        jsr     step_actor_motion_and_limbs
+        jsr     step_actor_motion_and_animation
         jsr     cam_upd_target
 
         lda     #CAM_DEFAULT_POS
@@ -165,7 +165,7 @@ next_fg_actor:
 
         // --------------------------------------------------
 advance_animation:
-        jsr     refresh_visibility_and_tick_sprites
+        jsr     step_actor_visibility_and_sprites
         jsr     alternate_frame_buffer
 
         // --------------------------------------------------
@@ -273,7 +273,7 @@ scan_costumes_for_redraw:
         cmp     #NO_SPRITE
         beq     next_costume_entry                   // Skip if no sprite index
 
-        jsr     actor_room_to_sprite_coords
+        jsr     map_room_to_sprite_coords
         jsr     draw_actor
 
 next_costume_entry:

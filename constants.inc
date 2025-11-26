@@ -69,7 +69,7 @@
 // Viewport dimensions
 .const VIEW_ROWS 					= $11   // Total number of visible rows in the viewport (17 rows)
 .const VIEW_COLS 					= $28   // Total number of visible columns in the viewport (40 columns)
-.const VIEW_FULL_SPAN_MINUS1  		= $27   // Viewport width minus one (for rightmost inclusive bound)
+.const VIEW_COL_MAX_IDX  			= $27   // Viewport width minus one (for rightmost inclusive bound)
 .const VIEW_HALF_SPAN         		= $14   // Half-width of visible viewport in world coordinates
 
 // Scroll render flag
@@ -140,11 +140,10 @@ Only 2 bits are used, bit 5 (#20) and bit 0 (#01).
 .const MOUTH_TOGGLE_MASK          = $FE    // EOR mask to toggle mouth states #$01 <-> #$FF
 
 .const OBJ_NAME_OFS              	= $0D   // Byte offset to name pointer within object record
-.const OBJ_TYPE_ACTOR            	= $02   // destination_obj_hi value for “actor”
+.const OBJ_TYPE_COSTUME            	= $02   // target_obj_hi value for “actor”
 .const NO_PARENT_IDX                = $00   // parent index value meaning “no parent”
 
 .const OWNER_NIBBLE_MASK         	= MSK_LOW_NIBBLE  // Mask to extract owner nibble from attributes
-.const NO_SPRITE                 	= $FF   // Sentinel: no sprite assigned
 
 .const ENTITY_NONE                	= $00   // No destination entity selected/active
 
@@ -167,6 +166,9 @@ Only 2 bits are used, bit 5 (#20) and bit 0 (#01).
 .const ACTOR_MAX_INDEX     			= ACTOR_COUNT_TOTAL - 1    // Highest valid actor index (#$03)
 .const SPRITE_COUNT_TOTAL  			= $04   // Total number of hardware sprites available (0–3)
 .const SPRITE_MAX_INDEX    			= SPRITE_COUNT_TOTAL - 1   // Highest valid sprite index (#$03)
+
+.const NO_SPRITE                 	= $FF   // Sentinel: no sprite assigned
+
 
 // Animation clip IDs
 .const CLIP_WALK_LEFT              	= $00   // Walking clip id: left
@@ -384,3 +386,6 @@ screen_row_offsets_lo:
 .const  INVENTORY_SLOTS           = $2D    // Total logical item slots (45)
 .const OWNER_REMOVE_SENTINEL      = $0D    // Special value meaning “remove from inventory”
 .const CURSOR_Y_BIAS   = $08          // Bias before halving Y
+
+.const NO_ACTOR                    = $FF      // Sentinel: no actor mapped
+.const NO_COSTUME                  = $FF      // Sentinel: actor has no costume

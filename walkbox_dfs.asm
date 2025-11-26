@@ -305,7 +305,7 @@ Arguments
 Global Inputs
     box_ptr                     	pointer to actor's walkboxes list
     actor_box_cur					current walkbox for actor
-    actor_destination_box			destination walkbox for actor
+    actor_target_box			destination walkbox for actor
 
 State
     active_depth_level              1-based recursion depth
@@ -380,7 +380,7 @@ init_search_state:
         sta     current_box
 
 		// destination_box_id := actor's destination box
-        lda     actor_destination_box,x
+        lda     actor_target_box,x
         sta     destination_box_id
 
 search_loop:

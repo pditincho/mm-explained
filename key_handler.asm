@@ -118,7 +118,7 @@ keyboard_handle_one_key:
         sta     task_state_tbl,x
 		// Unknown purpose for debug var
         lda     #$01                          
-        sta     var_destination_x
+        sta     var_target_x
 		// Clear saved script PC lo/hi
         lda     #$00                          
         sta     interrupted_pc_lo

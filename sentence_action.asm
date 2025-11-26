@@ -22,7 +22,7 @@ Core data
 	  (top) and sentstk_free_slots (capacity).
 	* “Active” copy: once a stacked sentence is selected to run, its tokens are
 	  mirrored into active_* so execution code has a stable snapshot.
-	* Destination: destination_entity plus dest_{x,y} are used to route walking
+	* Destination: target_entity plus dest_{x,y} are used to route walking
 	  targets and stage paths. var_destination_{x,y} mirror the clamped target
 	  for scripts/debug.
 
@@ -42,7 +42,7 @@ Main loop
 			 as IO; else pick an object under cursor.
 		   * Update DO or IO, guarding DO == IO and setting UI-rebuild flags when
 			 selections repeat. Always request a sentence-bar refresh.
-		5. If verb is Walk to, clear destination_entity and mark a rebuild (so UI
+		5. If verb is Walk to, clear target_entity and mark a rebuild (so UI
 		   reflects the bare walk). Then fall into run_sentence_if_complete.
 
 Completion gate
@@ -78,13 +78,13 @@ Dispatch vs stack
 
 		  * Advance sentstk_top_idx and store current tokens to stacked_* arrays.
 		  * If verb wasn’t WALK TO, reset the UI to WALK TO and clear DO+prep.
-		  * Clear destination_entity and return.
+		  * Clear target_entity and return.
 		* Bare WALK TO (no DO):
 
 		  * Resolve acting entity from current kid and copy cursor coords to dest.
 		  * Clamp to walkable space, publish var_destination_{x,y}.
 		  * If kid is frozen, stop here.
-		  * Otherwise write actor_x_dest/y_dest and call snap_and_stage_path_update.
+		  * Otherwise write actor_target_x/y_dest and call stage_actor_path_to_target.
 
 Queued execution
 	process_sentence_stack_entry:
@@ -223,13 +223,13 @@ Typical traces
   │       set active_costume from current_kid
   │       dest := clamped cursor coords
   │       publish var_destination_{x,y}
-  │       if not frozen: set actor_x/y_dest + snap_and_stage_path_update
+  │       if not frozen: set actor_x/y_dest + stage_actor_path_to_target
   │       rts
   │
   └─ otherwise (verb + DO [+prep + IO]) ──▶ push_sentence
           write stacked_* at ++top
           if verb ≠ WALK_TO: reset UI to WALK_TO, clear DO + prep
-          clear destination_entity, rts
+          clear target_entity, rts
 
 ┌──────────────────────────────────┐
 │ process_sentence_stack_entry     │
@@ -257,27 +257,27 @@ Typical traces
       │                                  no  → init_walk_to_indirect_object
       │
       └─ DO not in inventory:
-            ├─ KEYPAD mode → execute_verb_handler_for_object, clear destination_entity, rts
+            ├─ KEYPAD mode → execute_verb_handler_for_object, clear target_entity, rts
             └─ otherwise    → init_walk_to_direct_object
 
 ┌──────────────────────────────┐
 │ init_walk_to_indirect_object │
 └─┬────────────────────────────┘
   │ destination_obj := IO
-  │ route_destination_by_entity_type → dest_x/dest_y, destination_entity
+  │ set_approach_point → target_x/target_y, target_entity
   │ var_destination_{x,y} := dest_{x,y}
   │ active_costume := current_kid
-  │ if not frozen: set_actor_destination
+  │ if not frozen: set_costume_target
   └──────────────▶ exit_process_sentence_stack_entry → rts
 
 ┌──────────────────────────────┐
 │ init_walk_to_direct_object   │
 └─┬────────────────────────────┘
   │ destination_obj := DO
-  │ route_destination_by_entity_type → dest_x/dest_y, destination_entity
+  │ set_approach_point → target_x/target_y, target_entity
   │ var_destination_{x,y} := dest_{x,y}
   │ active_costume := current_kid
-  │ if not frozen: set_actor_destination
+  │ if not frozen: set_costume_target
   └──────────────▶ exit_process_sentence_stack_entry → rts
 
 ┌────────────────────────────────────┐
@@ -330,7 +330,7 @@ Typical traces
 #import "constants.inc"
 #import "registers.inc"
 #import "sentence_text.asm"
-#import "destination.asm"
+#import "actor_targeting.asm"
 #import "ui_interaction.asm"
 #import "misc.asm"
 #import "script_engine.asm"
@@ -411,7 +411,7 @@ Global Outputs
 	forced_sentence_trigger           Set/cleared when “What is?” is active
 	sentence_bar_needs_refresh        Set when UI must redraw the bar
 	needs_sentence_rebuild            Set for one-shot rebuild after certain updates
-	destination_entity                Cleared when normalizing WALK_TO without object
+	target_entity                Cleared when normalizing WALK_TO without object
 
 Description
 	* Reset path:
@@ -437,7 +437,7 @@ Description
 		  • IO path: reject DO==IO, confirm or set IO; in KEYPAD set rebuild.
 	* Finalization:
 		  • Always request a UI refresh before the completeness gate.
-		  • If verb is WALK_TO, also clear destination_entity and set rebuild.
+		  • If verb is WALK_TO, also clear target_entity and set rebuild.
 		  • Tail-fall to run_sentence_if_complete for execution/stacking.
 
 Notes
@@ -660,7 +660,7 @@ finalize_and_maybe_execute:           			// Finalize selections, then run comple
 
 		// Clear any active destination entity marker
         lda     #ENTITY_NONE               		
-        sta     destination_entity
+        sta     target_entity
 		
 		//Force rebuild sentence
         lda     #REBUILD_SENTENCE_ON       		
@@ -950,7 +950,7 @@ Global Inputs
 	stacked_do_id_lo/hi[]             Stacked direct-object ids
 	stacked_prep_ids[]                Stacked preposition ids
 	stacked_io_id_lo/hi[]             Stacked indirect-object ids
-	destination_entity                Nonzero if a walk is already in progress
+	target_entity                Nonzero if a walk is already in progress
 	control_mode
 	current_kid_idx, actor_vars[]     Actor state; includes ACTOR_IS_FROZEN
 	object_attributes[]               For inventory/owner checks
@@ -962,7 +962,7 @@ Global Outputs
 	active_do_id_lo/hi                Latched DO id
 	active_prep_id                    Latched preposition
 	active_io_id_lo/hi                Latched IO id
-	destination_entity                Set when staging a walk
+	target_entity                Set when staging a walk
 	active_costume                    Acting costume for pathing
 
 Description
@@ -995,7 +995,7 @@ process_sentence_stack_entry:
         // ------------------------------------------------------------
 		// Check if there's an active destination entity; if so, exit
         // ------------------------------------------------------------
-        lda     destination_entity            // load current destination entity
+        lda     target_entity            // load current destination entity
         beq     check_stack_nonempty          // no destination active → process next stacked sentence
         rts                                   // destination active → do nothing this frame
 
@@ -1134,16 +1134,16 @@ stack_capacity_ok:
 init_walk_to_indirect_object:
         ldx     active_io_id_lo               	// X := IO lo
         lda     active_io_id_hi               	// A := IO hi
-        stx     destination_obj_lo            	// set destination object (lo)
-        sta     destination_obj_hi            	// set destination object (hi)
-        jsr     route_destination_by_entity_type// compute world dest_x/dest_y and entity type
-        sty     destination_entity            	// record destination entity kind
+        stx     target_obj_lo            	// set destination object (lo)
+        sta     target_obj_hi            	// set destination object (hi)
+        jsr     set_approach_point// compute world target_x/target_y and entity type
+        sty     target_entity            	// record destination entity kind
 
 		//Copy coordinates to debug vars
-        lda     dest_x                         
-        sta     var_destination_x              
-        lda     dest_y                         
-        sta     var_destination_y              
+        lda     target_x                         
+        sta     var_target_x              
+        lda     target_y                         
+        sta     var_target_y              
 		
         lda     current_kid_idx                	// select actor for movement
         sta     active_costume                 	// set active costume = current kid
@@ -1155,7 +1155,7 @@ init_walk_to_indirect_object:
         bne     exit_hsq                        // frozen → skip movement setup
 		
 		//Actor free to move, set destination
-        jsr     set_actor_destination           // issue destination to pathing system
+        jsr     set_costume_target           // issue destination to pathing system
 exit_hsq:
         jmp     exit_process_sentence_stack_entry // tail-jump to common exit
 
@@ -1179,22 +1179,22 @@ check_walk_to_direct_object:
 
         jsr     execute_verb_handler_for_object // keypad mode → execute immediately, no walking
         lda     #$00                            // clear any pending destination
-        sta     destination_entity              // ensure pathing is idle
+        sta     target_entity              // ensure pathing is idle
         rts                                     // done
 
 init_walk_to_direct_object:
         ldx     active_do_id_lo               	// X := DO lo
         lda     active_do_id_hi               	// A := DO hi
-        stx     destination_obj_lo            	// stage destination object (lo)
-        sta     destination_obj_hi            	// stage destination object (hi)
-        jsr     route_destination_by_entity_type// compute dest_x/dest_y and entity kind
-        sty     destination_entity            	// cache routed destination entity
+        stx     target_obj_lo            	// stage destination object (lo)
+        sta     target_obj_hi            	// stage destination object (hi)
+        jsr     set_approach_point// compute target_x/target_y and entity kind
+        sty     target_entity            	// cache routed destination entity
 
 		//Copy coordinates to debug vars
-        lda     dest_x                         
-        sta     var_destination_x              
-        lda     dest_y                         
-        sta     var_destination_y              
+        lda     target_x                         
+        sta     var_target_x              
+        lda     target_y                         
+        sta     var_target_y              
 
         lda     current_kid_idx                	// select actor to move (kid index)
         sta     active_costume                 	// set active costume = current kid
@@ -1206,7 +1206,7 @@ init_walk_to_direct_object:
         bne     exit_process_sentence_stack_entry // frozen → skip issuing a destination
 		
 		//Actor free to move, set destination
-        jsr     set_actor_destination           // start pathing toward var_destination_{x,y}
+        jsr     set_costume_target           // start pathing toward var_destination_{x,y}
 
 exit_process_sentence_stack_entry:
         rts                                     // done processing this stacked sentence
@@ -1240,11 +1240,11 @@ Global Outputs
 	current_verb_id                   reset to VERB_WALK_TO after pushing non-walk verbs
 	direct_object_idx_lo              cleared after pushing non-walk verbs
 	preposition                       cleared after pushing non-walk verbs
-	destination_entity                cleared before exit
+	target_entity                cleared before exit
 	active_costume                    set for bare “Walk to”
 	actor                             latched actor for movement path
-	actor_x_dest[], actor_y_dest[]    written for immediate walk
-	(via call) snap_and_stage_path_update()
+	actor_target_x[], actor_target_y[]    written for immediate walk
+	(via call) stage_actor_path_to_target()
 
 Description
 	* Reset sentence-stack bookkeeping: set sentstk_free_slots to the maximum
@@ -1253,17 +1253,17 @@ Description
 	* If the verb is WALK_TO and no direct object is selected, treat it as a
 	  bare walk:
 		  • Resolve the acting entity from current_kid_idx.
-		  • Copy cursor coordinates to dest_x/dest_y and clamp to walkable space.
-		  • Publish var_destination_x/y for debugging.
-		  • If the actor is not frozen, write actor_x_dest/y_dest and call
-		  snap_and_stage_path_update. Then return.
+		  • Copy cursor coordinates to target_x/target_y and clamp to walkable space.
+		  • Publish var_target_x/y for debugging.
+		  • If the actor is not frozen, write actor_target_x/y_dest and call
+		  stage_actor_path_to_target. Then return.
 
 	* Otherwise push a full sentence:
 		  • Increment sentstk_top_idx and write verb, DO, prep, IO into the
 		  stacked_* arrays at index X.
 		  • If the verb was not WALK_TO, reset UI defaults by setting
 		  current_verb_id = VERB_WALK_TO and clearing DO and preposition.
-		  • Clear destination_entity and return.
+		  • Clear target_entity and return.
 
 Notes
 	* This routine does not execute verbs. It only stages immediate walking
@@ -1334,27 +1334,27 @@ handle_walk_to:
         // ------------------------------------------------------------
         // Capture and normalize destination coordinates
 		//
-        // Loads cursor position (quarter X, half Y) into dest_x/dest_y
+        // Loads cursor position (quarter X, half Y) into target_x/target_y
         // and calls snap_coords_to_walkbox to constrain them to valid
         // walkable terrain.
         // ------------------------------------------------------------
         lda     cursor_x_pos_quarter_absolute   // Get raw cursor X (quarter-pixel units)
-        sta     dest_x                          // Seed destination X before clamping
+        sta     target_x                          // Seed destination X before clamping
 
         lda     cursor_y_pos_half_off_by_8      // Get raw cursor Y (half-pixel, offset-by-8)
-        sta     dest_y                          // Seed destination Y before clamping
+        sta     target_y                          // Seed destination Y before clamping
 
-        jsr     snap_coords_to_walkbox          // Clamp dest_x/dest_y to nearest walkable box
+        jsr     snap_coords_to_walkbox          // Clamp target_x/target_y to nearest walkable box
 
         // ------------------------------------------------------------
         // Publish normalized destination for debug
         // ------------------------------------------------------------
         ldx     actor                          	// X := actor index for movement context
-        lda     dest_x                        	// Load clamped X coordinate
-        sta     var_destination_x              	// Store global X destination (for debugging)
+        lda     target_x                        	// Load clamped X coordinate
+        sta     var_target_x              	// Store global X destination (for debugging)
 
-        lda     dest_y                         	// Load clamped Y coordinate
-        sta     var_destination_y              	// Store global Y destination (for debugging)
+        lda     target_y                         	// Load clamped Y coordinate
+        sta     var_target_y              	// Store global Y destination (for debugging)
 
         // ------------------------------------------------------------
         // Frozen-state gate
@@ -1370,18 +1370,18 @@ handle_walk_to:
         // ------------------------------------------------------------
         // Stage path to destination
 		//
-        // Writes actor_x_dest/y_dest from clamped dest_x/dest_y, then
-        // calls snap_and_stage_path_update to build the walking path
+        // Writes actor_target_x/y_dest from clamped target_x/target_y, then
+        // calls stage_actor_path_to_target to build the walking path
         // for the resolved actor.
         // ------------------------------------------------------------
         ldx     actor                          // X := actor index for destination update
-        lda     dest_x                         // Load finalized X target
-        sta     actor_x_dest,x                 // Commit actor’s horizontal destination
+        lda     target_x                         // Load finalized X target
+        sta     actor_target_x,x                 // Commit actor’s horizontal destination
 
-        lda     dest_y                         // Load finalized Y target
-        sta     actor_y_dest,x                 // Commit actor’s vertical destination
+        lda     target_y                         // Load finalized Y target
+        sta     actor_target_y,x                 // Commit actor’s vertical destination
 
-        jsr     snap_and_stage_path_update     // Build and stage walking path toward dest_x/dest_y
+        jsr     stage_actor_path_to_target     // Build and stage walking path toward target_x/target_y
 exit_bare_walk:
         rts
 
@@ -1448,12 +1448,12 @@ push_sentence:
         // ------------------------------------------------------------
         // Finalize and exit
 		//
-        // Clears destination_entity to indicate no pending target and
+        // Clears target_entity to indicate no pending target and
         // returns. Stack state and tokens remain committed.
         // ------------------------------------------------------------
 finalize_and_exit:
         lda     #$00                            // Prepare clear value
-        sta     destination_entity              // Reset destination entity marker (none targeted)
+        sta     target_entity              // Reset destination entity marker (none targeted)
         rts                                     // Return → sentence stacked or action completed
 /*
 ================================================================================
@@ -1748,7 +1748,7 @@ Returns
 
 Description
 	* Read the current stack entry (sentstk_top_idx) and select DO or IO per .A.
-	* If the object type equals OBJ_TYPE_ACTOR, return FALSE (actors aren’t pickable).
+	* If the object type equals OBJ_TYPE_COSTUME, return FALSE (actors aren’t pickable).
 	* Otherwise resolve the object resource, then scan its handler table for
 	  VERB_PICK_UP using find_object_verb_handler_offset.
 	* Return TRUE if a nonzero handler offset is found; else return FALSE.
@@ -1788,7 +1788,7 @@ check_actor_class:
         // ------------------------------------------------------------
         // Object class gate: if it's an actor, it's not pickable
         // ------------------------------------------------------------
-        cmp     #OBJ_TYPE_ACTOR                		// compare hi-byte/type with actor code
+        cmp     #OBJ_TYPE_COSTUME                		// compare hi-byte/type with actor code
         bne     resolve_and_check_pickup_handler 	// not an actor → proceed to resource/handler check
 
         // ------------------------------------------------------------
@@ -2112,7 +2112,7 @@ Summary
 	command. Set default verb to VERB_WALK_TO and mark the UI for redraw.
 
 Global Outputs
-	destination_entity             ← ENTITY_NONE
+	target_entity             ← ENTITY_NONE
 	sentence_bar_needs_refresh     ← TRUE
 	sentstk_free_slots   		   ← SENT_STACK_MAX_TOKENS
 	sentstk_top_idx           	   ← SENT_STACK_EMPTY_IDX
@@ -2135,7 +2135,7 @@ Description
 init_sentence_ui_and_stack:
 		// Clear current destination entity
         lda     #ENTITY_NONE                   
-        sta     destination_entity             
+        sta     target_entity             
 
 		// Request sentence bar redraw
         lda     #TRUE                          

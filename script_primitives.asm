@@ -368,10 +368,10 @@ Global Inputs
 	current_room           active room index
 	costume_room_idx[]     room index per costume
 	actor_for_costume[]    actor index per costume
-	actor_x_pos[]          live X for actor
-	actor_y_pos[]          live Y for actor
-	costume_dest_x[]       destination X for costume
-	costume_dest_y[]       destination Y for costume
+	actor_pos_x[]          live X for actor
+	actor_pos_y[]          live Y for actor
+	costume_target_x[]       destination X for costume
+	costume_target_y[]       destination Y for costume
 
 Global Outputs
 	ref_actor_x            overwritten with |Δx|
@@ -425,17 +425,17 @@ select_position_source:
         ldx     cur_costume_idx                // X := current costume index
         ldy     actor_for_costume,x            // Y := actor index linked to this costume
 		
-        lda     actor_x_pos,y                  
+        lda     actor_pos_x,y                  
         sta     cur_actor_x                    
-        lda     actor_y_pos,y                  
+        lda     actor_pos_y,y                  
         sta     cur_actor_y                    
 
         ldx     ref_costume_idx                // X := reference costume index
         ldy     actor_for_costume,x            // Y := actor index linked to this costume
 		
-        lda     actor_x_pos,y                  
+        lda     actor_pos_x,y                  
         sta     ref_actor_x                    
-        lda     actor_y_pos,y                  
+        lda     actor_pos_y,y                  
         sta     ref_actor_y                    
         jmp     abs_dx                         
 
@@ -445,16 +445,16 @@ use_dest_coords:
         // ------------------------------------------------------------
         ldx     cur_costume_idx                // X := current costume index
 		
-        lda     costume_dest_x,x               
+        lda     costume_target_x,x               
         sta     cur_actor_x                    
-        lda     costume_dest_y,x               
+        lda     costume_target_y,x               
         sta     cur_actor_y                    
 
         ldx     ref_costume_idx                // X := reference costume index
 		
-        lda     costume_dest_x,x               
+        lda     costume_target_x,x               
         sta     ref_actor_x                    
-        lda     costume_dest_y,x               
+        lda     costume_target_y,x               
         sta     ref_actor_y                    
 
 abs_dx:

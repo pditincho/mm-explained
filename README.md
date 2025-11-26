@@ -87,16 +87,20 @@ This an index of what each file represents:
 
 | File | Description |
 |------|-------------|
-| **actor.asm** | Actor render pipeline coordination |
-| **actor_animation.asm** | Actor clip set and limb animation |
-| **actor_motion.asm** | Actor walking algorithms |
+| **actor.asm** | Actor ticking, motion, animation orchestration |
+| **actor_animation.asm** | Limb animation and clip sequencing |
+| **actor_costume.asm** | Costume–actor linking and spawning |
+| **actor_motion_core.asm** | Motion state machine | 
+| **actor_path_dda.asm** | DDA stepping with walkbox validation |
+| **actor_sprites.asm** | Sprite allocation, mapping, draw ordering |
+| **actor_targeting.asm** | Target selection, snapping, path staging |
+| **actor_walkbox_traversal.asm** | Walkbox resolution, behaviors, traversal |
 | **blit_cel.asm** | Animation cel rendering |
 | **camera.asm** | Camera control |
 | **cursor.asm** | Cursor physics |
 | **decompressor.asm** | Decompressor engine |
-| **destination.asm** | Helper used to place or direct costumes to specific locations |
-| **disk_low_level.asm** | Low-level routines for serial communication with the disk drive |
 | **disk_high_level.asm** | High-level disk routines to load, write, and stream sectors |
+| **disk_low_level.asm** | Low-level routines for serial communication with the disk drive |
 | **drive_setup.asm** | Disk drive setup for the custom fastloader |
 | **entry_point.asm** | Entry point of the game code |
 | **flashlight.asm** | Flashlight beam rendering |
@@ -109,7 +113,6 @@ This an index of what each file represents:
 | **memory_mgmt.asm** | Memory allocator and free-space manager |
 | **misc.asm** | Miscellaneous routines |
 | **music.asm** | Music playback routines |
-| **pathing.asm** | Path algorithms for room navigation |
 | **pause.asm** | Pause/unpause handling |
 | **random.asm** | Pseudo-random number generator |
 | **render_actor.asm** | Onscreen rendering of actors |
@@ -126,12 +129,15 @@ This an index of what each file represents:
 | **sid_voice_controller.asm** | SID low-level voice register controller |
 | **sound_engine.asm** | Sound player engine |
 | **start_game.asm** | Game start/restart helpers |
-| **voice_allocation.asm** | Virtual voice allocator |
-| **voice_primitives.asm** | Voice primitives for the sound engine |
 | **ui_interaction.asm** | UI handlers for verbs, objects, sentence bar |
 | **ui_messages.asm** | UI message rendering for the top bar |
 | **view.asm** | Room viewport rendering and scrolling |
-| **walkbox.asm** | Walkbox pathfinding algorithms |
+| **voice_allocation.asm** | Virtual voice allocator |
+| **voice_primitives.asm** | Voice primitives for the sound engine |
+| **walkbox_dfs.asm** | Walkbox DFS path search |
+| **walkbox_helpers.asm** | General helpers for walkbox modules |
+| **walkbox_snap.asm** | Walkbox snapping |
+| **walkbox_waypoint_planner.asm** | Waypoint planner for cross-walkbox paths |
 | **ops_camera.asm** | Camera opcodes |
 | **ops_costume.asm** | Costume opcodes |
 | **ops_cutscene.asm** | Cutscene opcodes |
@@ -148,7 +154,9 @@ This an index of what each file represents:
 
 | File | Description |
 |------|-------------|
+| **actor_motion_constants.inc** | Constants used in actor motion modules |
 | **constants.inc** | Commonly used constant definitions |
+| **cursor_physics.inc** | Cursor direction, acceleration, and drag tables |
 | **globals.inc** | Global variable declarations |
 | **hotspots_metadata.inc** | UI hotspots metadata |
 | **opcode_handlers.inc** | Interpreter operation handlers |
@@ -419,5 +427,3 @@ A slightly simplified dependency diagram, where an arrow means "depends on":
            |
            v
        C64 Sound
-```	
-

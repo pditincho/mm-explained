@@ -1,3 +1,65 @@
+/*
+================================================================================
+Script engine core — task scheduler, dispatcher, and VM control
+================================================================================
+
+Summary
+    Core runtime for the script virtual machine. Manages per-script tasks,
+    advances RUNNING tasks, dispatches handlers via an opcode table, and 
+	maintains program counters and base addresses across resource loads, 
+	relocations, and nested script calls.
+
+Responsibilities
+    • Task scheduling:
+        - Sweep all tasks starting at cur_script_slot and execute each
+		  until it yields or returns.
+        - Wrap cur_script_slot back to 1 after reaching TASK_TOTAL.
+
+    • Opcode dispatch:
+        - Read opcodes from the script stream and look up handler entry points
+          in opcode_handlers_lo/hi.
+        - Self-modify an inlined JSR target to call the resolved handler, then
+          loop to fetch the next opcode when the handler yields.
+
+    • Program counter and base management:
+        - Maintain task_pc_lo/hi as absolute PCs and task_pc_ofs_* as
+          per-task offsets from script_base_*.
+        - Provide helpers to compute task_pc = base + offset and offset =
+          task_pc − base using 16-bit add/subtract with carry.
+
+    • Relocation handling:
+        - Recompute relative offsets, reload script_base_* from task type, and
+          rebuild absolute PCs after resources move in memory.
+
+    • Script lifecycle and residency:
+        - Launch global scripts, ensuring only one instance is active at a time.
+        - Verify resource residency, load scripts on demand, and bump
+          script_liveness_tbl refcounts.
+        - Deactivate tasks bound to a resource and decrement its refcount when
+          requested.
+
+    • Task allocation and state:
+        - Find free task slots by scanning task_state_tbl for INACTIVE entries.
+        - Initialize new tasks with script index, zeroed PC offsets, and the
+          appropriate script type and RUNNING state.
+
+    • Parent/child invocation:
+        - Suspend the current task by pushing its relative PC and script index
+          on the stack, then switch to a child task and run it via the dispatch
+          loop.
+        - On return, restore the parent’s identity and PC if its resource still
+          matches; otherwise, log a mismatch and clear script_base to a safe
+          null state.
+
+    • Script byte stream access:
+        - Provide script_read_byte as the canonical “fetch and advance” helper
+          for consuming bytes from the current script stream.
+        - Offer script_skip_offset to skip 16-bit operands without materializing
+          them.
+
+================================================================================
+*/
+
 #importonce
 #import "globals.inc"
 #import "constants.inc"
@@ -59,10 +121,10 @@ next_task:
 		// ------------------------------------------------------------
 		// Advance to next task or finish sweep
 		// ------------------------------------------------------------
-		inc     cur_script_slot                    // cur_script_slot := cur_script_slot + 1
+		inc     cur_script_slot                 // cur_script_slot := cur_script_slot + 1
 		lda     cur_script_slot
 		cmp     #TASK_TOTAL                     // reached end?
-		bne     execute_running_tasks         // no → continue sweep
+		bne     execute_running_tasks         	// no → continue sweep
 
 		// ------------------------------------------------------------
 		// Wrap to task #$01 and return
@@ -111,9 +173,9 @@ dispatch_script_ops_loop:
 		// Resolve handler entry point into the inlined call site ($5DAB)
 		tax                                     // X := opcode (table index)
 		lda     opcode_handlers_lo,x            // A := handler LO
-		sta     inlined_handler                // write call-site LO
+		sta     inlined_handler                	// write call-site LO
 		lda     opcode_handlers_hi,x            // A := handler HI
-		sta     inlined_handler + 1              // write call-site HI
+		sta     inlined_handler + 1             // write call-site HI
 
 		// Tail-call the resolved handler via the inlined JSR target
 		jsr     $0000                           // jumps to handler at inlined_handler
@@ -596,25 +658,25 @@ launch_global_script:
         // ------------------------------------------------------------
         // Ensure resource residency (load if not already resident)
         // ------------------------------------------------------------
-        ldx     script_idx                      // X := script index
-        lda     script_ptr_hi_tbl,x             // read resident base_hi for this script
-        bne     script_ready                    // nonzero → already resident
+        ldx     script_idx                      	// X := script index
+        lda     script_ptr_hi_tbl,x             	// read resident base_hi for this script
+        bne     script_ready                    	// nonzero → already resident
 
-        txa                                      // A := script index (argument for loader)
-        jsr     rsrc_cache_script      // load script resource into memory
-        jsr     refresh_script_addresses_if_moved // handle relocation effects if loader moved memory
+        txa                                      	// A := script index (argument for loader)
+        jsr     rsrc_cache_script      				// load script resource into memory
+        jsr     refresh_script_addresses_if_moved 	// handle relocation effects if loader moved memory
 
 script_ready:
         // ------------------------------------------------------------
         // Bump residency refcount for this script resource
         // ------------------------------------------------------------
-        ldx     script_idx                      // X := script index
-        inc     script_liveness_tbl,x              // refcount++
+        ldx     script_idx                      	// X := script index
+        inc     script_liveness_tbl,x              	// refcount++
 
         // ------------------------------------------------------------
         // Acquire a free execution task
         // ------------------------------------------------------------
-        jsr     find_free_task                  // returns X := free task id or $10 if none
+        jsr     find_free_task                  	// returns X := free task id or $10 if none
 
         // ------------------------------------------------------------
         // Bind script to the task context
@@ -641,8 +703,8 @@ script_ready:
         // ------------------------------------------------------------
         // Invoke the task, then resume parent (if any)
         // ------------------------------------------------------------
-        jsr     invoke_task_then_resume_parent  // call child task X with save/restore of caller
-        rts                                      // return to caller
+        jsr     invoke_task_then_resume_parent  	// call child task X with save/restore of caller
+        rts                                      	// return to caller
 /*
 ============================================================================
   find_free_task
@@ -806,3 +868,297 @@ resource_mismatch_abort:
 
 exit_ls:
         rts
+
+/* Pseudo-code
+
+function execute_running_tasks():
+    // Start from the current script slot
+    x = cur_script_slot
+
+    loop:
+        state = task_state_tbl[x]
+
+        if state == TASK_STATE_RUNNING:
+            // Execute task X until it yields or returns
+            task_cur_idx = x
+            set_script_base_from_type()   // sets script_base_lo/hi
+            set_current_task_pc()         // sets task_pc_lo/hi
+            dispatch_script_ops_loop()    // runs until handler yields/returns
+
+        // Advance to next slot in this sweep
+        cur_script_slot += 1
+
+        if cur_script_slot != TASK_TOTAL:
+            x = cur_script_slot
+            goto loop
+
+        // End of sweep: wrap back to first valid slot
+        cur_script_slot = 1
+        return
+
+
+function dispatch_script_ops_loop():
+    // Non-returning loop from the VM’s perspective. Handlers must yield
+    // back here via RTS or change control flow externally.
+    while true:
+        // Fetch next opcode byte
+        opcode = script_read_byte()
+
+        // Look up handler address from opcode handler tables
+        index = opcode
+        handler_lo = opcode_handlers_lo[index]
+        handler_hi = opcode_handlers_hi[index]
+
+        // Self-modified call site (inlined_handler)
+        inlined_handler = make_pointer(handler_lo, handler_hi)
+
+        // JSR through the inlined call site
+        call_indirect(inlined_handler)
+
+        // On handler return, loop to fetch the next opcode
+
+
+function save_task_relative_offset():
+    // Recompute and store (PC − base) for the current task
+    compute_task_relative_offset()
+    return
+
+
+function refresh_script_addresses_if_moved():
+    // If no current script task, nothing to do
+    if task_cur_idx == TASK_IDX_NONE:
+        return
+
+    // If base already set, skip the wait and just recompute addresses
+    if script_base_hi != 0:
+        goto refresh_script_addresses
+
+    // Unexpected: script running but base_hi not set
+	// ...debugging code omitted...
+
+refresh_script_addresses:
+    // Handle possible relocation:
+    // 1) capture current base→PC delta
+    // 2) reload resource base
+    // 3) rebuild absolute PC
+    compute_task_relative_offset()
+    set_script_base_from_type()
+    set_current_task_pc()
+    return
+
+
+function set_current_task_pc():
+    y = task_cur_idx
+	task_pc = script_base + task_pc_ofs_tbl[y]
+	
+    return
+
+
+function compute_task_relative_offset():
+    y = task_cur_idx
+	offset = task_pc - script_base
+    task_pc_ofs_tbl[y] = offset
+
+    return
+
+
+function script_skip_offset():
+    // Skip 2 bytes in the script stream
+    _ = script_read_byte()  // discard low byte
+    _ = script_read_byte()  // discard high byte
+    return
+
+
+function script_read_byte() -> byte:
+    // inlined_script_pc is a self-modified absolute read address:
+    //     *(script_base + task_pc)
+    addr = inlined_script_pc   // patched at runtime
+
+    value = *addr              // read one byte from script stream
+
+    // Increment PC (task_pc_lo/hi) by 1
+	task_pc += 1
+
+    return value
+
+
+function set_script_base_from_type():
+    y = task_cur_idx
+    t = task_type_tbl[y]
+
+    if t == SCRIPT_TYPE_GLOBAL:
+        // Global script: fetch from script_ptr_* tables and skip header
+        x = task_script_idx_tbl[y]  // global script resource index
+		base = script_ptr_tbl[x]
+
+        // Skip 4-byte in-memory header
+		base += MEM_HDR_LEN
+        return
+
+    if t == SCRIPT_TYPE_ROOM:
+        // Room script: use current_room pointers
+        x = current_room
+		base = room_ptr_tbl[x]
+        return
+
+    if t == SCRIPT_TYPE_OBJECT:
+        // Object script: per-object script pointer
+        x = task_script_idx_tbl[y]
+		base = object_ptr_tbl[x]
+        return
+
+    // Unknown type: fall through to deactivation logic with A = t
+    deactivate_script_by_resource(t)
+    return
+
+
+// A: target script index to match
+function deactivate_script_by_resource(target_script_idx: byte):
+    y = TASK_MAX_INDEX   // start from highest task index
+
+    while y != 0:
+        if task_script_idx_tbl[y] == target_script_idx:
+            state = task_state_tbl[y]
+
+            if state != TASK_STATE_INACTIVE:
+                // Decrement script refcount
+                x = task_script_idx_tbl[y]      // script index
+                script_liveness_tbl[x] -= 1
+
+                // Clear binding and mark inactive
+                task_script_idx_tbl[y] = 0
+                task_state_tbl[y] = TASK_STATE_INACTIVE
+                return
+
+        y -= 1
+
+    // No matching active task found
+    return
+
+
+// A: global script index to launch
+function launch_global_script(script_index: byte):
+    // Latch requested script index
+    script_idx = script_index
+
+    // Ensure only one instance: stop an already-running copy
+    deactivate_script_by_resource(script_idx)
+
+    // Ensure resource is resident
+    x = script_idx
+    if script_ptr_hi_tbl[x] == 0:
+        // Not resident → load
+        rsrc_cache_script(script_idx)
+        refresh_script_addresses_if_moved()
+
+    // Bump residency refcount
+    script_liveness_tbl[x] += 1
+
+    // Acquire a free task (X = free index or TASK_TOTAL if none)
+    find_free_task()
+    // On return, X is chosen task index
+
+    // Bind script index to this task
+    task_script_idx_tbl[x] = script_idx
+
+    // Reset relative PC so execution starts at offset 0
+    task_pc_ofs_hi_tbl[x] = 0
+    task_pc_ofs_lo_tbl[x] = 0
+
+    // Mark task running and set type to GLOBAL
+    task_state_tbl[x] = TASK_STATE_RUNNING
+    task_type_tbl[x] = SCRIPT_TYPE_GLOBAL
+
+    // Invoke the task once, then resume parent (if any)
+    invoke_task_then_resume_parent(x)
+
+    return
+
+
+// Returns X = index of first inactive task (1..TASK_TOTAL-1) or TASK_TOTAL if none.
+function find_free_task() -> byte:
+    x = 1  // start at first user task; 0 is reserved
+
+    while x < TASK_TOTAL:
+        if task_state_tbl[x] == TASK_STATE_INACTIVE:
+            // Found free slot
+            return x
+
+        x += 1
+
+    // No free slot found
+    return TASK_TOTAL
+
+
+// X: child task index to invoke
+function invoke_task_then_resume_parent(child_idx: byte):
+    // --------------------------------------------------------
+    // Save parent context on stack
+    // --------------------------------------------------------
+
+    // Compute parent relative offset = task_pc - script_base
+    rel_offset = task_pc - script_base
+    push(rel_offset)
+
+    parent_idx = task_cur_idx
+    parent_script_idx = task_script_idx_tbl[parent_idx]
+
+    push(parent_script_idx)
+    push(parent_idx)        // parent task id
+
+    // --------------------------------------------------------
+    // Switch to child task and step its script
+    // --------------------------------------------------------
+    task_cur_idx = child_idx
+    set_script_base_from_type()
+    set_current_task_pc()
+
+    // Run child until it yields/returns back here
+    dispatch_script_ops_loop()
+
+    // --------------------------------------------------------
+    // On return from child: restore or drop parent
+    // --------------------------------------------------------
+
+    parent_id = pop()       // popped in reverse: parent task id
+
+    if parent_id == 0xFF:
+        // Special case: no parent
+        _ = pop()          // drop parent resource index
+        _ = pop()          // drop rel_offset
+        return
+
+    // We do have a parent: re-install it
+    task_cur_idx = parent_id
+    y = parent_id
+
+    saved_resource_idx = pop()      // previously pushed parent script index
+    current_resource_idx = task_script_idx_tbl[y]
+
+    if saved_resource_idx != current_resource_idx:
+        // Resource mismatch: parent’s script resource changed or invalidated
+        resource_mismatch_abort(saved_resource_idx, y)
+        return
+
+    // --------------------------------------------------------
+    // Normal restore path: rebuild parent PC from saved rel offsets
+    // --------------------------------------------------------
+    rel_offset = pop()
+	task_pc_ofs[y] = rel_offset
+
+    set_script_base_from_type()
+    set_current_task_pc()
+    return
+
+
+function resource_mismatch_abort(saved_resource_idx: byte, parent_task_id: byte):
+    // Drop remaining saved offsets from stack
+    _ = pop()   // rel_offs_hi
+    _ = pop()   // rel_offs_lo
+
+    // Clear script_base to a safe null
+    script_base_lo = 0
+    script_base_hi = 0
+
+    return
+*/

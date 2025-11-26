@@ -1,3 +1,55 @@
+/*
+================================================================================
+Script primitives and operand helpers
+================================================================================
+
+Summary
+    Low-level building blocks for the script VM. Provides shared helpers for
+    decoding opcode operands, accessing object attributes, computing simple
+    spatial metrics, scanning inventory slots, advancing pause timers, and
+    resolving sentence objects into concrete IDs.
+
+Responsibilities
+    • Operand decoding:
+        - Use opcode bits 5, 6, and 7 as “operand kind” selectors.
+        - Route each operand to a shared loader that chooses between immediate
+          literals and game variable reads (game_vars[]).
+        - Expose resolved operand values in A for higher-level opcode handlers.
+
+    • Variable/operand comparisons:
+        - Compare a script-selected variable against a second operand resolved
+          via bit7, setting CMP-style flags (C/Z/N) for conditional branches.
+
+    • Object attribute access:
+        - Read an object’s attribute byte, choosing the object index either from
+          the active direct object or from the next script byte (bit6-driven).
+        - Write back updated attributes to the same object and reset camera
+          position to a default.
+
+    • Inventory helpers:
+        - Scan inventory objects linearly to find the first free slot.
+        - Return the slot index to callers that want to add new items.
+
+    • Distance and proximity:
+        - Compute an anisotropic distance between two costumes/actors using a
+          room-consistency check, “live vs destination” coordinates, and a
+          |Δx|/|Δy| metric with Y compressed (Δy >> 2) for interaction ranges.
+
+    • Pause timing:
+        - Maintain per-task 24-bit pause counters and automatically transition
+          tasks from PAUSED to RUNNING when their high byte rolls to zero.
+
+    • Sentence object resolution:
+        - Translate script-level mode bytes into a concrete object ID pair
+          (lo/hi), selecting between active IO, active DO, or an immediate ID
+          with the high byte derived from opcode bit7.
+
+Usage
+    These primitives are intended to be called from script opcode handlers and
+    the script engine core, keeping common operand decoding and small game
+    mechanics logic centralized and consistent across the VM.
+================================================================================
+*/
 #importonce
 #import "globals.inc"
 #import "constants.inc"
@@ -666,3 +718,233 @@ set_hi_when_bit7_clear:
 commit_hi_result:
         sta     hi_byte                        // store hi result
         rts                                    // return lo/hi pair
+
+/*
+Pseudo-code
+
+function script_compare_operands():
+    // Read first operand index from script
+    var_index = script_read_byte()
+
+    // Load second operand using opcode bit7 (variable or immediate)
+    rhs = script_load_operand_bit7()
+    rhs_operand = rhs
+
+    // Compare game_vars[var_index] vs rhs_operand using CMP semantics
+    left  = game_vars[var_index]
+    cmp_result = left - rhs_operand
+
+    // Set flags as CMP would:
+    // C = (left >= rhs_operand)
+    // Z = (left == rhs_operand)
+    // N = sign bit of (left - rhs_operand)
+    set_flags_from_subtraction(left, rhs_operand)
+
+    return  // result is only in flags
+
+
+function script_load_operand_bit5() -> byte:
+    // Bit5 decides: 1 = variable, 0 = immediate
+    masked = opcode AND OPCODE_KIND_BIT5_MASK   // $20
+
+    // Z flag = 1 if masked == 0
+    return script_operand_type_check(masked != 0)
+
+
+function script_load_operand_bit6() -> byte:
+    // Bit6 decides: 1 = variable, 0 = immediate
+    masked = opcode AND OPCODE_KIND_BIT6_MASK   // $40
+
+    // Z flag = 1 if masked == 0
+    return script_operand_type_check(masked != 0)
+
+
+function script_load_operand_bit7() -> byte:
+    // Bit7 decides: 1 = variable, 0 = immediate
+    masked = opcode AND OPCODE_KIND_BIT7_MASK   // $80
+
+    // Z flag = 1 if masked == 0
+    return script_operand_type_check(masked != 0)
+
+
+// Called conceptually as: script_operand_type_check(is_variable: bool)
+// In the real code, is_variable is inferred from the Z flag.
+function script_operand_type_check(is_variable: bool) -> byte:
+    if is_variable:
+        // Variable path: index from script, then load from game_vars[]
+        index = script_read_byte()
+        return game_vars[index]
+    else:
+        // Immediate path: read literal directly from script
+        value = script_read_byte()
+        return value
+
+
+function script_read_object_attributes() -> byte:
+    // Decide where object index comes from based on opcode bit6
+    if (opcode AND OPCODE_KIND_BIT6_MASK) != 0:
+        // Bit6 set → use active DO index
+        obj_index = active_do_id_lo
+    else:
+        // Bit6 clear → read object index from script
+        obj_index = script_read_byte()
+
+    // Save index for later writes
+    item_index_saved = obj_index
+
+    // Fetch attribute byte for that object
+    attr = object_attributes[obj_index]
+    return attr
+
+
+function script_set_object_attributes(attr_byte: byte):
+    // Use the previously saved object index
+    obj_index = item_index_saved
+
+    // Write attribute back to table
+    object_attributes[obj_index] = attr_byte
+
+    // Reset camera to default position
+    cam_current_pos = CAM_DEFAULT_POS
+
+
+// Returns: Y = index of first free slot (byte == 0)
+// If no free slot exists, it falls through into the next routine (BUG).
+function find_free_inventory_slot() -> (found: bool, slot_index: byte):
+    slot = 1   // Start at slot 1, slot 0 reserved
+
+    while slot < INVENTORY_SLOTS:
+        if inventory_objects[slot] == 0:
+            // Found free slot
+            return (true, slot)
+
+        slot += 1
+
+    // BUG: no explicit failure handling here.
+    // In the original code, control falls into the next routine.
+    // Conceptually, caller should treat this as "no free slot".
+    return (false, UNUSED)
+
+
+// Uses ref_costume_idx and cur_costume_idx globals as inputs.
+// Returns: distance (0..255) in A; DISTANCE_INVALID ($FF) if invalid.
+function compute_actors_distance() -> byte:
+    ref_idx = ref_costume_idx
+    cur_idx = cur_costume_idx
+
+    ref_room = costume_room_idx[ref_idx]
+    cur_room = costume_room_idx[cur_idx]
+
+    // 1) Same-room check
+    if ref_room != cur_room:
+        return DISTANCE_INVALID
+
+    // 2) Room validity check (room index 0 is considered invalid)
+    if ref_room == ROOM_INDEX_INVALID:
+        return DISTANCE_INVALID
+
+    // 3) Choose position source:
+    //    - If in current_room: use live actor positions.
+    //    - Else: use destination (target) positions.
+    if ref_room == current_room:
+        // Use live actor positions
+        cur_actor = actor_for_costume[cur_idx]
+        ref_actor = actor_for_costume[ref_idx]
+
+        cur_x = actor_pos_x[cur_actor]
+        cur_y = actor_pos_y[cur_actor]
+        ref_x = actor_pos_x[ref_actor]
+        ref_y = actor_pos_y[ref_actor]
+    else:
+        // Use destination coords for off-screen rooms
+        cur_x = costume_target_x[cur_idx]
+        cur_y = costume_target_y[cur_idx]
+        ref_x = costume_target_x[ref_idx]
+        ref_y = costume_target_y[ref_idx]
+
+    // Store to scratch globals as in code
+    cur_actor_x = cur_x
+    cur_actor_y = cur_y
+    ref_actor_x = ref_x
+    ref_actor_y = ref_y
+
+    // 4) Compute |Δx|
+    dx = cur_x - ref_x
+    if dx < 0:
+        dx = -dx
+    ref_actor_x = dx      // overwrite as scratch
+
+    // 5) Compute |Δy| then scale by 1/4
+    dy = cur_y - ref_y
+    if dy < 0:
+        dy = -dy
+    dy = dy >> 2          // divide by 4
+    ref_actor_y = dy      // overwrite as scratch
+
+    // 6) Anisotropic distance:
+    //    If dy ≤ dx → distance = (dy * 2) + dx
+    //    Else        distance = (dx * 2) + dy
+    if dy <= dx:
+        distance = (dy * 2) + dx
+    else:
+        distance = (dx * 2) + dy
+
+    return distance
+
+
+// Advances 24-bit pause counters for PAUSED tasks.
+// If the high byte rolls to 0, the task becomes RUNNING.
+function handle_paused_tasks():
+    x = TASK_MAX_INDEX  // highest task id
+
+    while x != 0:
+        if task_state_tbl[x] == TASK_STATE_PAUSED:
+            // counter_3 (low byte)++
+            task_pause_counter_3[x] += 1
+
+            if task_pause_counter_3[x] == 0:
+                // Carry into counter_2
+                task_pause_counter_2[x] += 1
+
+                if task_pause_counter_2[x] == 0:
+                    // Carry into counter_1
+                    task_pause_counter_1[x] += 1
+
+                    // If MSB rolled back to 0, unpause
+                    if task_pause_counter_1[x] == 0:
+                        task_state_tbl[x] = TASK_STATE_RUNNING
+
+        x -= 1  // next lower task
+
+
+// Resolves an object id pair (lo, hi) for a sentence.
+// The script supplies a "mode" byte:
+//   $FF → active IO
+//   $FE → active DO
+//   else: mode is low byte; hi is 0 or 1 based on input_opcode bit7.
+function get_script_object_for_sentence():
+    mode = script_read_byte()
+
+    if mode == SENTENCE_OBJ_ACTIVE_IO:
+        // Use active indirect object
+        low_byte  = active_io_id_lo
+        hi_byte   = active_io_id_hi
+        return
+
+    if mode == SENTENCE_OBJ_ACTIVE_DO:
+        // Use active direct object
+        low_byte  = active_do_id_lo
+        hi_byte   = active_do_id_hi
+        return
+
+    // Otherwise, treat mode as an immediate low byte
+    low_byte = mode
+
+    // Bit7 of input_opcode chooses high byte: 0 or 1
+    if (input_opcode & 0x80) != 0:
+        hi_byte = 0x01
+    else:
+        hi_byte = 0x00
+
+    return
+*/

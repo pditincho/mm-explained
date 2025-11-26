@@ -212,10 +212,14 @@ Each method offers a different perspective, and you can switch between them as n
 
 ### **Walking / Movement**
 
-* `walkbox` - Walkbox graph and adjacency handling
-* `pathing` - Pathfinding logic
-* `actor_motion` - Actor movement and walking algorithms
-* `destination` - Helpers to position costumes at specific locations
+* `walkbox_helpers` - General helpers for walkbox modules
+* `walkbox_snap` - Walkbox snapping
+* `walkbox_dfs` - Walkbox DFS path search
+* `walkbox_waypoint_planner` - Waypoint planner for cross-walkbox paths
+* `actor_walkbox_traversal` - Walkbox resolution, behaviors, traversal
+* `actor_targeting` - Target selection, snapping, path staging
+* `actor_path_dda` - DDA stepping with walkbox validation
+* `actor_motion_core` - Motion state machine
 
 ---
 
@@ -240,6 +244,7 @@ Each method offers a different perspective, and you can switch between them as n
 * `decompressor` - Graphics decompression
 * `blit_cel` - Cel rendering
 * `masking` - Foreground/background masking
+* `actor_sprites` - Sprite allocation, mapping, draw ordering
 * `render_actor` - Actor drawing
 * `render_object` - Object drawing
 * `view` - Viewport rendering and scrolling
@@ -251,8 +256,8 @@ Each method offers a different perspective, and you can switch between them as n
 
 ### **Animation**
 
+* `actor_costume` - Costume–actor linking and spawning
 * `actor_animation` - Limb animation and clip sets
-* `actor` - Actor render pipeline coordination
 
 ---
 

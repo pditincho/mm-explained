@@ -192,7 +192,7 @@ Description:
 		• Restores sentence parts from snapshot using a descending inclusive loop.  
 		• Restores prior control mode via set_control_mode and marks sentence bar dirty.
 Notes:
-	• The restore loop is inclusive (BPL) starting at SENT_STACK_LAST_INDEX.  
+	• The restore loop is inclusive (BPL) starting at SENTENCE_STACK_LAST_IDX.  
 	• Unsuspend ordering differs by path by design to match UI/room setup needs.
 ================================================================================
 */
@@ -250,7 +250,7 @@ other_control_modes:
 		// ------------------------------------------------------------
 		// Restore previous sentence parts
 		// ------------------------------------------------------------
-		ldx     #SENT_STACK_LAST_INDEX
+		ldx     #SENTENCE_STACK_LAST_IDX
 
 restore_sentence_parts_loop:
 		lda     stacked_io_id_hi,x

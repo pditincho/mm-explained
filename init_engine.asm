@@ -948,8 +948,8 @@ Summary
 	ready for input with the sentence bar marked for refresh.
 
 Global Outputs
-	 sentstk_top_idx            set to SENT_STACK_EMPTY_IDX (empty stack)
-	 sentstk_free_slots         set to SENT_STACK_MAX_TOKENS
+	 sentstk_top_idx            set to SENTENCE_STACK_EMPTY_IDX (empty stack)
+	 sentstk_free_slots         set to SENTENCE_STACK_SIZE
 	 std_msg_countdown          set to STD_MSG_DEFAULT_TICKS (16-bit)
 	 text_delay_factor          set to TEXT_DELAY_DEFAULT
 	 current_verb_id            set to VERB_WALK_TO
@@ -981,9 +981,9 @@ init_game_engine:
         // ------------------------------------------------------------
         // Initialize sentence stack system
         // ------------------------------------------------------------
-        lda     #SENT_STACK_EMPTY_IDX 
+        lda     #SENTENCE_STACK_EMPTY_IDX 
         sta     sentstk_top_idx                // mark stack as empty
-        lda     #SENT_STACK_MAX_TOKENS 
+        lda     #SENTENCE_STACK_SIZE 
         sta     sentstk_free_slots             // 6 free slots available
 
         // ------------------------------------------------------------

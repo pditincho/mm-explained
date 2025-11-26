@@ -227,9 +227,9 @@ Only 2 bits are used, bit 5 (#20) and bit 0 (#01).
 .const DISK_SIDE_ID_BASE        	= $30    // Base offset: side_id ($31/$32 → 1/2)
 
 // Sentence stack
-.const SENT_STACK_EMPTY_IDX        	= $FF   // Token stack sentinel “empty”
-.const SENT_STACK_MAX_TOKENS       	= $06   // Max tokens in sentence stack
-.const SENT_STACK_LAST_INDEX       	= SENT_STACK_MAX_TOKENS - 1   
+.const SENTENCE_STACK_EMPTY_IDX        	= $FF   // Token stack sentinel “empty”
+.const SENTENCE_STACK_SIZE       	= $06   // Max tokens in sentence stack
+.const SENTENCE_STACK_LAST_IDX       	= SENTENCE_STACK_SIZE - 1   
 
 // Text printing
 .const SPACE_CHAR              		= $20   // Space character

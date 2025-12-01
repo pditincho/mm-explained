@@ -27,7 +27,7 @@ Global Inputs
 	 script_2_mem_attr              residency flag for global script #2
 	 control_mode                   engine control mode
 	 text_delay_factor              current text speed
-	 sid_volfilt_reg_shadow         cached SID master volume
+	 sid_volfilt_shadow         cached SID master volume
 
 Global Outputs
 	 task_pc_ofs_lo_tbl/hi[X]       restored PC for resumed script
@@ -171,7 +171,7 @@ pause_wait_for_space_loop:
         // ------------------------------------------------------------
         // Restore audio and memory map, then unpause and refresh UI
         // ------------------------------------------------------------
-        lda     sid_volfilt_reg_shadow        // restore cached volume
+        lda     sid_volfilt_shadow        // restore cached volume
         sta     sid_master_volume
 		
         ldy     #MAP_IO_OUT                   // normal mapping value

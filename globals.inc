@@ -92,7 +92,7 @@ Values observed
 .label color_ram_copy_done 						= $1677
 .label game_paused_flag 						= $1679	
 .label kbd_key_ready       						= $2061    
-.label lowest_priority_sound_starting_flag 		= $4CF2 
+.label pri1_snd_starting_flag 		= $4CF2 
 .label room_scene_clicked_flag 					= $FD77
 .label actor_path_update_flag 					= $FDE1
 .label sentence_bar_needs_refresh 				= $FE49	
@@ -107,7 +107,7 @@ Values observed
 .label vmux_primary_active_flag_bff = $5162		
 .label alt_voice_slots_cleared_flag = $5167	
 .label sound_processing_disabled_flag = $4819	
-.label voice3_in_use = $4CF5				
+.label filter_voice_in_use_flag = $4CF5				
 .label vmux_filter_enabled_flag_bff = $5164			// INVERTED NAME? - #00 = filter voice, #FF = stop filtering voice
 
 //Not booleans or unknown
@@ -643,7 +643,7 @@ They were definitely intended as debugging aids.
 .label sid_volfilt_shadow = $476A
 .label voice_adsr_attack_decay = $476c
 .label voice_adsr_sustain_release = $476f
-.label sound_id_to_start_on_voice = $4772
+.label snd_to_start_on_voice = $4772
 .label voice_data_base_lo = $4779
 .label voice_data_base_hi = $4780
 .label voice_data_offsets_lo = $4787
@@ -651,14 +651,14 @@ They were definitely intended as debugging aids.
 .label voice_priority_0 = $4795
 .label voice_priority_1 = $4796
 .label voice_priority_2 = $4797
-.label voice_priority_3 = $4798
+.label filter_priority = $4798
 .label voice_priority_4 = $4799
 .label voice_priority_5 = $479A
 .label voice_priority_6 = $479B
 .label voice_sound_id_tbl = $479c
 .label rsrc_for_voice_1 = $479d
 .label rsrc_for_voice_2 = $479e
-.label rsrc_for_voice_3 = $479f
+.label snd_for_filter = $479f
 .label rsrc_for_voice_4 = $47a0
 .label rsrc_for_voice_5 = $47a1
 .label rsrc_for_voice_6 = $47a2
@@ -684,7 +684,7 @@ They were definitely intended as debugging aids.
 .label music_voices_in_use = $4817
 .label music_voices_in_use_2 = $4818		//A bitmask used to represent which voices are being used by music
 .label stop_sound_cleanup_mode = $481A				//#01 = stop, dereference sound, stop arpeggio, #FF = just stop
-.label tracked_lowest_priority_sound = $4cf1
+.label pri1_snd_idx = $4cf1
 .label filter_control_snapshot = $4cfa
 .label total_real_voices_available = $4cff
 //Values observed: #01, #02, #07, #0A, #64, #6E, #73, #78

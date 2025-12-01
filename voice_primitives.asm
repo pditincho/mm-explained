@@ -72,11 +72,11 @@ The whole system centers around these main ideas:
     Stopping is broken into layers:
 
        • Simple stop: free the voices but don’t modify refcounts, don’t clear
-         alternate settings, and don’t touch arpeggios.
+         alternate settings, and don’t touch multiplexings.
        • Full stop: used when a sound was the “starting sound”; this also:
             – decrements its reference counter (unless music is active)
             – clears alternate filter settings
-            – ends arpeggios
+            – ends multiplexings
             – resets internal state tracking which sound is “starting”
 
     At the voice level, stopping:
@@ -125,7 +125,7 @@ In short:
 .label sound_data_base            = $bc     // Zero-page pointer: base address of the current sound resource data
 
 .label first_voice_index          = $4cf3   // Index of the first allocated voice slot (real or special) for this sound
-.label voice3_bit5_request_mask   = $4cf4   // Non-zero when the sound’s requirements mask requests voice 3 via bit 5
+.label voice3_requested_flag   	  = $4cf4   // Non-zero when the sound’s requirements mask requests voice 3 via bit 5
 .label voice3_conflict_flag_b     = $4cf6   // Non-zero if voice 3 is requested and already in use by another sound
 .label real_voices_needed         = $4cfe   // Count of real SID voices (0–2) required by the pending sound
 .label insufficient_voices_flag_b = $4d00   // 0 if current real voices suffice; $ff if more real voices are needed
@@ -141,13 +141,13 @@ In short:
 
 
 * = $4C1C
-update_voice_base_and_instruction_ptr:
+update_voice_stream_pointers:
         // Ensure the sound resource bound to this voice is actually loaded
         ldy     voice_sound_id_tbl,x
         lda     sound_ptr_hi_tbl,y
         bne     resource_loaded
 
-        // Resource not in memory → stop sound and clear low-priority/arpeggio tracking if needed
+        // Resource not in memory → stop sound and clear low-priority/multiplexing tracking if needed
         tya
         jsr     stop_sound_full_cleanup
         cmp     tracked_lowest_priority_sound
@@ -156,8 +156,8 @@ update_voice_base_and_instruction_ptr:
         lda     #$00
         sta     tracked_lowest_priority_sound
         sta     lowest_priority_sound_starting_flag
-        sta     arpeggio_primary_active_flag
-        sta     arpeggio_secondary_active_flag
+        sta     vmux_primary_active_flag_bff
+        sta     vmux_secondary_active_flag_bff
 
 exit_sound_not_in_memory:
         lda     #$01                       // Return #$01 → sound resource is not in memory
@@ -329,9 +329,9 @@ store_real_voice_count:
         // Restore the original bitmask into A
         tya
 
-        // Test bit 5 to see if special voice #3 is requested; store raw mask into voice3_bit5_request_mask
+        // Test bit 5 to see if special voice #3 is requested; store raw mask into voice3_requested_flag
         and     #$20
-        sta     voice3_bit5_request_mask
+        sta     voice3_requested_flag
 
         // Determine if enough real voices are available right now:
         // insufficient_voices_flag_b := 0 if enough, $ff if not
@@ -345,11 +345,11 @@ store_real_voice_availability_flag:
         sty     insufficient_voices_flag_b
 
         // Check if there is a “voice 3 conflict”:
-        // conflict if (voice3_in_use != 0) AND (voice3_bit5_request_mask != 0)
+        // conflict if (voice3_in_use != 0) AND (voice3_requested_flag != 0)
         ldy     #FALSE
         lda     voice3_in_use
         beq     store_voice3_conflict_flag_b_flag
-        lda     voice3_bit5_request_mask
+        lda     voice3_requested_flag
         beq     store_voice3_conflict_flag_b_flag
         ldy     #BTRUE
 
@@ -385,7 +385,7 @@ verify_voices_attainable_or_fail:
 enforce_voice3_priority_constraint:
         // If the new sound needs voice 3, and voice 3 is in use, consult
         // voice3_priority_is_higher_flag_b to see whether eviction is allowed.
-        lda     voice3_bit5_request_mask
+        lda     voice3_requested_flag
         beq     dispatch_voice3_conflict_flag_b_resolution
 
         lda     voice3_in_use
@@ -424,13 +424,13 @@ return_error_insufficient_priority:
 evict_lowest_priority_sounds_loop:
         jsr     count_evictable_voices
 
-        // Sanity check: the min_alloc_voice_priority among evictable voices must be < sound_priority
-        lda     min_alloc_voice_priority
+        // Sanity check: the lowest_alloc_voice_priority among evictable voices must be < sound_priority
+        lda     lowest_alloc_voice_priority
         cmp     sound_priority
         bpl     return_error_no_lower_priority_voice
 
         // Stop sound owning the lowest-priority evictable voice
-        ldx     min_alloc_voice_idx
+        ldx     lowest_alloc_voice_idx
         lda     voice_sound_id_tbl,x
 
 stop_sound_by_resource_id:
@@ -446,7 +446,7 @@ stop_sound_by_resource_id:
 
 // There are enough real voices now; if voice 3 is required, verify it is free.
 have_enough_real_voices:
-        lda     voice3_bit5_request_mask
+        lda     voice3_requested_flag
         beq     branch_to_voice_allocation
 
         lda     voice3_in_use
@@ -464,7 +464,7 @@ return_error_no_lower_priority_voice:
 
 // This section allocates and sets up all voices needed for the sound.
 // Real voices (0–2) are allocated so no other sound can use them concurrently.
-// Virtual voices (4–7) are used for arpeggios.
+// Virtual voices (4–7) are used for multiplexings.
 // Special voice 3 controls filter and volume.
 allocate_and_configure_needed_voices:
         // Offset +5 encodes which voices are needed (voice_requirements_mask bitmask)
@@ -650,15 +650,15 @@ stop_sound_core:
         //          • dec_sound_refcount_if_no_music(sound_to_stop)
         //          • tracked_lowest_priority_sound = 0
         //          • lowest_priority_sound_starting_flag = 0
-        //          • arpeggio_primary_active_flag = 0
-        //          • arpeggio_secondary_active_flag = 0
+        //          • vmux_primary_active_flag_bff = 0
+        //          • vmux_secondary_active_flag_bff = 0
         //          • clear_all_alternate_settings()
         //
         //   5. All registers A,X,Y are restored before return.
         //
         // NOTE: The older comments inverted the interpretation of stop_sound_cleanup_mode.
         //       The code shows clearly that ONLY stop_sound_cleanup_mode == $FF
-        //       triggers deref + arpeggio clears, and ONLY when stopping the
+        //       triggers deref + multiplexing clears, and ONLY when stopping the
         //       current tracked_lowest_priority_sound.
         // ----------------------------------------------------------------------
 
@@ -695,8 +695,8 @@ stop_sound_core:
         lda     #$00
         sta     tracked_lowest_priority_sound
         sta     lowest_priority_sound_starting_flag
-        sta     arpeggio_primary_active_flag
-        sta     arpeggio_secondary_active_flag
+        sta     vmux_primary_active_flag_bff
+        sta     vmux_secondary_active_flag_bff
 
         jsr     clear_all_alternate_settings
 ssp_exit_2:		
@@ -760,7 +760,7 @@ stop_sound_voices_only:
         // IMPORTANT (actual behavior from code):
         //
         //   stop_sound_cleanup_mode = #$01  **does NOT** cause dereference,
-        //   does NOT clear arpeggios, and does NOT clear alternate settings.
+        //   does NOT clear multiplexings, and does NOT clear alternate settings.
         //
         //   Those actions only occur when stop_sound_cleanup_mode == #$FF and the sound
         //   being stopped matches tracked_lowest_priority_sound.
@@ -768,7 +768,7 @@ stop_sound_voices_only:
         //   Therefore, this routine performs:
         //        • stop_all_voices_for_sound(sound)
         //        • NO refcount decrement
-        //        • NO arpeggio shutdown
+        //        • NO multiplexing shutdown
         //        • NO clearing of tracked_lowest_priority_sound / priority1 flags
         //        • NO alternate-setting reset
         //
@@ -802,7 +802,7 @@ stop_sound:
         //   • X ends at $FF, Y unchanged.
         //
         // NOTE: This routine does NOT stop audio, does NOT halt voices,
-        //       does NOT change refcounts, and does NOT affect arpeggios.
+        //       does NOT change refcounts, and does NOT affect multiplexings.
         //       It only clears pending “start sound on voice” assignments.
         // ----------------------------------------------------------------------
         ldx     #$06                            // Scan slots 6 → 0
@@ -837,7 +837,7 @@ stop_sound_full_cleanup:
         //        → decrement refcount of that sound
         //        → clear tracked_lowest_priority_sound
         //        → clear lowest_priority_sound_starting_flag
-        //        → clear arpeggio_primary_active_flag and arpeggio_secondary_active_flag
+        //        → clear vmux_primary_active_flag_bff and vmux_secondary_active_flag_bff
         //        → clear_all_alternate_settings
         //
         //   Regardless:
@@ -848,7 +848,7 @@ stop_sound_full_cleanup:
         pha                                     // Save sound index
 
         lda     #STOP_SOUND_MODE_FULL_CLEANUP
-        sta     stop_sound_cleanup_mode                 // Mode $FF: allows deref & arpeggio clear
+        sta     stop_sound_cleanup_mode                 // Mode $FF: allows deref & multiplexing clear
 
         pla                                     // Restore A (sound index)
         jsr     stop_sound_core             // Perform full stop logic (if conditions match)
@@ -872,7 +872,7 @@ stop_logical_voice:
         //         → release_voice(3), then return.
         //
         //   5. If X is 0–2 (real voices):
-        //         → snapshot filter_control_reg_copy
+        //         → snapshot sid_filter_control_shadow
         //         → clear_waveform_on_full_stop(X)
         //         → release_voice(X)
         //         → if filter control changed and its low 3 bits are now zero:
@@ -906,7 +906,7 @@ stop_logical_voice:
         // ------------------------------------------------------------------
         // Real voices 0–2: snapshot filter state and try to clear gate/waveform
         // ------------------------------------------------------------------
-        lda     filter_control_reg_copy
+        lda     sid_filter_control_shadow
         sta     filter_control_snapshot
 
         jsr     clear_waveform_on_full_stop    // Conditional gate/waveform clear
@@ -921,7 +921,7 @@ sv_release_primary_slot:
         // Additional logic for real voices 0–2:
         // Decide whether to release voice 3 based on filter state change.
         // ------------------------------------------------------------------
-        lda     filter_control_reg_copy
+        lda     sid_filter_control_shadow
         cmp     filter_control_snapshot
         beq     sv_release_paired_virtual_slot            // unchanged → skip
 
@@ -965,7 +965,7 @@ clear_waveform_on_full_stop:
         //   - If stop_sound_cleanup_mode ≠ $FF → no changes are applied.
         //   - Otherwise (no music playing AND stop_sound_cleanup_mode == $FF):
         //         voice_ctrl_shadow[X] := (original_control & $0E)
-        //         update_voice_control is called to commit the change.
+        //         apply_voice_control_to_sid is called to commit the change.
         //
         // On return:
         //   - A is restored to the original control byte.
@@ -989,7 +989,7 @@ clear_waveform_on_full_stop:
         tya                                     // Restore original control into A
         and     #$0E                            // Mask: clear bit0 and bits4–7
         sta     voice_ctrl_shadow,x                // Store new control byte
-        jsr     update_voice_control            // Commit update
+        jsr     apply_voice_control_to_sid            // Commit update
 
 cwast_exit:
         pla                                     // Restore original control into A

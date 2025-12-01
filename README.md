@@ -133,7 +133,7 @@ This an index of what each file represents:
 | **ui_messages.asm** | UI message rendering for the top bar |
 | **view.asm** | Room viewport rendering and scrolling |
 | **voice_allocation.asm** | Virtual voice allocator |
-| **voice_primitives.asm** | Voice primitives for the sound engine |
+| **voice_scheduler.asm** | Voice scheduler for the sound engine |
 | **walkbox_dfs.asm** | Walkbox DFS path search |
 | **walkbox_helpers.asm** | General helpers for walkbox modules |
 | **walkbox_snap.asm** | Walkbox snapping |
@@ -162,6 +162,7 @@ This an index of what each file represents:
 | **opcode_handlers.inc** | Interpreter operation handlers |
 | **registers.inc** | C64 hardware register aliases |
 | **rsrc_metadata.inc** | Game resource metadata (disk locations) |
+| **sound_constants.inc** | Sound engine constants |
 | **text_data.inc** | Commonly used strings |
 
 
@@ -204,7 +205,7 @@ Each method offers a different perspective, and you can switch between them as n
 
 * `sid_voice_controller` - SID register control
 * `voice_allocation` - Virtual voice allocator
-* `voice_primitives` - Low-level sound operations
+* `voice_scheduler` - Voice scheduler for sound playback
 * `sound_engine` - Sound effect playback
 * `music` - Music playback engine
 

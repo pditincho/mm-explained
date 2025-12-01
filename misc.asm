@@ -353,7 +353,7 @@ Global Inputs
 									 $DA58,$DA80,$DAA8  (each +$28 from prior)
 Global Outputs
 	Color RAM range                	 $D828–$DACF written (680 bytes)
-	vic_color_ram_copy_done        	 set to TRUE on completion
+	color_ram_copy_done        	 set to TRUE on completion
 	
 Description
 	- Initializes Y to 39 and decrements to 0, copying one column per pass.
@@ -452,7 +452,7 @@ copy_color_column:
         // Mark color RAM copy completed
         // ------------------------------------------------------------
         lda     #TRUE
-        sta     vic_color_ram_copy_done
+        sta     color_ram_copy_done
         rts
 /*
 ================================================================================

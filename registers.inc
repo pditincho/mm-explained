@@ -135,7 +135,7 @@
 .label voice3_control_register   = $D412
 .label filter_cutoff_freq_lo_reg = $D415
 .label filter_cutoff_freq_hi_reg = $D416
-.label filter_control_register   = $D417    // SID filter control hardware register (writes affect filter)
+.label sid_filter_control   = $D417    // SID filter control hardware register (writes affect filter)
 .label sid_master_volume			   = $D418
 // ============================================================================
 // CIA ports

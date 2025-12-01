@@ -308,34 +308,10 @@ Maximum-length instruction (SID-range)
 #import "globals.inc"
 #import "constants.inc"
 #import "registers.inc"
+#import "sound_constants.inc"
 #import "sid_voice_controller.asm"
-#import "voice_primitives.asm"
+#import "voice_scheduler.asm"
 
-* = $4755
-voice_freq_reg_ofs_tbl:
-        // Per-voice base offsets into the SID frequency register pairs.
-        // Indexed by logical voice index; used to locate the correct
-        // SID FREQ LO/HI register pair for that voice.
-        .byte $00, $07, $0E, $15
-
-* = $4759
-voice_pwm_reg_ofs_tbl:
-        // Per-voice base offsets into the SID PWM (pulse width) register
-        // pairs. Indexed by logical voice index when programming PWM.
-        .byte $02, $09, $10
-
-* = $475C
-voice_alloc_set_mask_tbl:
-        // Bitmasks for marking voices as allocated. Entry N corresponds
-        // to (1 << N); AND/OR with voices_allocated to set the slot’s bit.
-        .byte $01, $02, $04, $08, $10, $20, $40
-
-* = $4763
-voice_alloc_clear_mask_tbl:
-        // Bitmasks for clearing voice allocation bits. Entry N is the
-        // complement of (1 << N), so ANDing with it frees that voice.
-        // The final $00 entry is used as a sentinel / “no mask” value.
-        .byte $FE, $FD, $FB, $F7, $EF, $DF, $BF, $00
 
 .label voice_instr_saved          = $4813    // Saved Y during ADSR handling for the current instruction
 .label logical_voice_idx          = $480d    // Logical voice index currently being decoded (mirrors X at entry)
@@ -343,13 +319,6 @@ voice_alloc_clear_mask_tbl:
 .label instr_op_flags             = $480f    // Operand sub-action flags (PWM/filter/duration) from bit-4 block
 .label instr_header_raw           = $4810    // Raw, unshifted instruction header for BIT tests (e.g., bit 6)
 
-.const VOICE_RSRC_NOT_IN_MEMORY   = $01     // A return code meaning sound resource not resident / pointers invalid
-.const STOP_SOUND_MODE_FULL       = $FF     // Full stop/cleanup mode value for stop_sound_cleanup_mode
-.const VOICE_GATE_MASK            = $01     // Gate bit mask for voice_ctrl_shadow (1=trigger, 0=release)
-.const VOICE_GATE_CLEAR_MASK      = $FE     // Inverted gate mask (AND to clear gate bit in voice_ctrl_shadow)
-.const ARPEGGIO_VOICE_LIMIT         = $04    // Voices with X >= this are not processed for multiplexing
-.const FILTER_VOICE_INDEX           = $03    // Logical voice index that uses the filter/multiplexing path
-.const SID_FILTER_MODE_MASK         = $70    // Mask for SID filter mode bits (low/band/high-pass in $D418)
 
 * = $481B
 sound_irq_handler:
@@ -376,7 +345,7 @@ sound_irq_dispatch:
 
         ldx     #$06
 scan_pending_sound_starts:
-        lda     sound_id_to_start_on_voice,x
+        lda     snd_to_start_on_voice,x
         cmp     #$ff
         beq     next_voice_pending_start
         jsr     start_sound_for_voice
@@ -607,10 +576,10 @@ start_sound_for_voice:
         // ------------------------------------------------------------
         // Copy pending sound ID → live table; clear pending slot
         // ------------------------------------------------------------
-        lda     sound_id_to_start_on_voice,x
+        lda     snd_to_start_on_voice,x
         sta     voice_sound_id_tbl,x
         lda     #$ff
-        sta     sound_id_to_start_on_voice,x
+        sta     snd_to_start_on_voice,x
 
         // ------------------------------------------------------------
         // Reset voice instruction repeat counter

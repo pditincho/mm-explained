@@ -689,7 +689,7 @@ voice_alloc_set_mask_tbl = $475c
 voice_alloc_clear_mask_tbl = $4763
 voice_adsr_attack_decay = $476c
 voice_adsr_sustain_release = $476f
-sound_id_to_start_on_voice = $4772
+snd_to_start_on_voice = $4772
 voice_data_base_lo = $4779
 voice_data_base_hi = $4780
 voice_data_offsets_lo = $4787
@@ -697,14 +697,14 @@ voice_data_offsets_hi = $478e
 voice_priority_0 = $4795
 voice_priority_1 = $4796
 voice_priority_2 = $4797
-voice_priority_3 = $4798
+filter_priority = $4798
 voice_priority_4 = $4799
 voice_priority_5 = $479A
 voice_priority_6 = $479B
 voice_sound_id_tbl = $479c
 rsrc_for_voice_1 = $479d
 rsrc_for_voice_2 = $479e
-rsrc_for_voice_3 = $479f
+snd_for_filter = $479f
 rsrc_for_voice_4 = $47a0
 rsrc_for_voice_5 = $47a1
 rsrc_for_voice_6 = $47a2
@@ -735,9 +735,9 @@ music_voices_in_use_2 = $4818		;A bitmask used to represent which voices are bei
 
 sound_processing_disabled_flag = $4819	;#00 = false, #FF = true
 stop_sound_cleanup_mode = $481A				;#01 = stop, dereference sound, stop arpeggio, #FF = just stop
-tracked_lowest_priority_sound = $4cf1
-lowest_priority_sound_starting_flag = $4cf2 ;#01 = True, #00 = false
-voice3_in_use = $4CF5				;#00 = false, #FF = true
+pri1_snd_idx = $4cf1
+pri1_snd_starting_flag = $4cf2 ;#01 = True, #00 = false
+filter_voice_in_use_flag = $4CF5				;#00 = false, #FF = true
 filter_control_snapshot = $4cfa
 total_real_voices_available = $4cff
 ;Values observed: #01, #02, #07, #0A, #64, #6E, #73, #78
@@ -16773,7 +16773,7 @@ entry:
 ;Check if there are any new sounds to start 
 .C:4826  A2 06       LDX #$06
 check_if_sounds_needs_to_start:
-.C:4828  BD 72 47    LDA sound_id_to_start_on_voice,X
+.C:4828  BD 72 47    LDA snd_to_start_on_voice,X
 ;Is there a sound to start? If not (#FF), skip to the next voice
 .C:482b  C9 FF       CMP #$FF
 .C:482d  F0 03       BEQ next_sound
@@ -16948,11 +16948,11 @@ active_voice = $480d
 start_sound_for_voice:
 .C:4939  A8          TAY
 ;Save sound resource index for the current voice
-.C:493a  BD 72 47    LDA sound_id_to_start_on_voice,X
+.C:493a  BD 72 47    LDA snd_to_start_on_voice,X
 .C:493d  9D 9C 47    STA voice_sound_id_tbl,X
 ;Clear out the starting information (to avoid further repetitions of the start)
 .C:4940  A9 FF       LDA #$FF
-.C:4942  9D 72 47    STA sound_id_to_start_on_voice,X
+.C:4942  9D 72 47    STA snd_to_start_on_voice,X
 ;Initialize instruction repeat counter
 .C:4945  A9 00       LDA #$00
 .C:4947  9D AA 47    STA voice_instr_repcount,X
@@ -17611,11 +17611,11 @@ update_voice_stream_pointers:
 sound_ptr_unset:
 .C:4c24  98          TYA
 .C:4c25  20 A4 50    JSR stop_sound_full_cleanup
-.C:4c28  CD F1 4C    CMP tracked_lowest_priority_sound
+.C:4c28  CD F1 4C    CMP pri1_snd_idx
 .C:4c2b  D0 0E       BNE return_01
 .C:4c2d  A9 00       LDA #$00
-.C:4c2f  8D F1 4C    STA tracked_lowest_priority_sound
-.C:4c32  8D F2 4C    STA lowest_priority_sound_starting_flag
+.C:4c2f  8D F1 4C    STA pri1_snd_idx
+.C:4c32  8D F2 4C    STA pri1_snd_starting_flag
 .C:4c35  8D 62 51    STA vmux_primary_active_flag_bff
 .C:4c38  8D 61 51    STA vmux_secondary_active_flag_bff
 return_01:
@@ -17770,8 +17770,8 @@ set_result:
 ;===========================================
 temp = $4d04
 real_voices_needed = $4cfe
-voice3_requested_flag = $4cf4
-voice3_conflict_flag_b = $4CF6
+filter_voice_needed = $4cf4
+filter_conflict_flag_b = $4CF6
 insufficient_voices_flag_b = $4d00
 voices_needed = $4d02
 first_voice_index = $4cf3
@@ -17821,9 +17821,9 @@ set_sound_read_pointer:
 .C:4d47  D0 0B       BNE read_real_voice_requirements
 ;sound_priority == #01
 .C:4d49  AD 05 4D    LDA pending_sound_idx
-.C:4d4c  8D F1 4C    STA tracked_lowest_priority_sound
+.C:4d4c  8D F1 4C    STA pri1_snd_idx
 .C:4d4f  A9 01       LDA #$01
-.C:4d51  8D F2 4C    STA lowest_priority_sound_starting_flag		
+.C:4d51  8D F2 4C    STA pri1_snd_starting_flag		
 ;-----------------------------------------------
 ; Compute real voice requirements
 ;
@@ -17872,9 +17872,9 @@ set_voices_needed:
 ;Restore voice requirements from .Y
 .C:4d6e  98          TYA
 ;Test bit 5 to see if the special voice #3 will be needed
-;Save it into voice3_requested_flag (read the voice allocation section for details on the meaning of bit5)
+;Save it into filter_voice_needed (read the voice allocation section for details on the meaning of bit5)
 .C:4d6f  29 20       AND #$20
-.C:4d71  8D F4 4C    STA voice3_requested_flag
+.C:4d71  8D F4 4C    STA filter_voice_needed
 ;Check if there's enough voices available
 ;If total_real_voices_available < real_voices_needed, set insufficient_voices_flag_b = #FF (False)
 ;Otherwise, set it to #00 (True)
@@ -17889,13 +17889,13 @@ set_insufficient_voices_flag_b:
 ;Check if special voice #3 is needed and also in use
 ;If so, there's a conflict to be solved
 .C:4d83  A0 00       LDY #$00
-.C:4d85  AD F5 4C    LDA voice3_in_use
-.C:4d88  F0 07       BEQ set_voice3_conflict_flag_b
-.C:4d8a  AD F4 4C    LDA voice3_requested_flag
-.C:4d8d  F0 02       BEQ set_voice3_conflict_flag_b
+.C:4d85  AD F5 4C    LDA filter_voice_in_use_flag
+.C:4d88  F0 07       BEQ set_filter_conflict_flag_b
+.C:4d8a  AD F4 4C    LDA filter_voice_needed
+.C:4d8d  F0 02       BEQ set_filter_conflict_flag_b
 .C:4d8f  A0 FF       LDY #$FF
-set_voice3_conflict_flag_b:
-.C:4d91  8C F6 4C    STY voice3_conflict_flag_b
+set_filter_conflict_flag_b:
+.C:4d91  8C F6 4C    STY filter_conflict_flag_b
 ;-----------------------------------------------
 ;If there's no conflict on voice 3 and enough voices are available, proceed to allocation
 .C:4d94  D0 08       BNE assert_voices_attainable
@@ -17924,28 +17924,28 @@ assert_voices_attainable:
 ;-----------------------------------------------
 check_voice3_priority:
 ;Check if voice 3 is needed, if it's also in use, and whether the in-use priority is higher
-.C:4db2  AD F4 4C    LDA voice3_requested_flag
-.C:4db5  F0 0F       BEQ check_voice3_conflict_flag_b
-.C:4db7  AD F5 4C    LDA voice3_in_use
-.C:4dba  F0 0A       BEQ check_voice3_conflict_flag_b
-.C:4dbc  AD F7 4C    LDA voice3_priority_is_higher_flag_b
-.C:4dbf  D0 05       BNE check_voice3_conflict_flag_b
+.C:4db2  AD F4 4C    LDA filter_voice_needed
+.C:4db5  F0 0F       BEQ check_filter_conflict_flag_b
+.C:4db7  AD F5 4C    LDA filter_voice_in_use_flag
+.C:4dba  F0 0A       BEQ check_filter_conflict_flag_b
+.C:4dbc  AD F7 4C    LDA filter_priority_is_higher_flag_b
+.C:4dbf  D0 05       BNE check_filter_conflict_flag_b
 ;Voice 3 needed, but it's in use, and the in-use priority is higher, so we can't evict it
 ;Return with an error
 .C:4dc1  A9 FF       LDA #$FF
 .C:4dc3  4C 88 4E    JMP exit
 ;-----------------------------------------------
-check_voice3_conflict_flag_b:
+check_filter_conflict_flag_b:
 ;Is there a voice 3 conflict to solve? If not, go straight to the sound stopping section
-.C:4dc6  AD F6 4C    LDA voice3_conflict_flag_b
+.C:4dc6  AD F6 4C    LDA filter_conflict_flag_b
 .C:4dc9  F0 16       BEQ find_sound_to_stop
 ;Check if the new sound priority is lower than the voice 3 priority
 ;If so, return with an error
 .C:4dcb  AD 01 4D    LDA sound_priority
-.C:4dce  CD 98 47    CMP voice_priority_3
+.C:4dce  CD 98 47    CMP filter_priority
 .C:4dd1  30 09       BMI return_ff
 ;The new sound priority is higher, so we can evict the sound for voice 3
-.C:4dd3  AD 9F 47    LDA rsrc_for_voice_3
+.C:4dd3  AD 9F 47    LDA snd_for_filter
 .C:4dd6  4C F2 4D    JMP evict_sound
 ;Unreachable code
 .C:4dd9  4C E1 4D    JMP $4DE1
@@ -17975,9 +17975,9 @@ evict_sound:
 .C:4dfd  4C E1 4D    JMP find_sound_to_stop
 ;There are enough real voices now, check that voice 3 is available if needed
 enough_real_voices_available:
-.C:4e00  AD F4 4C    LDA voice3_requested_flag
+.C:4e00  AD F4 4C    LDA filter_voice_needed
 .C:4e03  F0 08       BEQ alloc_voices
-.C:4e05  AD F5 4C    LDA voice3_in_use
+.C:4e05  AD F5 4C    LDA filter_voice_in_use_flag
 .C:4e08  F0 03       BEQ alloc_voices
 ;Voice 3 needed and still in use, continue stopping sounds
 .C:4e0a  4C E1 4D    JMP find_sound_to_stop
@@ -18061,7 +18061,7 @@ test_bit0:
 .C:4e34  E8          INX
 .C:4e35  E8          INX
 .C:4e36  E8          INX
-.C:4e37  20 99 4E    JSR set_voice_data_base_and_offset
+.C:4e37  20 99 4E    JSR configure_voice_data_stream
 ;-------------------------
 test_bit1:
 .C:4e3a  6A          ROR A
@@ -18069,7 +18069,7 @@ test_bit1:
 ;-------------------------
 ;Bit 1 set - allocate 1 available real voice
 .C:4e3d  20 B8 4E    JSR allocate_available_real_voice
-.C:4e40  20 99 4E    JSR set_voice_data_base_and_offset
+.C:4e40  20 99 4E    JSR configure_voice_data_stream
 ;-------------------------
 test_bit2:
 .C:4e43  6A          ROR A
@@ -18080,7 +18080,7 @@ test_bit2:
 .C:4e47  E8          INX
 .C:4e48  E8          INX
 .C:4e49  E8          INX
-.C:4e4a  20 99 4E    JSR set_voice_data_base_and_offset
+.C:4e4a  20 99 4E    JSR configure_voice_data_stream
 ;-------------------------
 test_bit3:
 .C:4e4d  6A          ROR A
@@ -18088,7 +18088,7 @@ test_bit3:
 ;-------------------------
 ;Bit 3 set - allocate 1 available real voice
 .C:4e50  20 B8 4E    JSR allocate_available_real_voice
-.C:4e53  20 99 4E    JSR set_voice_data_base_and_offset
+.C:4e53  20 99 4E    JSR configure_voice_data_stream
 ;-------------------------
 test_bit4:
 .C:4e56  6A          ROR A
@@ -18099,7 +18099,7 @@ test_bit4:
 .C:4e5a  E8          INX
 .C:4e5b  E8          INX
 .C:4e5c  E8          INX
-.C:4e5d  20 99 4E    JSR set_voice_data_base_and_offset
+.C:4e5d  20 99 4E    JSR configure_voice_data_stream
 ;-------------------------
 test_bit5:
 .C:4e60  6A          ROR A
@@ -18107,7 +18107,7 @@ test_bit5:
 ;-------------------------
 ;Bit 5 set - allocate special voice #3
 .C:4e63  20 D0 4E    JSR allocate_special_voice_3
-.C:4e66  20 99 4E    JSR set_voice_data_base_and_offset
+.C:4e66  20 99 4E    JSR configure_voice_data_stream
 ;------------------------------------------------
 ;Set up the first voice we allocated (back when we tested bit 6)
 ;This is done here at the end because the offsets for other voices (if any)
@@ -18128,7 +18128,7 @@ save_pointer_and_offset:
 .C:4e7c  9D 8E 47    STA voice_data_offsets_hi,X
 ;Associate the sound ID with the voice
 .C:4e7f  AD 05 4D    LDA pending_sound_idx
-.C:4e82  9D 72 47    STA sound_id_to_start_on_voice,X
+.C:4e82  9D 72 47    STA snd_to_start_on_voice,X
 ;-------------------------
 .C:4e85  AD 05 4D    LDA pending_sound_idx
 exit:
@@ -18152,7 +18152,7 @@ exit:
 ;
 ; Note: the read offset in .Y is updated after reading
 ;===========================================
-set_voice_data_base_and_offset:
+configure_voice_data_stream:
 .C:4e99  48          PHA
 ;Store voice data's base address
 .C:4e9a  A5 BC       LDA <sound_data_base
@@ -18168,7 +18168,7 @@ set_voice_data_base_and_offset:
 .C:4eaf  C8          INY
 ;Associate the sound ID with the voice
 .C:4eb0  AD 05 4D    LDA pending_sound_idx
-.C:4eb3  9D 72 47    STA sound_id_to_start_on_voice,X
+.C:4eb3  9D 72 47    STA snd_to_start_on_voice,X
 .C:4eb6  68          PLA
 .C:4eb7  60          RTS
 ;===========================================
@@ -18219,11 +18219,11 @@ allocate_special_voice_3:
 ; the smallest priority among them all.
 ;
 ; Returns:	total_evictable_voices		the total number of evictable voices
-; 			voice3_priority_is_higher_flag_b	#00		if sound_priority < voice_priority_3 (True)
-;										#FF		if sound_priority >= voice_priority_3 (False)
+; 			filter_priority_is_higher_flag_b	#00		if sound_priority < filter_priority (True)
+;										#FF		if sound_priority >= filter_priority (False)
 ;
 ;===========================================
-voice3_priority_is_higher_flag_b = $4cf7
+filter_priority_is_higher_flag_b = $4cf7
 smallest_priority = $4cfc
 lowest_priority_voice = $4cfd
 total_evictable_voices = $4cf9
@@ -18266,11 +18266,11 @@ next_voice:
 .C:4f00  8C F9 4C    STY total_evictable_voices
 .C:4f03  AD 01 4D    LDA sound_priority
 ;Check if we need to compare voice 3 priority or simply exit
-.C:4f06  AC F6 4C    LDY voice3_conflict_flag_b
+.C:4f06  AC F6 4C    LDY filter_conflict_flag_b
 .C:4f09  F0 1A       BEQ exit
 ;Compare sound priority with voice #3, set result accordingly in a boolean variable
-; called voice3_priority_is_higher_flag_b
-.C:4f0b  CD 98 47    CMP voice_priority_3
+; called filter_priority_is_higher_flag_b
+.C:4f0b  CD 98 47    CMP filter_priority
 .C:4f0e  30 05       BMI set_result_to_00
 set_result_to_ff:
 .C:4f10  A2 FF       LDX #$FF
@@ -18279,11 +18279,11 @@ set_result_to_00:
 .C:4f15  A2 00       LDX #$00
 ;These 4 lines of code should have no net effect
 .C:4f17  AD FD 4C    LDA lowest_priority_voice
-.C:4f1a  CD 98 47    CMP voice_priority_3
+.C:4f1a  CD 98 47    CMP filter_priority
 .C:4f1d  10 03       BPL set_result
 .C:4f1f  8D FD 4C    STA lowest_priority_voice
 set_result:
-.C:4f22  8E F7 4C    STX voice3_priority_is_higher_flag_b
+.C:4f22  8E F7 4C    STX filter_priority_is_higher_flag_b
 exit:
 .C:4f25  60          RTS
 ;===========================================
@@ -18357,7 +18357,7 @@ no_arpeggio:
 .C:4f63  D0 05       BNE check_sound_priority
 ;Update flag indicating it's no longer in use
 .C:4f65  A9 00       LDA #$00
-.C:4f67  8D F5 4C    STA voice3_in_use
+.C:4f67  8D F5 4C    STA filter_voice_in_use_flag
 ;Is the voice priority #01?
 check_sound_priority:
 .C:4f6a  BD 95 47    LDA voice_priority_0,X
@@ -18380,7 +18380,7 @@ stop_notes_for_main_voices:
 ;For real voices (.X < 3), stop note and clear waveform
 .C:4f7e  E0 03       CPX #$03
 .C:4f80  10 03       BPL release_voice_common
-.C:4f82  20 0A 51    JSR clear_waveform_on_full_stop
+.C:4f82  20 0A 51    JSR silence_voice_if_full_stop
 release_voice_common:
 .C:4f85  4C C5 4F    JMP deallocate_voice
 ;----------------------------------------------
@@ -18388,7 +18388,7 @@ release_voice_common:
 ;----------------------------------------------
 sound_priority_not_01:
 ;If the sound starting does not have priority 1, release the voice
-.C:4f88  AD F2 4C    LDA lowest_priority_sound_starting_flag
+.C:4f88  AD F2 4C    LDA pri1_snd_starting_flag
 .C:4f8b  F0 38       BEQ deallocate_voice
 ;If there's no arpeggio active, release the voice
 .C:4f8d  AD 62 51    LDA vmux_primary_active_flag_bff
@@ -18400,7 +18400,7 @@ sound_priority_not_01:
 .C:4f96  AD 64 51    LDA vmux_filter_enabled_flag_bff
 .C:4f99  F0 08       BEQ set_voice_in_use
 ;If voice 3 is not in unse, set the voice in use
-.C:4f9b  AD F5 4C    LDA voice3_in_use
+.C:4f9b  AD F5 4C    LDA filter_voice_in_use_flag
 .C:4f9e  F0 03       BEQ set_voice_in_use
 ;Otherwise, release the voice
 .C:4fa0  4C C5 4F    JMP deallocate_voice
@@ -18498,7 +18498,7 @@ do_increase:
 ;	Arguments:	.X	voice index
 ;
 ;	If the voice index is in the #00-#02 range (a real voice), mark voice as allocated
-;	If it's #03, set voice3_in_use = True
+;	If it's #03, set filter_voice_in_use_flag = True
 ;
 ;	In both cases, stores the sound priority for the voice,
 ;	and increments the memory attribute's reference count.
@@ -18515,7 +18515,7 @@ allocate_voice:
 case_03:
 ;Update flag indicating voice 3 is in use
 .C:5007  A9 FF       LDA #$FF
-.C:5009  8D F5 4C    STA voice3_in_use
+.C:5009  8D F5 4C    STA filter_voice_in_use_flag
 .C:500c  4C 1D 50    JMP set_voice_priority
 case_not_3:
 ;If voice index > 3, skip the logic intended for real voices
@@ -18559,7 +18559,7 @@ stop_sound_core:
 .C:5038  48          PHA
 ;Does the sound to be stopped match?
 .C:5039  AD 08 4D    LDA sound_to_stop
-.C:503c  CD F1 4C    CMP tracked_lowest_priority_sound
+.C:503c  CD F1 4C    CMP pri1_snd_idx
 .C:503f  D0 26       BNE stop_logical_voice_
 ;It matches, stop the voice
 .C:5041  20 70 50    JSR stop_all_voices_for_sound
@@ -18574,8 +18574,8 @@ stop_sound_core:
 ;Dereference sound
 .C:5050  20 EA 4F    JSR dec_sound_refcount_if_no_music
 .C:5053  A9 00       LDA #$00
-.C:5055  8D F1 4C    STA tracked_lowest_priority_sound
-.C:5058  8D F2 4C    STA lowest_priority_sound_starting_flag
+.C:5055  8D F1 4C    STA pri1_snd_idx
+.C:5058  8D F2 4C    STA pri1_snd_starting_flag
 ;Stop arpeggio
 .C:505b  8D 62 51    STA vmux_primary_active_flag_bff
 .C:505e  8D 61 51    STA vmux_secondary_active_flag_bff
@@ -18635,13 +18635,13 @@ stop_sound_voices_only:
 stop_sound:
 .C:5093  A2 06       LDX #$06
 compare:
-.C:5095  DD 72 47    CMP sound_id_to_start_on_voice,X
+.C:5095  DD 72 47    CMP snd_to_start_on_voice,X
 .C:5098  D0 07       BNE next
 ;Save sound index in stack
 .C:509a  48          PHA
 ;Clear sound index
 .C:509b  A9 FF       LDA #$FF
-.C:509d  9D 72 47    STA sound_id_to_start_on_voice,X
+.C:509d  9D 72 47    STA snd_to_start_on_voice,X
 ;Restore sound index from stack
 .C:50a0  68          PLA
 next:
@@ -18668,7 +18668,7 @@ stop_sound_full_cleanup:
 .C:50b3  48          PHA
 .C:50b4  A9 FF       LDA #$FF
 .C:50b6  8D 1A 48    STA stop_sound_cleanup_mode
-.C:50b9  AD F1 4C    LDA tracked_lowest_priority_sound
+.C:50b9  AD F1 4C    LDA pri1_snd_idx
 .C:50bc  F0 03       BEQ $50C1
 .C:50be  20 A4 50    JSR stop_sound_full_cleanup
 :
@@ -18699,7 +18699,7 @@ stop_logical_voice:
 .C:50d4  AD 6B 47    LDA sid_filter_control_shadow
 .C:50d7  8D FA 4C    STA filter_control_snapshot
 ;Clear waveform and stop note
-.C:50da  20 0A 51    JSR clear_waveform_on_full_stop
+.C:50da  20 0A 51    JSR silence_voice_if_full_stop
 release_the_voice:
 ;Release the voice
 .C:50dd  20 45 4F    JSR release_voice
@@ -18717,7 +18717,7 @@ release_the_voice:
 .C:50f0  8A          TXA
 .C:50f1  48          PHA
 ;If voice #3 is in use, release it
-.C:50f2  AD F5 4C    LDA voice3_in_use
+.C:50f2  AD F5 4C    LDA filter_voice_in_use_flag
 .C:50f5  F0 08       BEQ $50FF
 .C:50f7  A2 03       LDX #$03
 .C:50f9  20 45 4F    JSR release_voice
@@ -18738,7 +18738,7 @@ exit:
 ;===========================================
 ; Arguments:	.X	logical voice index
 ;===========================================
-clear_waveform_on_full_stop:
+silence_voice_if_full_stop:
 ;Get current voice control value for this voice
 .C:510a  BD B1 47    LDA voice_ctrl_shadow,X
 ;Save voice control value in stack

@@ -2,7 +2,7 @@
 #import "globals.inc"
 #import "constants.inc"
 #import "actor_animation.asm"
-#import "voice_primitives.asm"
+#import "voice_scheduler.asm"
 
 * = $25EA
 unused_routine_1:
@@ -49,7 +49,7 @@ unused_dummy_1:
     // Request full cleanup and stop the tracked lowest-priority sound if any
     lda     #$ff
     sta     stop_sound_cleanup_mode
-    lda     tracked_lowest_priority_sound
+    lda     pri1_snd_idx
     beq     $50c1                           // zero → no sound tracked, skip cleanup
     jsr     stop_sound_full_cleanup
 

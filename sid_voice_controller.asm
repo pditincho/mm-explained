@@ -3,6 +3,7 @@
 #import "globals.inc"
 #import "constants.inc"
 #import "registers.inc"
+#import "sound_constants.inc"
 #import "sound_engine.asm"
 #import "music.asm"
 

@@ -3,10 +3,11 @@
 #import "globals.inc"
 #import "constants.inc"
 #import "registers.inc"
+#import "sound_constants.inc"
 #import "sid_voice_controller.asm"
-#import "voice_primitives.asm"
+#import "voice_scheduler.asm"
 
-.label voice3_priority_is_higher_flag_b        = $4cf7   // Result of comparing sound_priority vs. voice_priority_3 (00 or FF)
+.label filter_priority_is_higher_flag_b        = $4cf7   // Result of comparing sound_priority vs. filter_priority (00 or FF)
 .label lowest_alloc_voice_priority = $4cfc   // Lowest priority value found among allocated voices 0–2
 .label lowest_alloc_voice_idx      = $4cfd   // Voice index (0–2) holding the lowest allocated priority
 .label evictable_voice_count    = $4cf9   // Number of allocated voices whose priority is lower than sound_priority
@@ -155,7 +156,7 @@ Summary
 Description
         - Saves A on the stack.
         - Forces X to #$03 and calls allocate_voice, which:
-              • Sets voice3_in_use = True.
+              • Sets filter_voice_in_use_flag = True.
               • Stores sound_priority for the voice.
               • Increments the sound refcount for pending_sound_idx.
         - Restores A from the stack.
@@ -193,14 +194,14 @@ Global Inputs
         voice_alloc_set_mask_tbl              Per-voice bitmasks used to test voices_allocated
         voice_priority_0          Priority values for voices 0–2
         sound_priority            Priority of the sound being considered for start
-        voice3_conflict_flag_b           Non-zero → also evaluate comparison vs. voice #3
-        voice_priority_3          Priority value for voice #3
+        filter_conflict_flag_b           Non-zero → also evaluate comparison vs. voice #3
+        filter_priority          Priority value for voice #3
 
 Global Outputs
         evict_min_priority        Lowest priority among allocated voices 0–2
         evict_min_voice_idx       Index (0–2) of lowest-priority allocated voice
         evictable_voice_count     Count of voices with priority < sound_priority
-        voice3_priority_is_higher_flag_b         #$FF if sound_priority >= voice_priority_3, else #$00
+        filter_priority_is_higher_flag_b         #$FF if sound_priority >= filter_priority, else #$00
 
 Description
         - Initializes the current minimum priority and evictable-voice counter.
@@ -211,8 +212,8 @@ Description
           allocated voices 0–2, regardless of evictability.
         - Stores the final evictable_voice_count and leaves the min-priority
           voice info in evict_min_priority and evict_min_voice_idx for later use.
-        - When voice3_conflict_flag_b is non-zero, compares sound_priority to
-          voice_priority_3 and updates voice3_priority_is_higher_flag_b to reflect whether the
+        - When filter_conflict_flag_b is non-zero, compares sound_priority to
+          filter_priority and updates filter_priority_is_higher_flag_b to reflect whether the
           new sound’s priority is at least as high as voice #3.
 ================================================================================
 */
@@ -256,17 +257,17 @@ next_voice:
         sty     evictable_voice_count          
 
         lda     sound_priority                 // Prepare for comparison vs. voice #3
-        ldy     voice3_conflict_flag_b                // Y := conflict flag
+        ldy     filter_conflict_flag_b                // Y := conflict flag
         beq     count_evictable_voices_exit    // No conflict → skip comparison, exit
 
-        cmp     voice_priority_3               // Compare sound vs. voice #3 priority
+        cmp     filter_priority               // Compare sound vs. voice #3 priority
         bmi     set_voice3_cmp_lt_flag         // sound_priority < voice3 → set 00
 
         ldx     #BTRUE                  // sound_priority >= voice3 → set FF
-        jmp     store_voice3_priority_is_higher_flag_b
+        jmp     store_filter_priority_is_higher_flag_b
 
         // ------------------------------------------------------------
-        // Handle the "sound_priority < voice_priority_3" case.
+        // Handle the "sound_priority < filter_priority" case.
         // Sets comparison result to 0. The extra CMP/STA logic evaluates
         // an index (0–2) against a priority value (0–$7F), which yields
         // no meaningful state change—lowest_alloc_voice_idx is effectively
@@ -275,12 +276,12 @@ next_voice:
 set_voice3_cmp_lt_flag:
         ldx     #FALSE                            // Prepare comparison result: flag "sound < voice3" as 0
         lda     lowest_alloc_voice_idx             // A := index (0–2) of lowest-priority allocated voice
-        cmp     voice_priority_3                // Compare that index against voice3’s PRIORITY byte (value, not index)
-        bpl     store_voice3_priority_is_higher_flag_b         // If index ≥ priority value (normally impossible/irrelevant), just skip next write
+        cmp     filter_priority                // Compare that index against voice3’s PRIORITY byte (value, not index)
+        bpl     store_filter_priority_is_higher_flag_b         // If index ≥ priority value (normally impossible/irrelevant), just skip next write
         sta     lowest_alloc_voice_idx             // Otherwise, rewrite the same index back (no net change in practice)
 
-store_voice3_priority_is_higher_flag_b:
-        stx     voice3_priority_is_higher_flag_b      			// Store boolean comparison result
+store_filter_priority_is_higher_flag_b:
+        stx     filter_priority_is_higher_flag_b      			// Store boolean comparison result
 
 count_evictable_voices_exit:
         rts
@@ -368,13 +369,13 @@ Global Inputs
         vmux_secondary_active_flag_bff  		Multiplexing-2 activity flag
         voice_priority_*            			Priority values for voices
         stop_sound_cleanup_mode         		Sound-stop mode selector
-        lowest_priority_sound_starting_flag  	Non-zero if a new sound of priority 1 is starting
+        pri1_snd_starting_flag  	Non-zero if a new sound of priority 1 is starting
         vmux_filter_enabled_flag_bff          	Global filter enable flag
-        voice3_in_use               			Flag indicating voice 3 use status
+        filter_voice_in_use_flag               			Flag indicating voice 3 use status
         voice_sound_id_tbl            			Resource IDs for voices 0–2
 
 Global Outputs
-        voice3_in_use               			Cleared when releasing voice 3 with no multiplexing
+        filter_voice_in_use_flag               			Cleared when releasing voice 3 with no multiplexing
         voice_instr_active_mask 				Updated when repurposing a real voice
         voice_ctrl_shadow              			GATE bit set when retriggering a voice
 
@@ -384,16 +385,16 @@ Description
               • Disable vmux_secondary_active_flag_bff for all voices.
               • Fully deallocate the voice via dv_clear_voice_resource_id.
         - If no multiplexing:
-              • For voice 3 only, clear voice3_in_use.
+              • For voice 3 only, clear filter_voice_in_use_flag.
               • Inspect voice_priority[X]:
                     · If == 1:
                           - In full-stop mode, process multiplexings then deallocate.
                           - Otherwise, clear note for voices 0–2 and deallocate.
                     · If != 1:
-                          - Unless lowest_priority_sound_starting_flag and
+                          - Unless pri1_snd_starting_flag and
                             vmux_primary_active_flag_bff are both active, deallocate.
                           - Voice index must be < 3 or deallocate.
-                          - If filter disabled, or voice3_in_use is zero,
+                          - If filter disabled, or filter_voice_in_use_flag is zero,
                                 repurpose the voice:
                                 · Save its resource index for refcount adjustment.
                                 · Mark the voice executing.
@@ -457,7 +458,7 @@ rv_no_multiplexing_path:
         // ------------------------------------------------------------
 		// Mark voice 3 as not in use 
         lda     #FALSE
-        sta     voice3_in_use         
+        sta     filter_voice_in_use_flag         
 
 rv_check_priority_eq_min:
 		// Is this voice running with minimum sound priority?
@@ -490,7 +491,7 @@ rv_full_stop_real_voices:
         bpl     rv_deallocate_tail            // Voice 3+ → skip clear waveform
 		
 		// Real voices 0-2, clear waveform to stop the not
-        jsr     clear_waveform_on_full_stop    
+        jsr     silence_voice_if_full_stop    
 
 rv_deallocate_tail:
 		// Finalize the deallocation
@@ -502,7 +503,7 @@ rv_priority_ne_min_path:
 		// for something else.
         // ------------------------------------------------------------
 		// Is there an incoming min priority sound? If not, skip and deallocate voice
-        lda     lowest_priority_sound_starting_flag
+        lda     pri1_snd_starting_flag
         beq     deallocate_voice                
 
 		// Is primary multiplexing active? If not, skip and deallocate voice
@@ -522,7 +523,7 @@ rv_priority_ne_min_path:
         beq     repurpose_voice                
 
 		// Is voice 3 in use? If not, repurpose voice
-        lda     voice3_in_use
+        lda     filter_voice_in_use_flag
         beq     repurpose_voice                
 
 		// Deallocate voice
@@ -722,7 +723,7 @@ Global Inputs
 Global Outputs
         voices_allocated            Updated when X is 0–2
         total_real_voices_available Updated via count_available_real_voices
-        voice3_in_use               Set to #BTRUE when X = 3
+        filter_voice_in_use_flag               Set to #BTRUE when X = 3
         voice_priority_0[X]         Updated with sound_priority
 
 Description
@@ -731,7 +732,7 @@ Description
                     - Marks the bit in voices_allocated.
                     - Recomputes total_real_voices_available.
               • X = 3: special voice
-                    - Sets voice3_in_use to #$FF.
+                    - Sets filter_voice_in_use_flag to #$FF.
               • X ≥ 4: extended / non-real indices
                     - No allocation flags are touched.
         - For all categories (0–2, 3, or ≥4):
@@ -754,7 +755,7 @@ allocate_voice:
 		
 		// Mark voice 3 in use
         lda     #BTRUE
-        sta     voice3_in_use                   
+        sta     filter_voice_in_use_flag                   
 		
 		// Skip handling for real voices (0-2)
         jmp     av_set_priority_and_inc_refcount              

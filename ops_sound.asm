@@ -49,7 +49,7 @@ Returns
 Description
         - Maps I/O into the CPU address space so SID/sound hardware is visible.
         - Reads the sound index operand using script_load_operand_bit7.
-        - Calls stop_sound to halt the sound associated with that index.
+        - Calls stop_sound_and_clear_pending_starts to halt the sound associated with that index.
         - Restores the normal memory mapping used by the script engine.
 ================================================================================
 */
@@ -63,7 +63,7 @@ op_stop_sound:
         jsr     script_load_operand_bit7     
 		
 		// Stop the sound instance identified by A
-        jsr     stop_sound                   
+        jsr     stop_sound_and_clear_pending_starts                   
 
 		// Map I/O out
         ldy     #MAP_IO_OUT                  
@@ -224,7 +224,7 @@ Returns
 Description
         - Reads a sound index operand from the script using
           script_load_operand_bit7.
-        - Maps I/O in via cpu_port to safely call stop_sound for this index,
+        - Maps I/O in via cpu_port to safely call stop_sound_and_clear_pending_starts for this index,
           ensuring any prior instance is terminated.
         - Restores the normal memory mapping, then calls
           rsrc_cache_sound to load the sound resource if needed.
@@ -250,7 +250,7 @@ start_sound_with_loaded_index:
         sty     cpu_port
 
         lda     sound_index
-        jsr     stop_sound
+        jsr     stop_sound_and_clear_pending_starts
 
         // ------------------------------------------------------------
         // Restore normal memory map

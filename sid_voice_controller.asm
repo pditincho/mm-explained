@@ -20,28 +20,25 @@ Arguments
 			the current voice script
 
 Global Inputs
-	voice_read_ptr             Base pointer to current voice script
-	filter_control_reg_copy    Shadow of SID filter control register
-	sid_volfilt_reg_shadow    Previous cached SID master volume byte
+	voice_read_ptr             	Base pointer to current voice script
+	sid_filter_control_shadow   Previous cached SID filter control byte
+	sid_volfilt_shadow    	   	Previous cached SID master volume byte
 
 Global Outputs
-	filter_control_reg_copy    Updated merged filter control shadow
-	filter_control_register    SID filter control hardware register
-	sid_volfilt_reg_shadow    Updated cached master volume byte
-	sid_master_volume          SID master volume hardware register
-
-Returns
-	None (updates SID filter control and master volume)
+	sid_master_volume          	SID master volume hardware register
+	sid_filter_control    	 	SID filter control hardware register
+	sid_volfilt_shadow    	   	Updated cached master volume byte
+	sid_filter_control_shadow   Updated merged filter control shadow
 
 Description
 	- Reads a filter/control byte from the voice script via (voice_read_ptr),Y
-	and merges it (OR) into filter_control_reg_copy.
+	and merges it (OR) into sid_filter_control_shadow.
 	- Writes the merged filter byte both to the shadow copy and to the SID filter 
 	control register.
-	- Advances Y and reads a master volume byte from the script, storing it into 
-	sid_volfilt_reg_shadow.
-	- Applies the same master volume byte to the SID master volume register so 
-	hardware and shadow remain consistent.
+	- Advances Y and reads a master volume/filter control byte from the script, 
+	storing it into sid_volfilt_shadow.
+	- Applies the same byte to the SID master volume register so hardware and 
+	shadow remain consistent.
 ================================================================================
 */
 * = $49E7
@@ -50,22 +47,22 @@ update_filter_and_volume:
 		// Update SID filter control using next byte from voice script
 		// (merge new flags with existing shadow and commit to SID)
 		// ------------------------------------------------------------
-		lda     (voice_read_ptr),y        // Read filter/flags byte from current voice script position
-		ora     filter_control_reg_copy   // Combine new filter bits with existing shadow state
-		sta     filter_control_reg_copy   // Update shadow copy used by subsequent updates
-		sta     filter_control_register   // Commit combined value to SID filter control register
-		iny                               // Advance to next script byte (master volume)
+		lda     (voice_read_ptr),y      	// Read filter/flags byte from current voice script position
+		ora     sid_filter_control_shadow 	// Combine new filter bits with existing shadow state
+		sta     sid_filter_control_shadow 	// Update shadow copy used by subsequent updates
+		sta     sid_filter_control   		// Commit combined value to SID filter control register
+		iny                             	// Advance to next script byte (master volume)
 		
 		// ------------------------------------------------------------
 		// Update SID master volume from voice script and cache in shadow
 		// ------------------------------------------------------------
-		lda     (voice_read_ptr),y        // Read master volume byte from voice script
-		sta     sid_volfilt_reg_shadow   // Cache volume in software copy for later reference
-		sta     sid_master_volume         // Apply volume to SID master volume hardware register
-		rts                               // Done updating filter and volume; return to caller
+		lda     (voice_read_ptr),y      	// Read master volume byte from voice script
+		sta     sid_volfilt_shadow   		// Cache volume in software copy for later reference
+		sta     sid_master_volume       	// Apply volume to SID master volume hardware register
+		rts                               
 /*
 ================================================================================
-  update_duration_and_glissando
+  tick_duration_and_glissando
 ================================================================================
 Summary
 	Tick the per-voice duration timer for logical voice X and either
@@ -74,66 +71,60 @@ Summary
 	its frequency/envelope instead.
 
 Arguments
-	X       Logical voice index
+	X       					Logical voice index
 
 Vars/State
-	voice_sid_range_flags   	Cached boolean flag indicating X < LOGICAL_VOICE_LIMIT
+	is_physical_voice_flag_bff	Cached boolean flag indicating X < LOGICAL_VOICE_LIMIT
 	x_saved          			Last logical voice index processed and saved for reuse
 
 Global Inputs
-	voice_duration_lo        Per-voice duration counter low byte table
-	voice_duration_hi        Per-voice duration counter high byte table
-	voice_gliss_lo             Per-voice glissando delta low byte table
-	voice_gliss_hi             Per-voice glissando delta high byte table
-	voice_freq_lo     Cached per-voice frequency low byte table
-	voice_freq_hi     Cached per-voice frequency high byte table
+	voice_duration_lo        	Per-voice duration counter low byte table
+	voice_duration_hi        	Per-voice duration counter high byte table
+	voice_gliss_lo             	Per-voice glissando delta low byte table
+	voice_gliss_hi             	Per-voice glissando delta high byte table
+	voice_freq_lo     			Cached per-voice frequency low byte table
+	voice_freq_hi     			Cached per-voice frequency high byte table
 
 Global Outputs
-	voice_duration_lo        Updated 16-bit duration counter low byte
-	voice_duration_hi        Updated 16-bit duration counter high byte
-	voice_freq_lo     Glissando-adjusted frequency low byte
-	voice_freq_hi     Glissando-adjusted frequency high byte
-
-Returns
-	None (may call decode_voice_instruction and update_voice_freq_and_env
-	as part of expiring the current instruction)
+	voice_duration_lo        	Updated 16-bit duration counter low byte
+	voice_duration_hi        	Updated 16-bit duration counter high byte
+	voice_freq_lo     			Glissando-adjusted frequency low byte
+	voice_freq_hi     			Glissando-adjusted frequency high byte
 
 Description
 	- Updates a 16-bit duration counter for logical voice X by decrementing 
 	the low byte and propagating borrow into the high byte when needed.
 	- If the resulting duration is still non-zero, applies one glissando delta 
 	step to the cached 16-bit frequency and then commits the new pitch 
-	via update_voice_freq_and_env.
+	via apply_voice_freq_and_env_to_sid.
 	- If the duration underflows to zero, calls	decode_voice_instruction to 
 	advance the voice script and then refreshes the voice’s frequency/envelope 
 	instead of applying	further glissando.
-	- Records whether X is within the primary SID voice range in voice_sid_range_flags 
+	- Records whether X is within the primary SID voice range in is_physical_voice_flag_bff 
 	and saves X into x_saved for use by other engine code that needs to know 
 	which voice was last processed.
 ================================================================================
 */
 * = $4A1B
-update_duration_and_glissando:
+tick_duration_and_glissando:
 		// ------------------------------------------------------------
-		// Flag whether logical voice X is within the primary SID-voice range
-		// (0..LOGICAL_VOICE_LIMIT-1) and cache that as $FF/00 in voice_sid_range_flags
+		// Flag whether voice X is a physical voice
 		// ------------------------------------------------------------
-		lda     #BTRUE                 // Provisional “true” for X < 3
-		cpx     #LOGICAL_VOICE_LIMIT          // Compare logical voice index against 3
-		bmi     store_voice_index_flag        // If X < 3 → keep true
+		lda     #BTRUE                			// Provisional “true” for X < 3
+		cpx     #LOGICAL_VOICE_LIMIT        	// Compare logical voice index against 3
+		bmi     store_voice_index_flag      	// If X < 3 → keep true
 		
-		lda     #FALSE                        // Else X >= 3 → flag false
+		lda     #FALSE                      	// Else X >= 3 → flag false
 store_voice_index_flag:
-		sta     voice_sid_range_flags       // Record whether voice slot is one of the first three
+		sta     is_physical_voice_flag_bff       
 
 		// Preserve caller’s X (logical voice index) across any helper calls
 		stx     x_saved
 
 		// ------------------------------------------------------------
-		// Duration countdown
+		// Duration countdown (16-bit)
 		//
-		// 16-bit duration countdown: decrement low byte and, on underflow,
-		// propagate borrow into the high byte. If the final result is still
+		// Decrement countdown as a 16-bit value. If the final result is still
 		// non-negative (C=1), the duration remains > 0 and we continue by
 		// applying a glissando step; otherwise the timer has just expired.
 		// ------------------------------------------------------------
@@ -142,33 +133,30 @@ store_voice_index_flag:
 		sec                                   
 		sbc     #$01                          
 		sta     voice_duration_lo,x           
-		bcs     apply_glissando_step          // If no borrow (C=1) → duration still > 0
+		bcs     apply_glissando_step          	// If no borrow (C=1) → duration still > 0
 
 		// Low byte underflowed → propagate borrow into high duration byte
 		lda     voice_duration_hi,x           
 		sbc     #$00                          
 		sta     voice_duration_hi,x           
-		bcs     apply_glissando_step          // If still non-negative → duration not yet expired
+		bcs     apply_glissando_step          	// If still non-negative → duration not yet expired
 
 		// ------------------------------------------------------------
 		// Duration reached zero
 		//
 		// Advance this voice’s script to the next instruction and then 
-		// recompute/commit its new frequency and envelope to SID; 
-		// no further glissando is applied on this tick.
+		// recompute/commit its new frequency and envelope to the SID chip. 
+		// No further glissando is applied on this tick.
 		// ------------------------------------------------------------
-		jsr     decode_voice_instruction    // Fetch and execute next voice instruction(s)
-		jsr     update_voice_freq_and_env 	  // Apply new frequency/ADSR after instruction change
+		jsr     decode_voice_instruction    	// Fetch and execute next voice instruction(s)
+		jsr     apply_voice_freq_and_env_to_sid // Apply new frequency/ADSR after instruction change
 		rts                                   
 
-		// ------------------------------------------------------------
-		// Apply glissando
-		// 
-		// Apply one signed glissando step to the cached 16-bit frequency
-		// for logical voice X, then let the caller commit the updated
-		// pitch to SID while the duration timer is still non-zero
-		// ------------------------------------------------------------
 apply_glissando_step:
+		// ------------------------------------------------------------
+		// Duration non-zero - countdown still ongoing
+		// ------------------------------------------------------------
+		// Apply one signed glissando step to the cached frequency
 		lda     voice_freq_lo,x        
 		clc                                   
 		adc     voice_gliss_lo,x                
@@ -178,18 +166,12 @@ apply_glissando_step:
 		adc     voice_gliss_hi,x                
 		sta     voice_freq_hi,x        
 
-		// ------------------------------------------------------------
-		// Update frequency
-		// 
-		// Commit the glissando-adjusted frequency (and envelope as well)
-		// to the SID registers for this voice, then return with duration
-		// still active so subsequent ticks can continue the slide
-		// ------------------------------------------------------------
-		jsr     update_voice_freq_and_env 	  // Push new frequency to SID (and ADSR if applicable)
-		rts                                   // Return with updated pitch while duration > 0
+		// Push new frequency to SID (and ADSR if applicable)
+		jsr     apply_voice_freq_and_env_to_sid 
+		rts                                   	
 /*
 ================================================================================
-  clear_voice_duration_and_glissando
+  reset_voice_duration_and_glissando
 ================================================================================
 Summary
 	Reset the per-voice duration counter and glissando delta so the
@@ -197,22 +179,11 @@ Summary
 	pitch slide.
 
 Arguments
-	X       Logical voice index whose duration and glissando are cleared
-
-Global Inputs
-	voice_duration_lo         Low byte of per-voice duration counter
-	voice_duration_hi         High byte of per-voice duration counter
-	voice_gliss_lo              Low byte of per-voice glissando delta
-	voice_gliss_hi              High byte of per-voice glissando delta
+	X       				Logical voice index whose duration and glissando are cleared
 
 Global Outputs
-	voice_duration_lo         Cleared to zero for voice X
-	voice_duration_hi         Cleared to zero for voice X
-	voice_gliss_lo              Cleared to zero for voice X
-	voice_gliss_hi              Cleared to zero for voice X
-
-Returns
-	None (updates duration and glissando state in RAM for voice X)
+	voice_duration_lo/hi       Cleared to zero for voice X
+	voice_gliss_lo/hi          Cleared to zero for voice X
 
 Description
 	- Writes zero into the 16-bit duration counter for logical voice X.
@@ -222,10 +193,9 @@ Description
 ================================================================================
 */
 * = $4A5C
-clear_voice_duration_and_glissando:
+reset_voice_duration_and_glissando:
 		// ------------------------------------------------------------
-		// Clear duration and glissando for current voice slot X (zero both
-		// duration bytes and both glissando bytes to disable them)
+		// Clear duration and glissando for current voice slot X
 		// ------------------------------------------------------------
 		lda     #$00
 		sta     voice_duration_lo,x
@@ -236,37 +206,34 @@ clear_voice_duration_and_glissando:
 
 /*
 ================================================================================
-  update_voice_freq_and_env
+  apply_voice_freq_and_env_to_sid
 ================================================================================
 Summary
         Commit the cached 16-bit frequency (or filter cutoff for the special
         logical slot) and ADSR envelope for logical voice X to the SID.
-        When arpeggio is active, the routine performs no updates because the
-        arpeggio engine owns all pitch changes during its operation.
+        When voice multiplexing is active, the routine performs no updates because the
+        multiplexing engine owns all pitch changes during its operation.
 
 Arguments
         X       Logical voice index
 
 Global Inputs
-        arpeggio_ongoing             Indicates whether arpeggio is currently active
-        voice_freq_reg_ofs_tbl  Per-voice SID base register offsets
-        voice_freq_lo         Cached low-byte frequency/cutoff table
-        voice_freq_hi         Cached high-byte frequency/cutoff table
-        voice_adsr_attack_decay          Cached attack/decay envelope values
-        voice_adsr_sustain_release       Cached sustain/release envelope values
+        vmux_active_flag_bff       	Indicates whether multiplexing is currently active
+        voice_freq_reg_ofs_tbl  	Per-voice SID base register offsets
+        voice_freq_lo         		Cached low-byte frequency/cutoff table
+        voice_freq_hi         		Cached high-byte frequency/cutoff table
+        voice_adsr_attack_decay     Cached attack/decay envelope values
+        voice_adsr_sustain_release  Cached sustain/release envelope values
 
 Global Outputs
-        voice1_freq_reg_lo           SID frequency low-byte registers (voice-relative)
-        voice1_freq_reg_hi           SID frequency high-byte registers (voice-relative)
-        voice1_attack_delay_reg      SID attack/decay registers (voice-relative)
-        voice1_sustain_release_reg   SID sustain/release registers (voice-relative)
-
-Returns
-        None (writes frequency/cutoff and optionally ADSR to SID registers)
+        voice1_freq_reg_lo          SID frequency low-byte registers (voice-relative)
+        voice1_freq_reg_hi          SID frequency high-byte registers (voice-relative)
+        voice1_attack_delay_reg     SID attack/decay registers (voice-relative)
+        voice1_sustain_release_reg  SID sustain/release registers (voice-relative)
 
 Description
-        - If arpeggio_ongoing is nonzero, exit immediately to preserve the
-          arpeggio engine’s pitch updates.
+        - If vmux_active_flag_bff is nonzero, exit immediately to preserve the
+          multiplexing engine’s pitch updates.
         - Resolve the SID register base offset for logical voice X.
         - Write the cached 16-bit frequency into the SID registers; for the
           special logical slot (X == 3), this is interpreted as a filter cutoff 
@@ -276,27 +243,23 @@ Description
 ================================================================================
 */
 * = $4BE6
-update_voice_freq_and_env:
+apply_voice_freq_and_env_to_sid:
 		// ------------------------------------------------------------
-		// Arpeggio guard
+		// Multiplexing guard
 		//
-		// Skip frequency/ADSR commit when arpeggio is active; arpeggio logic
+		// Skip frequency/ADSR commit when multiplexing is active; multiplexing logic
 		// owns pitch changes while the effect is running, so only update
-		// registers when no arpeggio is in progress
+		// registers when no multiplexing is in progress
 		// ------------------------------------------------------------
-		lda     arpeggio_ongoing              // A := arpeggio active flag
-		beq     update_freq_env_no_arpeggio   // Z=1 → no arpeggio → allow updates
-		rts                                   // Arpeggio running → skip all changes
+		// Multiplexing active? If so, exit
+		lda     vmux_active_flag_bff           
+		beq     update_freq_env_no_vmux
+		rts                                   	
 
-update_freq_env_no_arpeggio:
-		// ------------------------------------------------------------
-		// Register offset resolution
-		//
-		// Resolve per-voice SID base offset for logical voice X so subsequent
-		// stores hit the correct frequency (or cutoff) register block via Y
-		// ------------------------------------------------------------
-		lda     voice_freq_reg_ofs_tbl,x // A := base offset for this voice in SID register map
-		tay                                   // Y := per-voice register offset
+update_freq_env_no_vmux:
+		// Resolve voice register offset
+		lda     voice_freq_reg_ofs_tbl,x 		// A := base offset for this voice in SID register map
+		tay                                   	// Y := per-voice register offset
 
 		// ------------------------------------------------------------
 		// Commit frequency/filter cutoff
@@ -313,19 +276,15 @@ update_freq_env_no_arpeggio:
 		// ------------------------------------------------------------
 		// Physical voice guard
 		//
-		// Only voices below LOGICAL_VOICE_LIMIT have a full ADSR envelope
-		// mapped; treat X >= LOGICAL_VOICE_LIMIT as a filter-only slot and
-		// bail out before touching ADSR registers
+		// Only voices < 3 have a full ADSR envelope mapped; 
+		// treat X >= 3 as a filter-only slot and exit
 		// ------------------------------------------------------------
+		// Is the voice a physical voice? If not, exit
 		cpx     #LOGICAL_VOICE_LIMIT          
-		bpl     exit_voice_freq_env           // X >= 3 → skip ADSR transfer
+		bpl     exit_voice_freq_env           	// X >= 3 → skip ADSR transfer and exit
 
 		// ------------------------------------------------------------
 		// Commit envelope (ADSR)
-		//
-		// Transfer cached ADSR envelope for this mapped voice into SID:
-		// write packed attack/decay and sustain/release nibbles to the
-		// per-voice ADSR registers addressed via the base offset in Y
 		// ------------------------------------------------------------
 		lda     voice_adsr_attack_decay,x         
 		sta     voice1_attack_delay_reg,y     
@@ -336,26 +295,22 @@ exit_voice_freq_env:
 		rts                                   
 /*
 ================================================================================
-  update_voice_control
+  apply_voice_control_to_sid
 ================================================================================
-
 Summary
 	Write the cached control byte for logical voice X to the appropriate
 	SID voice control register, if that logical voice is mapped to a
 	physical SID channel.
 
 Arguments
-	X       Logical voice index (0..LOGICAL_VOICE_LIMIT-1)
+	X       Logical voice index
 
 Global Inputs
-	voice_freq_reg_ofs_tbl   Per-voice SID register base offsets
-	voice_ctrl_shadow                Cached SID control bytes per logical voice
+	voice_freq_reg_ofs_tbl   	Per-voice SID register base offsets
+	voice_ctrl_shadow           Cached SID control bytes per logical voice
 
 Global Outputs
-	voice1_control_register       SID voice control register block
-
-Returns
-	None (updates SID control register for the selected logical voice)
+	voice1_control_register     SID voice control register block
 
 Description
 	- Rejects logical voices X >= LOGICAL_VOICE_LIMIT (no mapped SID voice).
@@ -365,31 +320,24 @@ Description
 ================================================================================
 */
 * = $4C0D
-update_voice_control:
+apply_voice_control_to_sid:
 		// ------------------------------------------------------------
 		// Physical voice guard
 		//
-		// skip control update entirely if logical voice X has no SID channel
+		// Voice >= 3? If so, exit
 		// ------------------------------------------------------------
 		cpx     #LOGICAL_VOICE_LIMIT           
-		bpl     exit_update_voice_control      // Branch if out-of-range logical voice
+		bpl     exit_apply_voice_control_to_sid 
 
-		// ------------------------------------------------------------
-		// Register offset resolution
-		//
-		// Resolve per-voice SID register offset so we can address the correct control register
-		// ------------------------------------------------------------
-		lda     voice_freq_reg_ofs_tbl,x  // A := base offset for this voice’s SID register block
-		tay                                    // Y := offset into SID register space
+		// Resolve voice register offset
+		lda     voice_freq_reg_ofs_tbl,x  		// A := base offset for this voice’s SID register block
+		tay                                    	// Y := offset into SID register space
 
 		// ------------------------------------------------------------
 		// Commit control value
-		//
-		// Commit cached control byte for logical voice X to the mapped SID
-		// voice control register at the resolved offset in Y
 		// ------------------------------------------------------------
-		lda     voice_ctrl_shadow,x               // A := cached control value for logical voice X
-		sta     voice1_control_register,y      // Write to correct SID voice control register
+		lda     voice_ctrl_shadow,x            	
+		sta     voice1_control_register,y      	
 
-exit_update_voice_control:
+exit_apply_voice_control_to_sid:
 		rts                                    

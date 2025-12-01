@@ -10,7 +10,7 @@ unmodified value in instr_header_raw is used to test bit 6 via BIT.
 * Bit 0 (gate):
 
 	* Checked first (via LSR → C).
-	* If voice_sid_range_flags has bit 6 set (V=1), carry controls gate:
+	* If is_physical_voice_flag_bff has bit 6 set (V=1), carry controls gate:
 		* C=1 → set bit 0 of voice_ctrl_shadow (trigger note).
 		* C=0 → clear bit 0 of voice_ctrl_shadow (release note).
 	* If V=0, gate handling is skipped (no SID-voice update for this slot).
@@ -25,7 +25,7 @@ unmodified value in instr_header_raw is used to test bit 6 via BIT.
 * Bit 2 (frequency/duration/glissando, together with bit 6):
 
 	* Next LSR moves bit 2 into C; BIT on instr_header_raw sets V to bit 6.
-	* If C=0 (bit 2 clear) → call clear_voice_duration_and_glissando and skip
+	* If C=0 (bit 2 clear) → call reset_voice_duration_and_glissando and skip
 	operand reads; frequency is unchanged.
 	* If C=1 (bit 2 set) → always read 2 bytes and update frequency:
 		* If V=1 (bit 6 set) → clear duration and glissando, do not read them.
@@ -34,12 +34,12 @@ unmodified value in instr_header_raw is used to test bit 6 via BIT.
 
 * Bit 3 (ADSR, gated by SID-range flag):
 
-	* BIT voice_sid_range_flags sets V from its bit 6, then another LSR moves
+	* BIT is_physical_voice_flag_bff sets V from its bit 6, then another LSR moves
 	bit 3 into C.
 	* If V=0 or C=0 → ADSR handling is skipped.
 	* If V=1 and C=1:
 		* Temporarily force gate off (clear bit 0 of voice_ctrl_shadow and call
-		  update_voice_control).
+		  apply_voice_control_to_sid).
 		* Read 2 bytes to update ADSR (attack/decay and sustain/release).
 		* Re-apply the original gate state from voice_instr_header bit 0
 		  (re-trigger or re-release with the new ADSR).
@@ -57,12 +57,17 @@ unmodified value in instr_header_raw is used to test bit 6 via BIT.
 	* Operand bit 2 (duration):
 		* If set → clear glissando and read 2 bytes to set a new duration.
 
+            If set, the next operand byte carries waveform bits in its high
+            nibble. The low nibble is ORed into the existing control byte’s low
+            nibble (it can only add bits, not clear them), so valid operands
+            should normally have low 4 bits = 0 to avoid toggling gate/flags.
+
 * Bit 5 (waveform):
 
-	* If set → keep low nibble of voice_ctrl_shadow, but replace the high nibble
-	using the next operand byte’s high bits (low four bits are effectively
-	ignored). This updates waveform selection without disturbing gate/flags in
-	the low nibble.
+	* If set, the next operand byte carries waveform bits in its high
+	nibble. The low nibble is ORed into the existing control byte’s low
+	nibble (it can only add bits, not clear them), so valid operands
+	should normally have low 4 bits = 0 to avoid toggling gate/flags.
 
 * Bit 6 (mode modifier for bit 2):
 
@@ -117,7 +122,7 @@ Bit 4  – Operand sub-actions (next byte = operand bits):
           Operand bit 2: set duration (clear glissando, read 2 bytes).
 
 Bit 5  – Waveform:
-          Next byte’s high nibble replaces waveform bits (low nibble preserved).
+          Next byte’s high nibble replaces waveform bits.
 
 Bit 6  – Modifier for Bit 2:
           0 → enable duration+glissando reads.
@@ -176,7 +181,7 @@ Each block’s presence and size:
 
 2) A-block (ADSR envelope) - controlled by b3 and SID-range flag
    - Present only if b3=1 AND this voice is in SID range (V=1 from
-     voice_sid_range_flags).
+     is_physical_voice_flag_bff).
    - Layout:
 
      A-block = [adsr_attack_decay] [adsr_sustain_release]   (2 bytes)
@@ -188,7 +193,14 @@ Each block’s presence and size:
      O-block header:
        [op_bits]
          bit 0 → PWM update (SID-range only)
-         bit 1 → Filter cutoff update
+         bit 1 – Filter cutoff + filter/volume pair
+            If set, the O-block contains four bytes in this order:
+                [filter_control, master_volume, cutoff_lo, cutoff_hi].
+            The first two bytes are consumed by update_filter_and_volume,
+            which merges filter_control into sid_filter_control_shadow and
+            updates sid_volfilt_shadow/sid_master_volume. The next two
+            bytes are written directly into the SID filter cutoff registers.
+		 
          bit 2 → Duration update (clear gliss, set duration)
 
    - Then, depending on op_bits:
@@ -280,13 +292,13 @@ Maximum-length instruction (SID-range)
   Operand bytes:
     F-block : 6
     A-block : 2
-    O-block : 1 + 6
+    O-block : 1 + 8
     W-block : 1
     R-block : 2
-    → Total = 6 + 2 + 7 + 1 + 2 = 18 operand bytes
+    → Total = 6 + 2 + 9 + 1 + 2 = 20 operand bytes
 
   Full instruction layout:
-    [INS] + 18 operand bytes  → 19 bytes total in the stream.
+    [INS] + 20 operand bytes  → 21 bytes total in the stream.
 
 ================================================================================
 */
@@ -335,8 +347,8 @@ voice_alloc_clear_mask_tbl:
 .const STOP_SOUND_MODE_FULL       = $FF     // Full stop/cleanup mode value for stop_sound_cleanup_mode
 .const VOICE_GATE_MASK            = $01     // Gate bit mask for voice_ctrl_shadow (1=trigger, 0=release)
 .const VOICE_GATE_CLEAR_MASK      = $FE     // Inverted gate mask (AND to clear gate bit in voice_ctrl_shadow)
-.const ARPEGGIO_VOICE_LIMIT         = $04    // Voices with X >= this are not processed for arpeggio
-.const FILTER_VOICE_INDEX           = $03    // Logical voice index that uses the filter/arpeggio path
+.const ARPEGGIO_VOICE_LIMIT         = $04    // Voices with X >= this are not processed for multiplexing
+.const FILTER_VOICE_INDEX           = $03    // Logical voice index that uses the filter/multiplexing path
 .const SID_FILTER_MODE_MASK         = $70    // Mask for SID filter mode bits (low/band/high-pass in $D418)
 
 * = $481B
@@ -346,21 +358,21 @@ sound_irq_handler:
         //   1) Start any pending sounds (one sweep, voices 6..0)
         //   2) If no voices active → exit
         //   3) Update duration/glissando for all active voices
-        //   4) Apply arpeggio processing (primary and optional secondary)
+        //   4) Apply multiplexing processing (primary and optional secondary)
         //   5) Update voice-control/filter routing for active voices
         //   6) Run a slice of the music engine, if active
         // Registers are not preserved; routine relies on globals.
         // ------------------------------------------------------------
         lda     sound_processing_disabled_flag
-        beq     sound_irq_begin
+        beq     sound_irq_dispatch
         rts
 
-sound_irq_begin:
+sound_irq_dispatch:
         // ------------------------------------------------------------
         // Optionally begin new sounds (pending voice start requests)
         // ------------------------------------------------------------
         lda     new_sound_instructions_allowed
-        beq     check_any_voice_active
+        beq     bail_if_no_active_voices
 
         ldx     #$06
 scan_pending_sound_starts:
@@ -378,7 +390,7 @@ next_voice_pending_start:
         lda     #$00
         sta     new_sound_instructions_allowed
 
-check_any_voice_active:
+bail_if_no_active_voices:
         // ------------------------------------------------------------
         // If no voices are executing instructions, nothing more to do
         // ------------------------------------------------------------
@@ -395,7 +407,7 @@ scan_active_voices_for_duration:
         lda     voice_instr_active_mask
         and     voice_alloc_set_mask_tbl,x
         beq     next_voice_for_duration
-        jsr     update_duration_and_glissando
+        jsr     tick_duration_and_glissando
         ldx     x_saved
 next_voice_for_duration:
         dex
@@ -404,42 +416,42 @@ next_voice_for_duration:
         // ------------------------------------------------------------
         // Arpeggio processing (primary + optional secondary)
         // ------------------------------------------------------------
-        lda     arpeggio_primary_active_flag
-        beq     update_voice_control_for_active_voices
+        lda     vmux_primary_active_flag_bff
+        beq     apply_voice_control_to_sid_for_active_voices
 
-        // ---- Primary arpeggio (voice 0, alt slot 0)
+        // ---- Primary multiplexing (voice 0, alt slot 0)
         ldx     #$00
         ldy     #$00
         jsr     swap_voice_settings
         lda     #$ff
-        sta     arpeggio_ongoing
+        sta     vmux_active_flag_bff
         ldx     #$00
-        jsr     update_duration_and_glissando
+        jsr     tick_duration_and_glissando
         ldx     #$00
         ldy     #$00
         jsr     swap_voice_settings
 
-        // ---- Optional secondary arpeggio (voice 4, alt slot 1)
-        lda     arpeggio_secondary_active_flag
-        beq     end_arpeggio_and_reenable_freq
+        // ---- Optional secondary multiplexing (voice 4, alt slot 1)
+        lda     vmux_secondary_active_flag_bff
+        beq     end_multiplexing_and_reenable_freq
 
         ldx     #$04
         ldy     #$01
         jsr     swap_voice_settings
         ldx     #$04
-        jsr     update_duration_and_glissando
+        jsr     tick_duration_and_glissando
         ldx     #$04
         ldy     #$01
         jsr     swap_voice_settings
 
-end_arpeggio_and_reenable_freq:
+end_multiplexing_and_reenable_freq:
         // ------------------------------------------------------------
         // Arpeggio finished for this tick
         // ------------------------------------------------------------
         lda     #$00
-        sta     arpeggio_ongoing
+        sta     vmux_active_flag_bff
 
-update_voice_control_for_active_voices:
+apply_voice_control_to_sid_for_active_voices:
         // ------------------------------------------------------------
         // Update voice control + filter routing for active voices
         // ------------------------------------------------------------
@@ -449,7 +461,7 @@ scan_active_voices_for_control:
         lda     voice_instr_active_mask
         and     voice_alloc_set_mask_tbl,x
         beq     next_voice_for_control
-        jsr     update_voice_control
+        jsr     apply_voice_control_to_sid
 next_voice_for_control:
         ldx     x_saved
         dex
@@ -504,14 +516,14 @@ reset_sound_engine_state:
         //   - Set master volume to max (no filter modes enabled)
         //   - Initialize music pointer state
         //   - Stop all logical voices (0–6)
-        //   - Clear music/arpeggio/multiplex flags and counters
+        //   - Clear music/multiplexing/multiplex flags and counters
         //   - Set music_in_progress_ptr := music_to_start_ptr
         // ------------------------------------------------------------
         lda     #$00
         sta     voice1_control_register
         sta     voice2_control_register
         sta     voice3_control_register
-        sta     filter_control_register
+        sta     sid_filter_control
         sta     filter_cutoff_freq_lo_reg
         sta     filter_cutoff_freq_hi_reg
 
@@ -520,7 +532,7 @@ reset_sound_engine_state:
         // ------------------------------------------------------------
         lda     #$0f
         sta     sid_master_volume
-        sta     sid_volfilt_reg_shadow
+        sta     sid_volfilt_shadow
 
         // ------------------------------------------------------------
         // Prepare internal pointers used by the music system
@@ -558,14 +570,14 @@ stop_all_logical_voices_loop:
         sta     total_real_voices_available
 
         // ------------------------------------------------------------
-        // Clear arpeggio/filter-arpeggio/multiplex flags
+        // Clear multiplexing/filter-multiplexing/multiplex flags
         // ------------------------------------------------------------
         lda     #FALSE
-        sta     arpeggio_primary_active_flag
+        sta     vmux_primary_active_flag_bff
         lda     #FALSE
-        sta     filter_arpeggio_enabled_flag
+        sta     vmux_filter_enabled_flag_bff
         lda     #FALSE
-        sta     arpeggio_secondary_active_flag
+        sta     vmux_secondary_active_flag_bff
         lda     #$00
         sta     $5163                //; (unnamed engine state byte)
 
@@ -611,10 +623,10 @@ start_sound_for_voice:
         // ------------------------------------------------------------
         lda     #$ff
         cpx     #$03
-        bmi     set_voice_sid_range_flags
+        bmi     set_is_physical_voice_flag_bff
         lda     #$00
-set_voice_sid_range_flags:
-        sta     voice_sid_range_flags
+set_is_physical_voice_flag_bff:
+        sta     is_physical_voice_flag_bff
 
         // ------------------------------------------------------------
         // Set active voice and initialize its instruction offset
@@ -628,7 +640,7 @@ set_voice_sid_range_flags:
         // ------------------------------------------------------------
         // Resolve resource base and update instruction pointer
         // ------------------------------------------------------------
-        jsr     update_voice_base_and_instruction_ptr
+        jsr     update_voice_stream_pointers
 
         // ------------------------------------------------------------
         // Set voice_data_base[X] from resolved voice_base
@@ -717,7 +729,7 @@ apply_control_and_filter_flags:
         // ------------------------------------------------------------
         // Enable filter bit for this voice
         // ------------------------------------------------------------
-        lda     filter_control_reg_copy
+        lda     sid_filter_control_shadow
         ora     voice_alloc_set_mask_tbl,x
         jmp     commit_filter_control_value
 
@@ -725,12 +737,12 @@ clear_filter_bit:
         // ------------------------------------------------------------
         // Disable filter bit for this voice
         // ------------------------------------------------------------
-        lda     filter_control_reg_copy
+        lda     sid_filter_control_shadow
         and     voice_alloc_clear_mask_tbl,x
 
 commit_filter_control_value:
-        sta     filter_control_reg_copy
-        sta     filter_control_register
+        sta     sid_filter_control_shadow
+        sta     sid_filter_control
 
 advance_voice_instr_pointers:
         // ------------------------------------------------------------
@@ -789,10 +801,10 @@ update_offset:
         clc
         adc     voice_instr_loop_ofs_lo,x
         sta     voice_instr_loop_ofs_lo,x
-        bcc     uipao_exit
+        bcc     update_instr_ptr_and_ofs_exit
         inc     voice_instr_loop_ofs_hi,x
 
-uipao_exit:
+update_instr_ptr_and_ofs_exit:
         rts
 
 * = $4A6B
@@ -802,7 +814,7 @@ decode_voice_instruction:
 		// if its sound data is not resident (performing full cleanup).
 		// ------------------------------------------------------------
         ldx     logical_voice_idx                     // X := current logical voice index for this decode pass
-        jsr     update_voice_base_and_instruction_ptr // Ensure voice’s sound resource is loaded and base/PC are valid
+        jsr     update_voice_stream_pointers // Ensure voice’s sound resource is loaded and base/PC are valid
         cmp     #$01                                  // Sound not resident?
         bne     voice_instr_resource_loaded           // If resident → proceed with instruction decoding
         jsr     stop_sound_full_cleanup               // Sound not resident → stop and fully clean up this voice
@@ -849,13 +861,13 @@ instr_header_nonzero:
         sta     instr_header_raw                      // Raw, unmodified header (for BIT tests on bit 6)
 
 		// ------------------------------------------------------------
-        // Bit 0 - gate trigger/release (SID-range only, via voice_sid_range_flags)
+        // Bit 0 - gate trigger/release (SID-range only, via is_physical_voice_flag_bff)
 		//
 		// Decode bit 0 of the instruction header as a gate trigger/release,
 		// but only for voices marked as mapped to a physical SID slot by
-		// voice_sid_range_flags (via V from the BIT test).
+		// is_physical_voice_flag_bff (via V from the BIT test).
 		// ------------------------------------------------------------
-        bit     voice_sid_range_flags                 // Set V from SID-range flag (bit 6:=voice in physical SID range)
+        bit     is_physical_voice_flag_bff                 // Set V from SID-range flag (bit 6:=voice in physical SID range)
         lsr     instr_bit_cursor                      // Shift bit 0 of header into C (gate: 1=trigger, 0=release)
         bvc     check_stop_voice_bit                  // If V=0 → voice not in SID range, skip gate changes
 
@@ -958,7 +970,7 @@ check_freq_dur_gliss_bit:
 		// to “no explicit duration/glide” for this voice.
 		// ------------------------------------------------------------
 clear_dur_gliss_after_freq:
-        jsr     clear_voice_duration_and_glissando    // Bit2=1, bit6=1 → clear duration and glissando
+        jsr     reset_voice_duration_and_glissando    // Bit2=1, bit6=1 → clear duration and glissando
         jmp     check_adsr_bit                        // Continue with ADSR bit check
 
 		// ------------------------------------------------------------
@@ -966,7 +978,7 @@ clear_dur_gliss_after_freq:
 		// the current frequency so only the timing/glide state is reset.
 		// ------------------------------------------------------------
 clear_dur_gliss_as_bit2_clear:
-        jsr     clear_voice_duration_and_glissando    // Bit2=0 → clear duration and glissando, leave frequency alone
+        jsr     reset_voice_duration_and_glissando    // Bit2=0 → clear duration and glissando, leave frequency alone
 
 		// ------------------------------------------------------------
         // Bit 3 - ADSR update (SID-range only)
@@ -977,28 +989,23 @@ clear_dur_gliss_as_bit2_clear:
 		// untouched and decoding continues with the operand sub-block.
 		// ------------------------------------------------------------
 check_adsr_bit:
-        bit     voice_sid_range_flags                 // Set V from SID-range flags again
+        bit     is_physical_voice_flag_bff                 // Set V from SID-range flags again
         lsr     instr_bit_cursor                      // Shift bit 3 of header into C
         bvc     check_operand_block_bit               // V=0 → no physical SID voice → skip ADSR changes
         bcc     check_operand_block_bit               // Bit3=0 → no ADSR update requested
 
 		// ------------------------------------------------------------
-        // Release note, change ADSR, then re-apply original gate action
-		// ------------------------------------------------------------
-		
+		// Clear the gate bit in voice_ctrl_shadow and push the change to SID
+		// via apply_voice_control_to_sid (note-off side-effect).
+		// ------------------------------------------------------------		
 		// Temporarily force a note-off for this voice
 		sty     voice_instr_saved                     // Save current Y (operand index) for later restore
 
         lda     voice_ctrl_shadow,x                   // A := current control shadow
         and     #VOICE_GATE_CLEAR_MASK                // Clear gate bit to force note-off
         sta     voice_ctrl_shadow,x                   // Save gate-off state in shadow
-        jsr     update_voice_control                  // Push gate-off state to SID registers
+        jsr     apply_voice_control_to_sid                  // Push gate-off state to SID registers
 
-		// ------------------------------------------------------------
-		// Read and apply the new ADSR envelope (attack/decay and sustain/release),
-		// then restore this voice’s original gate state so the note resumes
-		// (or stays released) using the updated envelope parameters.
-		// ------------------------------------------------------------
         ldy     voice_instr_saved                     // Restore Y (instruction operand position)
         ldx     logical_voice_idx                     // Restore logical voice index into X
 
@@ -1022,6 +1029,8 @@ check_adsr_bit:
 		// Reconstruct the control shadow’s gate bit based on the original
 		// instruction header so, after the ADSR change, the voice resumes
 		// (or remains released) with the exact same trigger/release state.
+		// The actual re-trigger/hold on SID happens when
+		// apply_voice_control_to_sid is called again, not immediately here.
 		// ------------------------------------------------------------
         lda     voice_instr_header,x                  // A := original instruction header for this voice
         and     #VOICE_GATE_MASK                      // Isolate original gate bit (bit 0)
@@ -1048,7 +1057,7 @@ check_operand_block_bit:
         lda     (voice_read_ptr),y                    // Read operand bitfield for PWM/filter/duration
         sta     instr_op_flags                        // Save operand flags for subsequent tests
 
-        bit     voice_sid_range_flags                 // Set V from SID-range flags (PWM only applies in-range)
+        bit     is_physical_voice_flag_bff                 // Set V from SID-range flags (PWM only applies in-range)
 
 		// ------------------------------------------------------------
         // Operand bit 0 - PWM (SID-range only)
@@ -1120,7 +1129,7 @@ check_operand_duration_bit:
 		// 16-bit duration for this voice so the instruction’s operand can
 		// override whatever duration was previously active.
 		// ------------------------------------------------------------
-        jsr     clear_voice_duration_and_glissando    // Clear any existing duration/glissando before update
+        jsr     reset_voice_duration_and_glissando    // Clear any existing duration/glissando before update
 		
         iny                                           // Y → new duration_lo
         lda     (voice_read_ptr),y                    // Read new duration low byte
@@ -1160,7 +1169,7 @@ check_waveform_bit:
 check_repeat_bit:
         lsr     instr_bit_cursor                      // Shift bit 6 (ignored here) out of cursor
         lsr     instr_bit_cursor                      // Shift bit 7 of header into C (repeat flag)
-        bcc     exit_pvi                              // Bit7=0 → no repetition; fall through to exit
+        bcc     decode_voice_instruction_exit                              // Bit7=0 → no repetition; fall through to exit
 
 		// ------------------------------------------------------------
 		// Check whether this is the final scheduled repetition for the current
@@ -1249,7 +1258,7 @@ loop_to_next_voice_instruction:
 		// Finalize a non-repeating instruction by advancing the per-voice
 		// instruction PC/offset past all operands, then return to the caller.
 		// ------------------------------------------------------------
-exit_pvi:
+decode_voice_instruction_exit:
         jsr     update_instruction_ptr_and_offset     
         rts                                           
 
@@ -1474,10 +1483,10 @@ clear_all_alternate_settings:
         ldx     #$3c
         lda     #$00
 
-clear_loop:
+clear_alt_voice_block_loop:
         sta     alt_voice_adsr_attack_decay,x
         dex
-        bpl     clear_loop
+        bpl     clear_alt_voice_block_loop
 
         // ------------------------------------------------------------
         // Restore Y, X, A and return (flags reflect restored A)
@@ -1490,10 +1499,10 @@ clear_loop:
         rts
 
 * = $52E5
-process_arpeggio:
+process_multiplexing:
         // ------------------------------------------------------------
         // Validate voice index in X. Only voices 0..3 are supported for
-        // arpeggio processing; X >= 4 returns immediately.
+        // multiplexing processing; X >= 4 returns immediately.
         // ------------------------------------------------------------
         cpx     #ARPEGGIO_VOICE_LIMIT
         bmi     voice_index_validated
@@ -1531,9 +1540,9 @@ swap_voice_with_alt_slot0:
         jsr     swap_voice_settings
 
         // ------------------------------------------------------------
-        // Use partner voice X+4 for a potential secondary arpeggio. If
+        // Use partner voice X+4 for a potential secondary multiplexing. If
         // that voice is not executing instructions, skip secondary
-        // setup; otherwise use alternate #1 and mark arpeggio2 active.
+        // setup; otherwise use alternate #1 and mark multiplexing2 active.
         // ------------------------------------------------------------
         inx
         inx
@@ -1548,20 +1557,20 @@ swap_voice_with_alt_slot0:
         jsr     swap_voice_settings
 
         lda     #BTRUE
-        sta     arpeggio_secondary_active_flag
+        sta     vmux_secondary_active_flag_bff
 
 exit_after_partner_voice_check:
-        jmp     pa_exit
+        jmp     process_multiplexing_exit
 
 filter_voice3_path:
         // ------------------------------------------------------------
         // Voice 3:
         // Preserve current filter mode bits, clear alternates, swap
-        // with alternate #2, and enable filter-based arpeggio.
+        // with alternate #2, and enable filter-based multiplexing.
         // ------------------------------------------------------------
-        bne     pa_exit
+        bne     process_multiplexing_exit
 
-        lda     sid_volfilt_reg_shadow
+        lda     sid_volfilt_shadow
         and     #SID_FILTER_MODE_MASK
         sta     filter_mode_mask
 
@@ -1575,14 +1584,14 @@ filter_voice3_path:
         jsr     swap_voice_settings
 
         lda     #BTRUE
-        sta     filter_arpeggio_enabled_flag
+        sta     vmux_filter_enabled_flag_bff
 
-pa_exit:
+process_multiplexing_exit:
         // ------------------------------------------------------------
-        // Mark primary arpeggio active, restore A/X/Y, and return.
+        // Mark primary multiplexing active, restore A/X/Y, and return.
         // ------------------------------------------------------------
         lda     #BTRUE
-        sta     arpeggio_primary_active_flag
+        sta     vmux_primary_active_flag_bff
 
         pla
         tay
@@ -1595,18 +1604,18 @@ pa_exit:
 .label voice_being_modified = $5165
 
 * = $5342
-apply_arpeggio_and_filter_for_voice:
+apply_multiplexing_and_filter_for_voice:
         // ------------------------------------------------------------
         // Process logical voice X (only valid for X = 0–2). Applies the
-        // primary arpeggio state (alt slot 0), optional secondary state
+        // primary multiplexing state (alt slot 0), optional secondary state
         // (alt slot 1), and optional filter routing (alt slot 2 + SID
         // filter updates). Routine preserves A/X/Y for the caller.
         // ------------------------------------------------------------
         cpx     #$03
-        bmi     aaaffv_entry
+        bmi     apply_arp_filter_entry
         rts
 
-aaaffv_entry:
+apply_arp_filter_entry:
         // ------------------------------------------------------------
         // Save caller registers and remember which logical voice is
         // being modified during this update cycle.
@@ -1619,19 +1628,19 @@ aaaffv_entry:
         stx     voice_being_modified
 
         // ------------------------------------------------------------
-        // Primary arpeggio: swap logical voice X with alternate slot #0
+        // Primary multiplexing: swap logical voice X with alternate slot #0
         // and apply that state to SID via frequency/envelope update.
         // ------------------------------------------------------------
         ldy     #$00
         jsr     swap_voice_settings
-        jsr     update_voice_freq_and_env
+        jsr     apply_voice_freq_and_env_to_sid
 
         // ------------------------------------------------------------
-        // If secondary arpeggio is active, update partner voice X+4
+        // If secondary multiplexing is active, update partner voice X+4
         // using alternate slot #1 and commit that state to SID.
         // ------------------------------------------------------------
-        lda     arpeggio_secondary_active_flag
-        beq     check_filter_arpeggio_state
+        lda     vmux_secondary_active_flag_bff
+        beq     check_filter_multiplexing_state
 
         inx
         inx
@@ -1640,15 +1649,15 @@ aaaffv_entry:
 
         ldy     #$01
         jsr     swap_voice_settings
-        jsr     update_voice_freq_and_env
+        jsr     apply_voice_freq_and_env_to_sid
 
-check_filter_arpeggio_state:
+check_filter_multiplexing_state:
         // ------------------------------------------------------------
-        // If filter arpeggio is enabled, update voice 3 from alternate
+        // If filter multiplexing is enabled, update voice 3 from alternate
         // slot #2 and configure filter routing, filter mode, and cutoff.
         // Otherwise ensure the current voice is removed from filtering.
         // ------------------------------------------------------------
-        lda     filter_arpeggio_enabled_flag
+        lda     vmux_filter_enabled_flag_bff
         cmp     #$ff
         bne     disable_filter_for_current_voice
 
@@ -1666,17 +1675,17 @@ enable_filter_for_current_voice:
         ldx     voice_being_modified
         and     #$f0
         ora     voice_alloc_set_mask_tbl,x
-        sta     filter_control_reg_copy
-        sta     filter_control_register
+        sta     sid_filter_control_shadow
+        sta     sid_filter_control
 
         // ------------------------------------------------------------
         // Update SID volume/filter register: preserve low nibble (volume)
         // and restore previously latched filter-mode bits.
         // ------------------------------------------------------------
-        lda     sid_volfilt_reg_shadow
+        lda     sid_volfilt_shadow
         and     #$0f
         ora     filter_mode_mask
-        sta     sid_volfilt_reg_shadow
+        sta     sid_volfilt_shadow
         sta     sid_master_volume
 
         // ------------------------------------------------------------
@@ -1686,7 +1695,7 @@ enable_filter_for_current_voice:
         sta     filter_cutoff_freq_lo_reg
         lda     filter_cutoff_freq_hi
         sta     filter_cutoff_freq_hi_reg
-        jmp     aaaffv_exit
+        jmp     apply_arp_filter_exit
 
 disable_filter_for_current_voice:
         // ------------------------------------------------------------
@@ -1696,20 +1705,20 @@ disable_filter_for_current_voice:
         lda     filter_control_snapshot
         ldx     voice_being_modified
         and     voice_alloc_clear_mask_tbl,x
-        sta     filter_control_reg_copy
-        sta     filter_control_register
+        sta     sid_filter_control_shadow
+        sta     sid_filter_control
 
-aaaffv_exit:
+apply_arp_filter_exit:
         // ------------------------------------------------------------
-        // Clear all arpeggio and filter state for the next update
+        // Clear all multiplexing and filter state for the next update
         // cycle; restore registers and return.
         // ------------------------------------------------------------
         lda     #$00
-        sta     arpeggio_primary_active_flag
-        sta     arpeggio_secondary_active_flag
+        sta     vmux_primary_active_flag_bff
+        sta     vmux_secondary_active_flag_bff
         sta     alt_voice_slots_cleared_flag
         sta     filter_mode_mask
-        sta     filter_arpeggio_enabled_flag
+        sta     vmux_filter_enabled_flag_bff
 
         pla
         tay

@@ -78,45 +78,52 @@ Values observed
 
 
 // ===========================================================
-// Flags
+// Booleans
+//
+// Two types of booleans:
+//
+//	-$00 for False, $FF for True
+//	-$00 for False, $01 for True
 // ===========================================================
-.label vic_color_ram_copy_done = $1677
-.label color_ram_copy_done = $1677 //Boolean
-.label game_paused_flag = $1679	//#01 if game is paused, #00 otherwise
-.label needs_sentence_rebuild = $95
-.label remove_obj_from_inv_flag = $0670
-.label open_shutter_flag = $066E
-.label raster_irq_init_pending_flag = $96
-.label kbd_key_ready       = $2061    // flag: 1 when kbd_keycode is valid
-.label reload_sound_ptrs_flag     = $FE70    // flag: non-zero => refresh sound resource pointers after relocation
-.label rsrc_released_flag = $FE4A
-.label button_presses = $cb8a
-.label joystick_button_pressed = $cb89
-.label sentence_bar_needs_refresh = $fe49	//#00 = don't refresh the sentence bar, #01 = refresh it
-									//By "refresh", we mean to update its contents
-.label init_sentence_ui_flag = $fe8f
-.label new_sound_instructions_allowed = $fe71	//00 = not allowed, nonzero = allowed
-.label room_scene_clicked_flag = $fd77
-.label forced_sentence_trigger = $fe8e
-.label arpeggio_ongoing = $5160	// #00 = disabled, #FF = enabled
-.label arpeggio_secondary_active_flag = $5161		// #00 = disabled, #FF = enabled
-.label arpeggio_primary_active_flag = $5162		// #00 = disabled, #FF = enabled
-.label filter_arpeggio_enabled_flag = $5164			// #00 = filter voice, #FF = stop filtering voice
-.label alt_voice_slots_cleared_flag = $5167	// #00 = false, #FF = true
-.label music_playback_in_progress = $4816
-.label sound_processing_disabled_flag = $4819	//#00 = false, #FF = true
-.label lowest_priority_sound_starting_flag = $4cf2 //#01 = True, #00 = false
-.label hide_cursor_flag               = $166C
-.label voice3_in_use = $4CF5				//#00 = false, #FF = true
-.label actor_path_update_flag = $fde1
+// Booleans where $01 is True
+.label needs_sentence_rebuild 					= $95
+.label raster_irq_init_pending_flag 			= $96
+.label hide_cursor_flag               			= $166C
+.label color_ram_copy_done 						= $1677
+.label game_paused_flag 						= $1679	
+.label kbd_key_ready       						= $2061    
+.label lowest_priority_sound_starting_flag 		= $4CF2 
+.label room_scene_clicked_flag 					= $FD77
+.label actor_path_update_flag 					= $FDE1
+.label sentence_bar_needs_refresh 				= $FE49	
+.label rsrc_released_flag 						= $FE4A
+.label reload_sound_ptrs_flag     				= $FE70    
+.label new_sound_instructions_allowed 			= $FE71	
+.label init_sentence_ui_flag 					= $FE8F
+
+// Booleans where $FF is True
+.label vmux_active_flag_bff = $5160	
+.label vmux_secondary_active_flag_bff = $5161		
+.label vmux_primary_active_flag_bff = $5162		
+.label alt_voice_slots_cleared_flag = $5167	
+.label sound_processing_disabled_flag = $4819	
+.label voice3_in_use = $4CF5				
+.label vmux_filter_enabled_flag_bff = $5164			// INVERTED NAME? - #00 = filter voice, #FF = stop filtering voice
+
+//Not booleans or unknown
+.label remove_obj_from_inv_flag 				= $0670		// Not a strict boolean, values are $0D or $00
+.label open_shutter_flag 						= $066E		// Enum: OPEN/CLOSE
+.label button_presses 							= $CB8A		// Possible boolean, possible count - recheck
+.label forced_sentence_trigger 					= $FE8E		// Enum: SET/CLEARED (01/FF)
+.label music_playback_in_progress 				= $4816		// 00 = False, ?? = True
 
 // ===========================================================
 // Semaphores and signals
 // ===========================================================
 .label ui_section_semaphore = $1678 //Semaphore used to control access to a section in irq_handler1
-.label video_processed_signal = $166b
-.label irq_sync_lock = $e3
-.label video_update_signal = $8e			// synchronization flag - NOT to be confused with vsync
+.label video_processed_signal = $166B
+.label irq_sync_lock = $E3
+.label video_update_signal = $8E			// synchronization flag - NOT to be confused with vsync
 
 // ===========================================================
 // Sprites
@@ -201,7 +208,6 @@ Values observed
 //===========================================================
 // Cursor state
 //===========================================================
-// Hide cursor flag. #$01 = hidden, #$00 = visible.
 
 // Down-counter for cursor color update cadence.
 // Decremented by irq_handler1 each run. When it reaches 0, color advances and
@@ -634,7 +640,7 @@ They were definitely intended as debugging aids.
 //===========================================================
 // Sound engine
 //===========================================================
-.label sid_volfilt_reg_shadow = $476A
+.label sid_volfilt_shadow = $476A
 .label voice_adsr_attack_decay = $476c
 .label voice_adsr_sustain_release = $476f
 .label sound_id_to_start_on_voice = $4772
@@ -674,7 +680,7 @@ They were definitely intended as debugging aids.
 .label voice_instr_loop_ofs_lo = $47fe
 .label voice_instr_loop_ofs_hi = $4805
 .label voice_instr_active_mask = $480c	//Bitmask that holds which voices are currently executing sound instructions
-.label voice_sid_range_flags = $4811	//#00 if X < 3, #FF otherwise
+.label is_physical_voice_flag_bff = $4811	//#00 if X < 3, #FF otherwise
 .label music_voices_in_use = $4817
 .label music_voices_in_use_2 = $4818		//A bitmask used to represent which voices are being used by music
 .label stop_sound_cleanup_mode = $481A				//#01 = stop, dereference sound, stop arpeggio, #FF = just stop
@@ -741,7 +747,7 @@ They were definitely intended as debugging aids.
 .label music_track_ptrs_hi = $5499
 .label selected_music_idx = $fea3
 .label voice_read_ptr            = $BA      // ZP pointer to current voice script/parameter stream
-.label filter_control_reg_copy   = $476B    // Shadow copy of SID filter control register (software mirror)
+.label sid_filter_control_shadow   = $476B    // Shadow copy of SID filter control register (software mirror)
 .label x_saved                   = $480D    // Scratch storage for last logical voice index processed
 .label voice_active_mask_snapshot = $3465
 

@@ -1,3 +1,100 @@
+/*
+================================================================================
+Voice allocation — mapping sounds to logical and physical voices
+================================================================================
+
+Summary
+    This module manages how sounds claim and release logical voices, how those
+    logical voices map onto the three physical SID voices and the filter slot,
+    and how per-sound reference counts are maintained. It implements the core
+    priority and eviction policy used by the sound scheduler to decide which
+    voices can be reused when a new sound starts.
+
+Core responsibilities
+    • Real-voice allocation
+        - allocate_available_real_voice scans the three real SID voices and
+          returns a free one when available.
+        - voices_allocated is a bitmask of which real voices (0–2) are in use;
+          count_available_real_voices converts this into a numeric count used
+          by higher-level scheduling logic.
+        - allocate_voice marks a chosen voice as allocated, records the sound’s
+          priority, and increments the sound’s reference count unless music is
+          currently active.
+
+    • Filter voice and extended voices
+        - Voice index 3 is treated as the special “filter voice”; it doesn’t
+          have its own oscillator but represents ownership of the SID filter
+          slot. allocate_filter_voice and release_voice coordinate this.
+        - Voice indices ≥4 are extended / virtual voices used by the
+          multiplexing system. They share hardware with the real voices but
+          still participate in priority and refcount bookkeeping via
+          allocate_voice and deallocate_voice.
+
+    • Priority and eviction
+        - count_evictable_voices examines all allocated real voices and
+          determines:
+            · how many of them are strictly lower priority than the new sound,
+            · which allocated voice currently has the lowest priority, and
+            · how the new sound’s priority compares to the current filter
+              owner when there is a filter conflict.
+        - This information drives the scheduler’s decision about whether
+          enough lower-priority real voices can be evicted to meet a new
+          sound’s voice requirements.
+        - release_voice enforces the rules for deallocation vs repurposing:
+            · MIN-priority voices can be released or muted outright depending
+              on cleanup mode.
+            · Higher-priority voices may be repurposed during the start of a
+              MIN-priority sound when primary multiplexing is active, allowing
+              the new sound to “take over” a voice while keeping multiplexing
+              state coherent.
+            · When multiplexing is active, releasing voice 0 may also clear
+              alternate settings and multiplex flags.
+
+    • Repurposing and multiplex-aware release
+        - Under specific conditions (a MIN-priority sound starting while
+          primary multiplexing is active and filter constraints satisfied),
+          release_voice calls a small repurposing path:
+            · marks the voice’s instruction stream active,
+            · applies multiplexing/filter configuration for that voice,
+            · re-triggers the gate bit and commits control to SID,
+            · decrements the refcount for the old sound (if music is not
+              responsible for lifetime).
+        - Otherwise, voices go through the normal deallocate_voice path,
+          which clears priority, updates voices_allocated for real voices,
+          recomputes the free-count, and clears the voice→sound binding.
+
+    • Reference-count management
+        - dec_sound_refcount and inc_sound_refcount_if_no_music update the
+          “liveness” table for sounds, adjusting only the refcount bits while
+          preserving a separate lock bit used by the resource manager.
+        - dec_sound_refcount_if_no_music and dv_dec_sound_refcount_and_return
+          are helpers that skip refcount changes whenever music playback is
+          active, so that music retains ownership of resources during songs.
+        - clear_refcount_of_sounds_1_and_2 and set_refcount_of_sounds_1_and_2
+          provide special-case handling for two core sounds whose lifetimes
+          need explicit seeding or clearing at engine init/reset.
+
+Interaction with other modules
+    • Voice scheduler
+        - Uses allocate_available_real_voice, count_evictable_voices, and
+          allocate_voice to implement the “can we start this sound?” logic in
+          start_sound.
+        - Calls release_voice, stop_sound_voices_only, and related helpers
+          during stop_sound_* flows to free or repurpose voices according to
+          priority and multiplexing state.
+
+    • Sound engine and multiplexing
+        - Multiplexing code sets vmux_* flags and relies on release_voice to
+          respect them, clearing alternate settings and repurposing voices
+          only when it is safe to do so.
+        - SID control helpers (in the voice controller module) are called by
+          release_voice and its repurposing path to mute or retrigger voices
+          at the right moments when a voice is released from or reassigned to
+          a sound.
+
+================================================================================
+*/
+
 #importonce
 
 #import "globals.inc"
@@ -147,7 +244,7 @@ store_final_mem_attr:
 		rts		
 /*
 ================================================================================
-  allocate_special_voice_3
+  allocate_filter_voice
 ================================================================================
 Summary
         Wrapper that allocates voice index 3 using the generic allocate_voice
@@ -163,7 +260,7 @@ Description
 ================================================================================
 */
 * = $4ED0
-allocate_special_voice_3:
+allocate_filter_voice:
 		// Save A
         pha                                     
 		
@@ -856,3 +953,341 @@ set_refcount_of_sounds_1_and_2:
         ora     #SOUND_REFCOUNT_BIT                           
         sta     sound_2_liveness
         rts
+
+/*
+function allocate_available_real_voice() -> int
+    // voices_allocated: bitmask for real voices 0–2
+    mask = voices_allocated
+
+    // Scan real voices in order 2, 1, 0
+    for voice_index from 2 down to 0:
+        if bit_for_voice(voice_index) in mask is CLEAR then
+            // Free slot → allocate and return it
+            allocate_voice(voice_index)
+            return voice_index
+        end if
+    end for
+
+    // No free real voice available
+    return -1      // represented by $FF in the original code
+end function
+
+
+procedure dec_sound_refcount(sound_id)
+    // sound_liveness_tbl[sound_id]:
+    //   bit 7 = LOCK_BIT (lock flag)
+    //   bits 0–6 = reference count (0–127)
+
+    mem_attr = sound_liveness_tbl[sound_id]
+
+    // Preserve original lock flag
+    lock_set = (mem_attr & LOCK_BIT) != 0
+
+    // Strip lock bit to get refcount-only value
+    refcount = mem_attr & 0x7F
+
+    // Decrement refcount, but do not go below 0
+    if refcount > 0:
+        refcount -= 1
+    else:
+        refcount = 0
+
+    // Recombine with original lock bit
+    if lock_set:
+        mem_attr = refcount | LOCK_BIT
+    else:
+        mem_attr = refcount
+    end if
+
+    sound_liveness_tbl[sound_id] = mem_attr
+end procedure
+
+
+procedure allocate_filter_voice()
+    // Wrapper: allocate logical voice 3 (filter voice)
+    allocate_voice(3)
+end procedure
+
+
+procedure count_evictable_voices()
+    // Init: minimum priority as “maximal,” zero evictable count
+    lowest_alloc_voice_priority = MAX_SND_PRIORITY
+    lowest_alloc_voice_idx      = 0      // default; updated on first candidate
+    evictable_voice_count       = 0
+
+    // Scan real voices 2,1,0
+    for v in [2, 1, 0]:
+        // Skip if this voice is free
+        if voices_allocated has_bit_cleared_for(v):
+            continue
+
+        voice_pri = voice_priority_0[v]
+
+        // Evictable if strictly lower priority than new sound
+        if voice_pri < sound_priority:
+            evictable_voice_count += 1
+        end if
+
+        // Track lowest priority among allocated voices regardless of evictability
+        if voice_pri < lowest_alloc_voice_priority:
+            lowest_alloc_voice_priority = voice_pri
+            lowest_alloc_voice_idx      = v
+        end if
+    end for
+
+    // Persist count
+    evictable_voice_count = evictable_voice_count
+
+    // Optionally compare new sound vs filter priority
+    if not filter_conflict:
+        // No filter conflict → skip comparison
+        return
+    end if
+
+    if sound_priority >= filter_priority:
+        // New sound is >= as important as current filter owner
+        filter_priority_is_higher = TRUE
+    else:
+        // New sound is lower priority than filter owner
+        filter_priority_is_higher = FALSE
+
+        // The extra index-vs-priority comparison in the original code
+        // does not change any real state; effectively lowest_alloc_voice_idx
+        // remains what we already computed.
+    end if
+end procedure
+
+
+procedure count_available_real_voices()
+    // voices_allocated bits 0–2: 1 = allocated, 0 = free
+    free_count = 0
+
+    for v in [0, 1, 2]:
+        if bit_for_voice(v) in voices_allocated is CLEAR:
+            free_count += 1
+        end if
+    end for
+
+    total_real_voices_available = free_count
+end procedure
+
+
+procedure release_voice(voice_index)
+    // High-level: either fully deallocate the voice or repurpose it under
+    // certain multiplexing rules. Any full-release paths eventually go through
+    // deallocate_voice() / dv_clear_voice_resource_id().
+
+    if vmux_active_flag then
+        // --- Multiplexing is active ---
+
+        if voice_index == 0 then
+            // Clearing primary multiplexing and all alternate settings
+            vmux_primary_active = FALSE
+            clear_all_alternate_settings()
+        end if
+
+        // Always disable secondary multiplexing
+        vmux_secondary_active = FALSE
+
+        // Fully deallocate this voice (clear ID, priority, refcount, etc.)
+        dv_clear_voice_resource_id(voice_index)
+        return
+    end if
+
+    // --- No multiplexing active ---
+
+    if voice_index == 3 then
+        // Releasing filter voice slot
+        filter_voice_in_use = FALSE
+    end if
+
+    pri = voice_priority_0[voice_index]
+
+    if pri == MIN_SOUND_PRIORITY then
+        // ----- MIN priority voice -----
+        if stop_sound_cleanup_mode == STOP_SOUND_MODE_VOICES_ONLY then
+            // Voices-only cleanup: update multiplexing then release
+            process_multiplexing()
+            deallocate_voice(voice_index)
+            return
+        else
+            // Full cleanup. Real voices 0–2 mute their waveform; voice 3 just releases.
+            if voice_index <= 2 then
+                silence_voice_if_full_stop(voice_index)
+            end if
+            deallocate_voice(voice_index)
+            return
+        end if
+    end if
+
+    // ----- Priority > MIN: see if we can repurpose -----
+
+    // Only repurposed when a MIN-priority sound is starting and primary mux is active
+    if not pri1_snd_starting:
+        deallocate_voice(voice_index)
+        return
+    end if
+
+    if not vmux_primary_active:
+        deallocate_voice(voice_index)
+        return
+    end if
+
+    // Virtual voices (>=3) are never repurposed; they are just deallocated
+    if voice_index >= 3:
+        deallocate_voice(voice_index)
+        return
+    end if
+
+    // At this point:
+    //   - We’re releasing a higher-priority real voice (0–2)
+    //   - A MIN-priority sound is starting
+    //   - Primary multiplexing is active
+    //
+    // Decide whether to repurpose based on filter usage
+    if not vmux_filter_enabled == 0 or not filter_voice_in_use then
+        // Filter not enabled or not in use → repurpose real voice
+        repurpose_voice(voice_index)
+    else
+        // Filter is in use and enabled → just deallocate
+        deallocate_voice(voice_index)
+    end if
+end procedure
+
+
+procedure repurpose_voice(voice_index)
+    // Save which sound this voice belonged to; we’ll adjust its refcount later
+    old_sound_id = voice_sound_id_tbl[voice_index]
+
+    // Mark this voice’s instruction stream as active
+    voice_instr_active_mask |= bit_for_voice(voice_index)
+
+    // Apply multiplexing and filter configuration for this voice
+    apply_multiplexing_and_filter_for_voice(voice_index)
+
+    // Retrigger note: set GATE bit and push control byte to SID
+    voice_ctrl_shadow[voice_index] |= GATE_BIT
+    apply_voice_control_to_sid(voice_index)
+
+    // Decrement refcount for the old sound, but only if music isn’t playing
+    dec_sound_refcount_if_no_music(old_sound_id)
+
+    // Finally restore all CPU registers (handled by the shared tail in assembly)
+end procedure
+
+
+procedure deallocate_voice(voice_index)
+    // 1) Clear the voice’s priority
+    voice_priority_0[voice_index] = 0
+
+    // 2) For real voices 0–2, clear allocation bit and recompute free-count
+    if voice_index in {0, 1, 2} then
+        voices_allocated &= ~bit_for_voice(voice_index)
+        count_available_real_voices()
+    end if
+
+    // 3) Clear the voice’s sound binding and decrement the sound refcount
+    dv_clear_voice_resource_id(voice_index)
+end procedure
+
+
+procedure dv_clear_voice_resource_id(voice_index)
+    // Look up which sound this logical voice was associated with
+    sound_id = voice_sound_id_tbl[voice_index]
+
+    // Clear mapping
+    voice_sound_id_tbl[voice_index] = 0
+
+    // Decrement the sound’s refcount if music is not playing
+    dec_sound_refcount_if_no_music(sound_id)
+end procedure
+
+
+
+procedure dec_sound_refcount_if_no_music(sound_id)
+    if music_playback_in_progress then
+        // Music owns resource lifetimes right now; do not touch refcounts
+        return
+    end if
+
+    dec_sound_refcount(sound_id)
+end procedure
+
+
+procedure inc_sound_refcount_if_no_music(sound_id)
+    if music_playback_in_progress then
+        // Music owns resource lifetimes; skip increments
+        return
+    end if
+
+    // Increment reference count field of sound_liveness_tbl[sound_id],
+    // preserving the lock bit in the high bit.
+    mem_attr = sound_liveness_tbl[sound_id]
+
+    lock_set = (mem_attr & LOCK_BIT) != 0
+    refcount = mem_attr & 0x7F
+
+    // Increment refcount (the original code doesn’t clamp here; the refcount
+    // field is small enough that wrap is unlikely in practice.)
+    refcount = (refcount + 1) & 0x7F
+
+    if lock_set:
+        mem_attr = refcount | LOCK_BIT
+    else:
+        mem_attr = refcount
+    end if
+
+    sound_liveness_tbl[sound_id] = mem_attr
+end procedure
+
+
+procedure allocate_voice(voice_index)
+    // For all categories we will:
+    //   - store sound_priority into voice_priority_0[voice_index]
+    //   - bump refcount of pending_sound_idx (unless music active)
+
+    // 1) Handle index-specific allocation markers
+    if voice_index == 3 then
+        // Special filter voice
+        filter_voice_in_use = TRUE
+
+    else if voice_index in {0, 1, 2} then
+        // Real hardware voice
+        voices_allocated |= bit_for_voice(voice_index)
+        count_available_real_voices()
+
+    else
+        // voice_index >= 4: extended / virtual voices
+        // No allocation bitmask changes are needed.
+        // (They still get priority and refcount updates below.)
+    end if
+
+    // 2) Store the sound’s priority in the per-voice priority table
+    voice_priority_0[voice_index] = sound_priority
+
+    // 3) Increment refcount for the sound being assigned to this voice,
+    //    unless music is active
+    inc_sound_refcount_if_no_music(pending_sound_idx)
+end procedure
+
+
+procedure clear_refcount_of_sounds_1_and_2()
+    // Zero refcounts (bits 0–6) but preserve lock bit (bit 7) for sounds 1 and 2
+    for sound_id in [1, 2]:
+        mem_attr = sound_liveness_value_for(sound_id)   // sound_1_liveness / sound_2_liveness
+        lock_bit = mem_attr & LOCK_BIT
+        sound_liveness_value_for(sound_id) = lock_bit
+    end for
+end procedure
+
+
+procedure set_refcount_of_sounds_1_and_2()
+    // Force refcount to be non-zero by turning on bit 0; keep all other bits.
+    for sound_id in [1, 2]:
+        mem_attr = sound_liveness_value_for(sound_id)
+        mem_attr |= SOUND_REFCOUNT_BIT      
+        sound_liveness_value_for(sound_id) = mem_attr
+    end for
+end procedure
+
+*/

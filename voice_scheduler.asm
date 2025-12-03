@@ -1,4 +1,5 @@
-/*================================================================================
+/*
+================================================================================
   Voice Scheduler
 ================================================================================
 
@@ -103,14 +104,8 @@ The whole system centers around these main ideas:
        • voice-3 is available (or can be taken legally)  
        • and music voice usage allows it  
 
---------------------------------------------------------------------------------
-In short:
-    This file is the traffic-controller of the audio subsystem.  
-    It arbitrates voice usage based on priority, music policies, and resource
-    ownership; performs controlled eviction; and sets up all per-voice pointers
-    needed for the playback engine to execute each voice’s instruction stream.
-
-================================================================================*/
+================================================================================
+*/
 
 #importonce
 
@@ -638,7 +633,7 @@ allocate_and_configure_required_voices:
         beq     crvr_bit6_clear
 
         // Bit 6 set → allocate filter
-        jsr     allocate_special_voice_3
+        jsr     allocate_filter_voice
         jmp     save_primary_allocated_voice_index
 
 crvr_bit6_clear:
@@ -724,7 +719,7 @@ test_bit5_alloc_filter_voice:
         bcc     finalize_primary_voice_stream_binding
 
         // Bit 5 set → allocate filter and set its data
-        jsr     allocate_special_voice_3
+        jsr     allocate_filter_voice
         jsr     configure_voice_data_stream
 
 finalize_primary_voice_stream_binding:
@@ -1392,3 +1387,402 @@ svtu_exit:
         rts
 
 
+/*
+function update_voice_stream_pointers(logical_voice_index) -> UpdateResult
+    sound_id = voice_sound_id_tbl[logical_voice_index]
+
+    if sound_ptr[sound_id] is NOT resident then
+        // Sound moved out of memory: stop it completely
+        stop_sound_full_cleanup(sound_id)
+
+        if sound_id == pri1_snd_idx then
+            // Clear priority-1 bookkeeping
+            pri1_snd_idx                   = NONE
+            pri1_snd_starting 		       = FALSE
+            vmux_primary_active			   = FALSE
+            vmux_secondary_active		   = FALSE
+        end if
+
+        return NOT_IN_MEMORY
+    end if
+
+    current_base = sound_ptr[sound_id]           // current base address of sound data
+    cached_base  = voice_base_addr[logical_voice_index]
+
+    if current_base == cached_base then
+        // No relocation: pointers still valid
+        return NO_RELOCATION
+    end if
+
+    // Resource moved: repair this voice’s base and PC
+    voice_base_addr[logical_voice_index] = current_base
+
+    loop_offset = voice_instr_loop_ofs[logical_voice_index]
+    voice_instr_pc[logical_voice_index] = current_base + loop_offset
+
+    return RELOCATED
+end function
+
+
+function start_sound(sound_id) -> StatusCode
+    pending_sound_idx = sound_id
+
+    sound_processing_disabled = TRUE
+
+    // 1) Music guard: if music uses all real voices, reject
+    if music_playback_in_progress then
+        if music_voices_in_use covers all real voices then
+            status = ERR_MUSIC_ALL_VOICES
+            goto finish
+        end if
+    end if
+
+    // 2) Ensure sound resource is loaded
+    if sound_ptr[sound_id] is NOT resident then
+        status = ERR_NOT_LOADED
+        goto finish
+    end if
+
+    sound_data_base = sound_ptr[sound_id]
+
+    // Skip generic resource header, then read priority
+    cursor = MEM_HDR_LEN
+    sound_priority = read_byte(sound_data_base, cursor)
+
+    // Priority-1 bookkeeping
+    if sound_priority == MIN_SOUND_PRIORITY then
+        pri1_snd_idx           = sound_id
+        pri1_snd_starting	   = TRUE
+    end if
+
+    // 3) Parse voice requirements bitmask
+    cursor += 1
+    voice_mask = read_byte(sound_data_base, cursor)
+
+    real_voices_needed = derive_real_voice_count_from_mask(voice_mask)
+    filter_voice_needed = mask_bit_set(voice_mask, FILTER_BIT)
+
+    // 4) Check current capacity
+    insufficient_voices = (total_real_voices_available < real_voices_needed)
+    filter_conflict = (filter_voice_in_use and filter_voice_needed)
+
+    // If we already have enough real voices and no filter conflict,
+    // go straight to allocation
+    if not insufficient_voices and not filter_conflict then
+        goto allocate_and_configure_required_voices
+    end if
+
+    // 5) Requirements not currently satisfied: see if they are even attainable
+    // Count how many real voices could be evicted (lower-priority sounds)
+    evictable_count, lowest_alloc_voice_priority, lowest_alloc_voice_idx = count_evictable_voices()
+
+    if total_real_voices_available + evictable_count < real_voices_needed then
+        status = ERR_INSUFFICIENT_VOICES
+        goto finish
+    end if
+
+    // 6) Filter-priority rules: can we evict the current filter owner?
+    if filter_voice_needed and filter_voice_in_use then
+        if not filter_priority_is_higher then
+            // New sound not high enough priority to steal the filter
+            status = ERR_INSUFFICIENT_VOICES
+            goto finish
+        end if
+    end if
+
+    // 7) If there is a filter conflict, compare priorities and possibly evict
+    if filter_conflict then
+        if sound_priority < filter_priority then
+            status = ERR_INSUFFICIENT_VOICES
+            goto finish
+        end if
+
+        // Evict the sound currently owning the filter (voices only)
+        stop_sound_voices_only(snd_for_filter)
+        // After this, we fall into the general eviction loop below
+    end if
+
+    // 8) Evict lower-priority sounds until we meet requirements
+    loop:
+        evictable_count, lowest_alloc_voice_priority, lowest_alloc_voice_idx = count_evictable_voices()
+
+        if lowest_alloc_voice_priority >= sound_priority then
+            // No strictly lower-priority sound left to evict
+            status = ERR_INSUFFICIENT_VOICES
+            goto finish
+        end if
+
+        // Stop the lowest-priority sound (voices only)
+        victim_sound = voice_sound_id_tbl[lowest_alloc_voice_idx]
+        stop_sound_voices_only(victim_sound)
+
+        // Check if we now have enough real voices
+        if total_real_voices_available >= real_voices_needed then
+            // If filter is needed, ensure it's now free
+            if not filter_voice_needed then
+                break loop
+            end if
+
+            if filter_voice_in_use then
+                break loop
+            end if
+        end if
+
+        // Still not enough – continue evicting
+        goto loop
+    end loop
+
+allocate_and_configure_required_voices:
+    // Re-read requirements mask and prepare to walk its bits
+    cursor = OFS_VOICE_REQS
+    voice_mask = read_byte(sound_data_base, cursor)
+    voice_requirements_mask = voice_mask
+
+    // First: decide initial “primary” voice
+    if bit6 of voice_mask is set then
+        // Use filter voice as primary
+        primary_voice = allocate_filter_voice()
+    else
+        // Use a real SID voice as primary
+        primary_voice = allocate_available_real_voice()
+    end if
+
+    first_voice_index = primary_voice
+
+    // We will walk bits 0..5, and for each set bit allocate/configure
+    // a corresponding voice or multiplexed slot, consuming offsets from
+    // the sound resource as we go.
+
+    cursor += 1                  // move past the bitmask
+    mask = voice_requirements_mask
+
+    // Bit 0: virtual voice for current X (X+4)
+    if mask_bit_set(mask, 0) then
+        v = map_primary_to_virtual(primary_voice)
+        configure_voice_data_stream(v, cursor)
+        cursor += 2              // consumed the 16-bit offset
+    end if
+
+    // Bit 1: extra real voice
+    if mask_bit_set(mask, 1) then
+        r = allocate_available_real_voice()
+        configure_voice_data_stream(r, cursor)
+        cursor += 2
+    end if
+
+    // Bit 2: another virtual voice (paired to current X)
+    if mask_bit_set(mask, 2) then
+        v = map_current_real_to_virtual()
+        configure_voice_data_stream(v, cursor)
+        cursor += 2
+    end if
+
+    // Bit 3: another extra real voice
+    if mask_bit_set(mask, 3) then
+        r = allocate_available_real_voice()
+        configure_voice_data_stream(r, cursor)
+        cursor += 2
+    end if
+
+    // Bit 4: another virtual voice
+    if mask_bit_set(mask, 4) then
+        v = map_current_real_to_virtual()
+        configure_voice_data_stream(v, cursor)
+        cursor += 2
+    end if
+
+    // Bit 5: filter voice (logical voice 3)
+    if mask_bit_set(mask, 5) then
+        f = allocate_filter_voice()
+        configure_voice_data_stream(f, cursor)
+        cursor += 2
+    end if
+
+    // Finally configure the first allocated voice’s base+offset
+    v = first_voice_index
+    voice_data_base[v]    = sound_data_base
+    voice_data_offsets[v] = cursor        // starting offset for that stream
+    snd_to_start_on_voice[v] = pending_sound_idx
+
+    status = pending_sound_idx
+
+finish:
+    start_sound_result = status
+    sound_processing_disabled = FALSE
+    restore_cpu_registers()
+
+    return start_sound_result
+end function
+
+
+function configure_voice_data_stream(logical_voice_index, cursor_ref)
+    // cursor_ref is a reference or object containing the current offset
+    cursor = cursor_ref.value
+
+    // Set per-voice base pointer for this sound
+    voice_data_base[logical_voice_index] = sound_data_base
+
+    // Read 16-bit offset from the sound data stream
+    offset = read_uint16(sound_data_base, cursor)
+    cursor += 2
+
+    voice_data_offsets[logical_voice_index] = offset
+
+    // Bind this voice to the pending sound for startup
+    snd_to_start_on_voice[logical_voice_index] = pending_sound_idx
+
+    // Return updated cursor to the caller
+    cursor_ref.value = cursor
+end function
+
+
+function stop_sound_core(sound_id)
+    sound_to_stop = sound_id
+
+    // If this is currently the priority-1 starting sound
+    if sound_to_stop == pri1_snd_idx then
+        // Always stop all its voices
+        stop_all_voices_for_sound(sound_to_stop)
+
+        // If we are NOT doing a full cleanup, we are done
+        if stop_sound_cleanup_mode != FULL_CLEANUP then
+            return
+        end if
+
+        // Full cleanup for priority-1 sound:
+        // 1) decrement its refcount (unless music forbids it)
+        dec_sound_refcount_if_no_music(sound_to_stop)
+
+        // 2) clear priority-1 bookkeeping
+        pri1_snd_idx           = NONE
+        pri1_snd_starting 	   = FALSE
+
+        // 3) clear voice multiplexing flags
+        vmux_primary_active   = FALSE
+        vmux_secondary_active = FALSE
+
+        // 4) clear any alternate filter/voice settings
+        clear_all_alternate_settings()
+    else
+        // Non-priority sound: just stop all its voices
+        stop_all_voices_for_sound(sound_to_stop)
+    end if
+
+end function
+
+
+function stop_all_voices_for_sound(sound_id)
+    sound_to_stop = sound_id
+
+    // Iterate logical voices from FILTER_VOICE_INDEX down to 0
+    for logical_voice_index from FILTER_VOICE_INDEX down to 0:
+        if voice_sound_id_tbl[logical_voice_index] == sound_to_stop then
+            // Stop this logical voice
+            stop_logical_voice(logical_voice_index)
+        end if
+    end for
+end function
+
+
+function stop_sound_voices_only(sound_id)
+    // Set mode to “voices only” for the duration of this call
+    stop_sound_cleanup_mode = VOICES_ONLY
+
+    stop_sound_core(sound_id)
+end function
+
+
+function stop_sound_and_clear_pending_starts(sound_id)
+    // Clear any pending start assignments for this sound,
+    // then perform a full cleanup stop.
+
+    // Walk all logical voices from highest index down to 0
+    for logical_voice_index from MAX_VOICE_INDEX down to 0:
+        if snd_to_start_on_voice[logical_voice_index] == sound_id then
+            snd_to_start_on_voice[logical_voice_index] = SOUND_IDX_NONE
+        end if
+    end for
+
+    // Fall through conceptually to a full cleanup stop
+    stop_sound_full_cleanup(sound_id)
+end function
+
+function stop_sound_full_cleanup(sound_id)
+    // Set mode to “full cleanup” for the duration of this call
+    stop_sound_cleanup_mode = FULL_CLEANUP
+
+    stop_sound_core(sound_id)
+end function
+
+
+function stop_logical_voice(logical_voice_index)
+    // 1) Clear per-voice logical state
+    set_voice_to_unused(logical_voice_index)
+
+    // Multiplexed virtual voices (e.g., 4–7) only clear logical state; no hardware
+    if logical_voice_index >= FIRST_MULTIPLEXED_VOICE_INDEX then
+        return
+    end if
+
+    // Filter voice is treated specially
+    if logical_voice_index == FILTER_VOICE_INDEX then
+        // Release filter voice hardware and logical state
+        release_voice(FILTER_VOICE_INDEX)
+        // set_voice_to_unused already ran above
+        return
+    end if
+
+    // --- Real SID voices 0–2 ---
+
+    // Snapshot current filter control shadow
+    filter_control_snapshot = sid_filter_control_shadow
+
+    // Possibly silence the hardware voice if we are doing a full stop
+    silence_voice_if_full_stop(logical_voice_index)
+
+    // Release the real voice hardware + mark the voice as free
+    release_voice(logical_voice_index)
+
+    // After releasing the real voice, decide whether to also release filter voice 3
+
+    if sid_filter_control_shadow != filter_control_snapshot then
+        // Filter routing changed; if no voices are now routed to the filter,
+        // free the filter voice as well.
+        if (sid_filter_control_shadow & FILTER_ROUTING_MASK) == 0 then
+            if filter_voice_in_use then
+                release_voice(FILTER_VOICE_INDEX)
+                set_voice_to_unused(FILTER_VOICE_INDEX)
+            end if
+        end if
+    end if
+
+    // Finally, clear the paired multiplexed virtual voice (X+4)
+    virtual_index = logical_voice_index + 4
+    set_voice_to_unused(virtual_index)
+end function
+
+
+function silence_voice_if_full_stop(logical_voice_index)
+    // Only active for real voices under full-cleanup mode, and only
+    // when music is not currently playing. Otherwise, do nothing.
+
+    if stop_sound_cleanup_mode != FULL_CLEANUP then
+        return
+    end if
+
+    if music_playback_in_progress then
+        // Don’t alter waveform/gate while music is active
+        return
+    end if
+
+    // Clear waveform + gate bits for this voice’s SID control register
+    // by applying a mask to its cached control byte, and write it back
+    // to the SID.
+    control = voice_ctrl_shadow[logical_voice_index]
+    control = control & CLEAR_GATE_AND_WAVEFORM_MASK
+    voice_ctrl_shadow[logical_voice_index] = control
+    apply_sid_voice_control(logical_voice_index, control)
+end function
+
+
+*/

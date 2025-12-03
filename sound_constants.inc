@@ -3,7 +3,6 @@
 .const STOP_SOUND_MODE_FULL       = $FF     // Full stop/cleanup mode value for stop_sound_cleanup_mode
 .const VOICE_GATE_MASK            = $01     // Gate bit mask for voice_ctrl_shadow (1=trigger, 0=release)
 .const VOICE_GATE_CLEAR_MASK      = $FE     // Inverted gate mask (AND to clear gate bit in voice_ctrl_shadow)
-.const ARPEGGIO_VOICE_LIMIT         = $04    // Voices with X >= this are not processed for multiplexing
 .const FILTER_VOICE_INDEX           = $03    // Logical voice index that uses the filter/multiplexing path
 .const SID_FILTER_MODE_MASK         = $70    // Mask for SID filter mode bits (low/band/high-pass in $D418)
 

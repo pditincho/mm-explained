@@ -18036,7 +18036,7 @@ allocate_voices_needed:
 .C:4e1e  F0 06       BEQ bit6_clear
 ;-------------------------
 ;Bit 6 set - allocate special voice #3
-.C:4e20  20 D0 4E    JSR allocate_special_voice_3
+.C:4e20  20 D0 4E    JSR allocate_filter_voice
 .C:4e23  4C 29 4E    JMP save_first_voice_index
 ;Bit 6 clear - allocate 1 real voice
 bit6_clear:
@@ -18106,7 +18106,7 @@ test_bit5:
 .C:4e61  90 06       BCC save_pointer_and_offset
 ;-------------------------
 ;Bit 5 set - allocate special voice #3
-.C:4e63  20 D0 4E    JSR allocate_special_voice_3
+.C:4e63  20 D0 4E    JSR allocate_filter_voice
 .C:4e66  20 99 4E    JSR configure_voice_data_stream
 ;------------------------------------------------
 ;Set up the first voice we allocated (back when we tested bit 6)
@@ -18204,7 +18204,7 @@ next_voice:
 ;===========================================
 ; Allocates special voice #03
 ;===========================================
-allocate_special_voice_3:
+allocate_filter_voice:
 .C:4ed0  48          PHA
 .C:4ed1  A2 03       LDX #$03
 .C:4ed3  20 FE 4F    JSR allocate_voice

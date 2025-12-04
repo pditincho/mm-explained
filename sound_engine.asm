@@ -2431,6 +2431,7 @@ amaffv_exit:
         pla
         rts
 
+/*
 procedure sound_irq_handler():
     if sound_processing_disabled_flag:
         return
@@ -2523,8 +2524,6 @@ procedure reset_sound_engine_state():
     # “Music in progress” now matches “music to start”
     music_in_progress_ptr = music_to_start_ptr
 
-
-/*
 
 procedure start_sound_for_voice(logical_voice):
     sound_id = snd_to_start_on_voice[logical_voice]

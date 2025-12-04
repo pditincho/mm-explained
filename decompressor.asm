@@ -199,6 +199,21 @@ C64/6502-specific techniques and optimizations
 .const DIRECT_MODE         = $00    // constant: direct mode selector
 .const RUN_MODE            = $FF    // constant: run mode selector
 
+// -----------------------------------------------------------------------------
+// Decompressor control-byte and dictionary constants
+// -----------------------------------------------------------------------------
+.const DECOMP_DICT4_ENTRY_COUNT      = $04    // Number of dictionary entries
+.const DECOMP_DICT4_LAST_INDEX       = $03    // Highest dictionary entry index (0..3)
+
+// Control-byte classification thresholds
+.const DECOMP_CTRL_DIRECT_LIMIT      = $40    // ctrl < this → DIRECT literal block
+.const DECOMP_CTRL_DICT_THRESHOLD    = $80    // ctrl ≥ this → DICTIONARY RUN
+
+// Control-byte masks for lengths and dictionary index
+.const DECOMP_CTRL_ADHOC_LEN_MASK    = $3F    // Low 6 bits: ad-hoc run length-1
+.const DECOMP_CTRL_DICT_LEN_MASK     = $1F    // Low 5 bits: dict run length-1
+.const DECOMP_CTRL_DICT_INDEX_MASK   = $03    // 2-bit dictionary index mask after shifts
+
 /*
 ================================================================================
   decomp_dict4_init
@@ -222,7 +237,7 @@ Description:
 * = $0104
 decomp_dict4_init:
 		// Copy 4 dictionary bytes from input: Y = 3..0
-		ldy #$03	   
+		ldy #DECOMP_DICT4_LAST_INDEX	   
 
 dict_copy_loop:
 		lda (decomp_src_ptr_lo),Y   	// read source byte at ptr+Y
@@ -235,7 +250,7 @@ dict_copy_loop:
 		// ------------------------------------------------
 		clc
 		lda decomp_src_ptr_lo
-		adc #$04
+		adc #DECOMP_DICT4_ENTRY_COUNT
 		sta decomp_src_ptr_lo
 		lda decomp_src_ptr_hi
 		adc #$00
@@ -297,7 +312,7 @@ decomp_stream_next:
 		jsr decomp_read_src_byte
 		
 		// Classify by top bits
-		cmp #$40
+		cmp #DECOMP_CTRL_DIRECT_LIMIT
 		bcs ctrl_ge_40
 
 		// ------------------------------------------------	   
@@ -311,14 +326,14 @@ decomp_stream_next:
 		jmp set_emit_mode
 
 ctrl_ge_40:
-		cmp #$80
+		cmp #DECOMP_CTRL_DICT_THRESHOLD
 		bcs ctrl_ge_80
 
 		// ------------------------------------------------	   
 		// AD-HOC RUN: $40 ≤ ctrl < $80
 		// Low 6 bits = L (repeat count-1), next byte = literal to repeat
 		// ------------------------------------------------	   
-		and #$3F
+		and #DECOMP_CTRL_ADHOC_LEN_MASK
 		sta decomp_emit_rem	   
 		
 		// Get the literal to repeat
@@ -332,7 +347,7 @@ ctrl_ge_40:
 ctrl_ge_80:
 		// Extract L (run length-1) to counter
 		tax
-		and #$1F		
+		and #DECOMP_CTRL_DICT_LEN_MASK		
 		sta decomp_emit_rem
 		
 		// Recover full ctrl in A
@@ -344,7 +359,7 @@ ctrl_ge_80:
 		lsr 
 		lsr 
 		lsr 
-		and #$03	
+		and #DECOMP_CTRL_DICT_INDEX_MASK	
 		tax
 		
 		// Fetch symbol from dictionary
@@ -484,125 +499,101 @@ skip8_step:
        bne skip8_step
        rts
 /*
-  HYBRID RLE + 4-SYMBOL DICTIONARY DECOMPRESSOR — TEXT FLOW DIAGRAM
-  =================================================================
- 
-  [decomp_dict4_init]
-  ------------------------
-  ENTRY
-    │
-    ├─ Y ← #$03                                			// copy 4 bytes (indices 3..0)
-    ├─ LOOP:  A ← (decomp_src_ptr),Y
-    │         decomp_dict4[Y] ← A
-    │         Y ← Y-1
-    │         IF Y ≥ 0 THEN LOOP
-    │
-    ├─ Advance decomp_src_ptr by +4       				// skip past dictionary
-    │
-    ├─ decomp_emit_rem ← 0
-    ├─ decomp_emit_mode ← 0                     		// clear state
-    └─ RTS
- 
- 
-  [decomp_stream_next]
-  ----------------------------
-  ENTRY
-    │
-    ├─ Save Y into decomp_y_save
-    │
-    ├─ IF decomp_emit_rem ≠ 0 THEN
-    │      ├─ decomp_emit_rem ← decomp_emit_rem - 1  	// continue current op
-    │      └─ GOTO EMIT
-    │
-    ├─ ELSE  (no active op: parse a control byte)
-    │      ├─ ctrl ← decomp_read_src_byte()
-    │      │
-    │      ├─ IF ctrl < $40  (DIRECT) THEN
-    │      │     ├─ decomp_emit_rem ← ctrl        		// L (will emit L+1 total)
-    │      │     ├─ decomp_emit_mode ← $00      		// DIRECT_MODE (bit7=0)
-    │      │     └─ GOTO EMIT
-    │      │
-    │      ├─ IF $40 ≤ ctrl < $80  (AD-HOC RUN) THEN
-    │      │     ├─ decomp_emit_rem ← (ctrl & $3F)       // L
-    │      │     ├─ decomp_run_symbol ← decomp_read_src_byte()
-    │      │     ├─ decomp_emit_mode ← $FF             	// RUN_MODE (bit7=1)
-    │      │     └─ GOTO EMIT
-    │      │
-    │      └─ ELSE  (ctrl ≥ $80 → DICTIONARY RUN)
-    │            ├─ L        ←  ctrl & $1F
-    │            ├─ index    ← (ctrl >> 5) & 3
-    │            ├─ decomp_emit_rem ← L
-    │            ├─ decomp_run_symbol ← decomp_dict4[index]
-    │            ├─ decomp_emit_mode ← $FF             	// RUN_MODE
-    │            └─ GOTO EMIT
-    │
-  EMIT:
-    │  Decide by decomp_emit_mode bit7:
-    │
-    ├─ IF RUN_MODE (bit7=1) THEN
-    │      A ← decomp_run_symbol
-    │
-    ├─ ELSE (DIRECT_MODE, bit7=0)
-    │      A ← decomp_read_src_byte()
-    │
-    ├─ Restore Y from decomp_y_save
-    └─ RTS   											// A = next decompressed byte
- 
- 
-  [decomp_read_src_byte]
-  ---------------------------
-  ENTRY
-    │
-    ├─ A ← (decomp_src_ptr)               				// with Y=0
-    ├─ decomp_src_ptr.low  ← +1
-    ├─ IF low wrapped to 0 THEN
-    │      decomp_src_ptr.high ← +1
-    └─ RTS   											// A = fetched byte
- 
- 
-  [decomp_skip_16bit]
-  ----------------------------
-  ENTRY
-    │
-    ├─ IF decomp_skip_rem == 0 THEN RTS
-    │
-    ├─ LOOP:
-    │     JSR decomp_stream_next       					// discard A
-    │     IF decomp_skip_rem.low == 0 THEN
-    │         decomp_skip_rem.high ← decomp_skip_rem.high - 1
-    │     decomp_skip_rem.low  ← decomp_skip_rem.low - 1
-    │     IF decomp_skip_rem != 0 THEN LOOP
-    │
-    └─ RTS
- 
- 
-  [decomp_skip_8bit]
-  ---------------------------
-  ENTRY
-    │
-    ├─ Y ← decomp_skip_rem.low
-    ├─ IF Y == 0 THEN RTS
-    │
-    ├─ LOOP:
-    │     JSR decomp_stream_next       					// discard A
-    │     Y ← Y - 1
-    │     IF Y ≠ 0 THEN LOOP
-    │
-    └─ RTS
- 
- 
-  FORMAT & STATE (for reference while reading the flow)
-  -----------------------------------------------------
+procedure decomp_dict4_init():
+    # Copy 4 dictionary bytes into decomp_dict4[0..3]
+    for i in 0..3:
+        decomp_dict4[i] = read_byte_at(decomp_src_ptr + i)
+
+    # Advance compressed pointer by 4
+    decomp_src_ptr += 4
+
+    # Reset state: no active operation pending
+    decomp_emit_rem  = 0
+    decomp_emit_mode = DIRECT_MODE
+	
+procedure decomp_stream_next() -> byte:
+    if decomp_emit_rem != 0:
+        # Continue an existing DIRECT/RUN operation
+        decomp_emit_rem -= 1
+        result = emit_by_mode()
+        return result
+
+    # No active operation → parse next control byte
+    ctrl = read_src_byte()
+
+    # -------- DIRECT block --------
+    if ctrl < $40:
+        L = ctrl
+        decomp_emit_rem  = L          # L remaining after first byte
+        decomp_emit_mode = DIRECT_MODE
+        result = emit_by_mode()
+        return result
+
+    # -------- AD-HOC RUN block --------
+    if ctrl < $80:
+        L = ctrl & $3F
+        decomp_emit_rem = L
+        literal         = read_src_byte()
+        decomp_run_symbol = literal
+        decomp_emit_mode  = RUN_MODE
+        result = emit_by_mode()
+        return result
+
+    # -------- DICTIONARY RUN block --------
+    L = ctrl & $1F
+    index = (ctrl >> 5) & 3
+    decomp_emit_rem   = L
+    decomp_run_symbol = decomp_dict4[index]
+    decomp_emit_mode  = RUN_MODE
+    result = emit_by_mode()
+    return result
+
+
+# Shared emission logic
+function emit_by_mode() -> byte:
+    if (decomp_emit_mode bit7) == 1:
+        # RUN mode
+        return decomp_run_symbol
+    else:
+        # DIRECT mode
+        return read_src_byte()
+
+
+function decomp_read_src_byte() -> byte:
+    value = memory[decomp_src_ptr]
+    decomp_src_ptr += 1
+    return value
+
+procedure decomp_skip_16bit():
+    # decomp_skip_rem is a 16-bit “bytes to skip” counter.
+
+    while decomp_skip_rem > 0:
+        ignore = decomp_stream_next()   # advance decompressor by 1 output byte
+        decomp_skip_rem -= 1
+
+
+procedure decomp_skip_8bit():
+    # Only the low 8 bits of decomp_skip_rem are used here.
+    count = (8-bit) decomp_skip_rem
+
+    while count > 0:
+        ignore = decomp_stream_next()   # advance decompressor by 1 output byte
+        count -= 1
+
+  FORMAT & STATE
+  --------------
   • Control byte selects operation and encodes length L (which means “emit L+1 bytes”):
       DIRECT           : 00LLLLLL       (ctrl < $40) → then read (L+1) literal bytes
       AD-HOC RUN       : 01LLLLLL val   ($40..$7F)   → repeat ‘val’ (L+1) times
       DICTIONARY RUN   : 1IILLLLL       (≥ $80)      → index=II (0..3), repeat dict[index] (L+1) times
+	  
   • Internal state across calls:
       decomp_emit_rem     : remaining outputs for the current op (stores L; the routine emits on entry,
                          and pre-decrements on subsequent calls).
       decomp_emit_mode  : $00 (DIRECT) / $FF (RUN); only bit7 is tested at EMIT time.
       decomp_run_symbol : latched at op start for both AD-HOC and DICT runs.
       decomp_y_save           : saves caller’s Y.
+	  
   • Contract: call decomp_dict4_init once (copies 4 bytes, advances input by 4, clears state),
     then call decomp_stream_next repeatedly to stream the output. The skip_* helpers advance
     the same state while discarding data, allowing fast-forwarding within the compressed stream.

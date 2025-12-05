@@ -4,7 +4,7 @@
 #import "constants.inc"
 #import "sentence_action.asm"
 #import "shutter.asm"
-#import "view.asm"
+#import "render_room.asm"
 
 /*
 ================================================================================

@@ -1,9 +1,3 @@
-#importonce
-#import "globals.inc"
-#import "constants.inc"
-#import "masking.asm"
-#import "blit_cel.asm"
-
 /*
 ================================================================================
 Render actor - Overview
@@ -38,7 +32,7 @@ Rendering pipeline
 		- Copies 7 rows per vertical third using copy_offsets lookup.
 		- Writes three bytes per row (one sprite row).
 
-	7. Commit (commit_sprite_y_and_voff_for_bank)
+	7. Commit (commit_sprite_coverage_for_bank)
 		- Writes per-bank Y and offset; mirrors to actor_sprite_y_extent.
 ================================================================================
 
@@ -116,6 +110,12 @@ draw_actor
   
 ================================================================================
 */
+
+#importonce
+#import "globals.inc"
+#import "constants.inc"
+#import "masking.asm"
+#import "blit_cel.asm"
 
 .const VISIBLE_ROW_MAX    = $91     		// last drawable row index (clipping threshold)
 .const TOTAL_LIMBS        = $08		
@@ -244,15 +244,11 @@ mask_bit_patterns:
 ================================================================================
   draw_actor
 ================================================================================
-
 Summary
 	Orchestrate one actor’s frame: prepare costume pointers, compute tile X,
 	bind mask patterns, resolve sprite VRAM base, clear staged rows, draw
 	limbs if visible, apply foreground masking if needed, blit staged rows,
 	and commit sprite X and background color.
-
-Arguments
-	(none)
 
 Global Inputs
 	actor                               current actor index
@@ -263,7 +259,7 @@ Global Inputs
 	limb_cel_list_for_actor_{lo,hi}[]  	limb→cel list pointer per actor
 	actor_ofs_cel_hi_tbl[]				cel HI-table offset per actor
 	actor_vars[]                        flags (bit7 = invisible)
-	actor_box_attr[]             0 = in front, ≠0 = behind FG layer
+	actor_box_attr[]             		0 = in front, ≠0 = behind FG layer
 	character_sprite_bkg_colors[]       per-costume background color
 	mask_bit_patterns                   global mask pattern table
 
@@ -276,9 +272,6 @@ Global Outputs
 	vertical_offset                     cleared to 0 before limb draws
 	actor_sprite_x_{hi,lo}[]            committed sprite X for slot
 	sprite_0_color[]                    committed background color
-
-Returns
-	(none)
 
 Description
 	- setup_costume_for_actor: ensure costume and per-actor pointers are valid.
@@ -446,19 +439,12 @@ skip_draw:
         rts
 /*
 ================================================================================
-setup_costume_for_actor
+  setup_costume_for_actor
 ================================================================================
-
 Summary
         Bind the active costume to its actor. If unchanged, exit. Otherwise
         cache the costume base pointer and per-actor derived pointers:
         graphics base, limb cel list, and animation set list.
-
-Arguments
-	(none)
-
-Returns
-	(none)
 
 Vars / State
         costume_base  			                 Costume resource base pointer (lo/hi).
@@ -504,8 +490,8 @@ setup_costume_for_actor:
         // ----------------------------------------
         ldx     active_costume
         lda     actor_for_costume,x
-        bpl     check_if_new_costume_for_actor   // bit7 clear → valid actor id
-        rts                                       // no actor bound → exit
+        bpl     check_if_new_costume_for_actor   	// bit7 clear → valid actor id
+        rts                                       	// no actor bound → exit
 
 check_if_new_costume_for_actor:
         // ----------------------------------------
@@ -597,19 +583,23 @@ set_new_costume_ptr_for_actor:
         rts
 /*
 ================================================================================
-set_actor_sprite_base
+  set_actor_sprite_base
 ================================================================================
-
 Summary
         Compute the 16-bit VRAM pointer for an actor’s sprite:
         actor_sprite_base = sprite_bank_base + (sprite_index * 64).
 
 Arguments
-        Y					sprite_index (0..N)
+        Y						sprite_index
         sprite_bank_sel 		bank selector (0 → SPRITE_BASE_1, nonzero → SPRITE_BASE_0)
 
+Vars / Tables
+        multiple_64_lo / multiple_64_hi   Precomputed 64*n (lo/hi) for n=0..N.
+        actor_sprite_base                 pointer (lo/hi) to the sprite in VRAM.
+        sprite_bank_sel                     selects bank: 0→SPRITE_BASE_1, ≠0→SPRITE_BASE_0.
+
 Returns
-        actor_sprite_base 				VRAM address of the sprite
+        actor_sprite_base 		VRAM address of the sprite
 
 Description
         - Look up (sprite_index * 64) in stride tables multiple_64_{lo,hi}.
@@ -617,11 +607,6 @@ Description
         - Add the bank’s high byte (from SPRITE_BASE_*), plus the high byte of
           (sprite_index * 64), to produce actor_sprite_base.hi.
         - Banks are page-aligned, so only the high byte needs the base added.
-
-Vars / Tables
-        multiple_64_lo / multiple_64_hi   Precomputed 64*n (lo/hi) for n=0..N.
-        actor_sprite_base                 pointer (lo/hi) to the sprite in VRAM.
-        sprite_bank_sel                     selects bank: 0→SPRITE_BASE_1, ≠0→SPRITE_BASE_0.
 
 ================================================================================
 
@@ -668,9 +653,8 @@ store_ptr_hi:
         rts
 /*
 ================================================================================
-set_sprite_ptr_for_row
+  set_sprite_ptr_for_row
 ================================================================================
-
 Summary
         Compute src_row_ptr = actor_sprite_base + sprite_row_offsets[row].
 
@@ -682,13 +666,12 @@ Inputs
         sprite_row_offsets_lo/hi[]          16-bit per-row byte offsets.
 
 Returns
-        src_row_ptr (zp lo/hi)          Pointer to start of row Y.
+        src_row_ptr (zp lo/hi)          	Pointer to start of row Y.
 
 Description
         Add the 16-bit row offset to the sprite base. CLC before the low-byte
         add allows carry to ripple into the high-byte add, handling page
         crossings correctly.
-
 ================================================================================
 
 Sprite row pointer math and tables (start at logical row 8)
@@ -800,7 +783,6 @@ set_sprite_ptr_for_row:
 ================================================================================
   clear_sprite_visible_rows
 ================================================================================
-
 Summary
 	Clear visible VRAM rows for one sprite slot based on per-bank Y and
 	vertical coverage. Computes top = bottom − voff, clips to the visible
@@ -817,16 +799,12 @@ Global Inputs
 	actor_sprite_base                   base VRAM pointer for sprite
 
 Global Outputs
-	(none)                          
 	writes zeros through (src_row_ptr),Y
 
 ZP / Temps
-	src_row_ptr                 	computed row start (lo/hi)
+	src_row_ptr                 		computed row start (lo/hi)
 	clear_row_idx                   	current row being cleared
 	bottom_row                      	clamped bottom row
-
-Returns
-	(none)
 
 Description
 	- Select banked bounds:
@@ -933,29 +911,26 @@ clear_row_loop:
 		rts                             // Done clearing rows
 /*
 ================================================================================
-compute_cel_ptr
+  compute_cel_ptr
 ================================================================================
-
 Summary
         Resolve absolute pointer to the current limb’s cel bitmap:
         src_cel_ptr = gfx_base + cel_address(cel_id)
 
 Inputs
-        actor_limb_slot_base                 base offset for current actor’s limb bank
+        actor_limb_slot_base            base offset for current actor’s limb bank
         current_limb              		limb selector within the actor
-        limb_frame_idx[]    per-(actor,limb): frame index
-        limb_current_cel[]       			per-(actor,limb): current cel sequence index
+        limb_frame_idx[]    			per-(actor,limb): frame index
+        limb_current_cel[]       		per-(actor,limb): current cel sequence index
         cel_seq_tbl                  	table of lists mapping frame→cel_id
         gfx_base          				graphics section base
         ofs_cel_hi_tbl        			offset to HI-bytes table within graphics section
         ofs_cel_lo_tbl 			        offset to LO-bytes table within graphics section
 
 Outputs
-        src_cel_ptr                 absolute pointer to cel bitmap
-
+        src_cel_ptr                 	absolute pointer to cel bitmap
 ================================================================================
 */
-
 * = $23D8
 compute_cel_ptr:
         // ----------------------------------------
@@ -1015,32 +990,18 @@ compute_cel_ptr:
         rts
 /*
 ================================================================================
- blit_sprite_vthird
+  blit_sprite_vthird
 ================================================================================
-
 Summary
 	Copy one vertical third of a multicolor sprite: 7 rows × 3 bytes.
 	For each selected row, build source and destination pointers, then copy
 	bytes [2],[1],[0] from staged source to destination.
-
-Arguments
-	(none)
-
-Returns
-	(none)
 
 Global Inputs
 	copy_offsets[]                  maps 0..6 → absolute row index
 	src_row_ptr                 	source pointer (built per row)
 	dest_row_ptr                 	destination pointer (src − $0100)
 	saved_x                         temp used to preserve caller’s X
-
-Global Outputs
-	(none)                          writes through (dest_row_ptr),Y only
-
-Calls
-	set_sprite_ptr_for_row          build src_row_ptr for row Y
-	derive_dest_from_src      		set dest_row_ptr = src_row_ptr − $0100
 
 Description
 	- Preserve caller’s X in saved_x.
@@ -1052,18 +1013,14 @@ Description
 		• Copy three bytes in order [2],[1],[0] using (zp),Y.
 		• Increment vthird_row_idx and compare against 7 to continue.
 	- Restore X from saved_x and return.
-
-Notes
-Assumes copy_offsets entries are within the covered row-offset table
-range and adhere to the “logical row 8 = index 0” convention.
 ================================================================================
 */
 * = $23A8
 blit_sprite_vthird:
-		stx     saved_x                  // Preserve caller X for restore after the loop
+		stx     saved_x                 // Preserve caller X for restore after the loop
 		
-		ldx     #$00                     // Initialize loop: first of 7 rows in this vertical third
-		stx     vthird_row_idx           // Save row index in a local var
+		ldx     #$00                    // Initialize loop: first of 7 rows in this vertical third
+		stx     vthird_row_idx          // Save row index in a local var
 
 row_loop:
 		lda     copy_offsets,x          // Load absolute row index for this iteration
@@ -1081,16 +1038,16 @@ row_loop:
 		lda     (src_row_ptr),y     
 		sta     (dest_row_ptr),y     
 
-		inc     vthird_row_idx           // Advance row counter for this vertical third
-		ldx     vthird_row_idx           // Reload X with current row index (0..6)
-		cpx     #$07                     // Have we processed 7 rows yet?
-		bne     row_loop                 // No → iterate
+		inc     vthird_row_idx          // Advance row counter for this vertical third
+		ldx     vthird_row_idx          // Reload X with current row index (0..6)
+		cpx     #$07                    // Have we processed 7 rows yet?
+		bne     row_loop                // No → iterate
 
-		ldx     saved_x                  // Restore caller’s X
+		ldx     saved_x                 // Restore caller’s X
 		rts                              
 /*
 ================================================================================
-derive_dest_from_src
+  derive_dest_from_src
 ================================================================================
 Summary
         Update destination pointer one page before source:
@@ -1118,25 +1075,20 @@ derive_dest_from_src:
         rts
 /*
 ================================================================================
- draw_actor_limbs
+  draw_actor_limbs
 ================================================================================
-
 Summary
 	Render all limbs for the current actor in sequence. Seed the per-draw
 	Y position from the actor, reset per-draw state, resolve each limb’s
 	cel, blit with masking/flip, track maximum vertical coverage, then
 	commit per-bank Y and coverage.
 
-Arguments
-	(none)
-
 Vars/State
 	current_sprite_y_pos            	working Y used by the blitter
-	intercel_vertical_displacement 	per-limb Y displacement accumulator
+	intercel_vertical_displacement 		per-limb Y displacement accumulator
 	sprite_vertical_offset          	max coverage seen during this draw
-	current_limb                    	limb index 0..(TOTAL_LIMBS-1)
+	current_limb                    	limb index
 	current_limb_flip               	cached flip flags for active limb
-	fifth_byte                      	scratch (cleared here)
 
 Global Inputs
 	actor                           	current actor index
@@ -1148,9 +1100,6 @@ Global Outputs
 	current_limb_flip               	updated for each limb
 	current_sprite_y_pos            	adjusted and consumed by blitter
 	sprite_vertical_offset          	final max coverage for this actor
-
-Returns
-	(none)
 
 Description
 	- Initialize current_sprite_y_pos from character_sprite_y[actor].
@@ -1164,10 +1113,9 @@ Description
 		• Update sprite_vertical_offset = max(sprite_vertical_offset,
 		vertical_offset).
 	- After the loop, write Y and coverage into the active sprite bank via
-	commit_sprite_y_and_voff_for_bank.
+	commit_sprite_coverage_for_bank.
 ================================================================================
 */
-
 * = $2356
 draw_actor_limbs:
         // ----------------------------------------
@@ -1241,20 +1189,16 @@ next_limb:
         // ----------------------------------------
         // Finalize per-buffer sprite Y positions
         // ----------------------------------------
-        jsr     commit_sprite_y_and_voff_for_bank
+        jsr     commit_sprite_coverage_for_bank
         rts
 /*
 ================================================================================
-commit_sprite_y_and_voff_for_bank
+  commit_sprite_coverage_for_bank
 ================================================================================
-
 Summary
 	Write the actor’s per-sprite Y position and vertical coverage into the
 	active sprite bank buffers, then mirror the maximum vertical offset for
 	this actor.
-
-Arguments
-	(none)
 
 Global Inputs
 	actor                           current actor index
@@ -1264,12 +1208,9 @@ Global Inputs
 	sprite_vertical_offset          max vertical coverage from limb blits
 
 Global Outputs
-	sprite_y_buf0[], sprite_y_buf1[]        per-sprite Y by bank
-	sprite_voff_buf0[], sprite_voff_buf1[]  per-sprite vertical offset by bank
+	sprite_y_buf0/1[]        		per-sprite Y by bank
+	sprite_voff_buf0/1[]			per-sprite vertical offset by bank
 	actor_sprite_y_extent[]         mirrored per-actor max offset
-
-Returns
-	(none)
 
 Description
 	- Load X with the actor index and Y with its sprite slot.
@@ -1277,13 +1218,10 @@ Description
 	else write to bank 0 buffers.
 	- Mirror sprite_vertical_offset into actor_sprite_y_extent[X] so
 	later stages can query the actor’s vertical coverage for this frame.
-
-Notes
-	Banked buffers enable double-buffered sprite updates without tearing.
-=====================================================================
+================================================================================
 */
 * = $242C
-commit_sprite_y_and_voff_for_bank:
+commit_sprite_coverage_for_bank:
 		// ------------------------------------------------------------
 		// Index selection: X = actor, Y = sprite slot for that actor
 		// ------------------------------------------------------------
@@ -1332,3 +1270,297 @@ save_vertical_offset_for_actor:
 		lda 	sprite_vertical_offset
 		sta 	actor_sprite_y_extent,x
 		rts
+		
+/*		
+procedure draw_actor():
+    // Ensure costume tables and graphics pointers are up to date
+    setup_costume_for_actor()
+
+    actorIndex  = actor
+    spriteSlot  = actor_sprite_index[actorIndex]
+
+    // Compute a tile-space X coordinate from the sprite pixel X
+    xPixels     = actor_tgt_sprite_x[actorIndex]      // 16-bit
+    tileX       = (xPixels >> 3) - 3
+    actor_tile_x_coordinate = tileX
+
+    // Point global mask pointer at the shared mask table
+    global_mask_patterns_ptr = &mask_bit_patterns
+
+    // Bind sprite VRAM base for this slot and bank
+    // (uses spriteBankSel and spriteSlot internally)
+    set_actor_sprite_base(spriteSlot)
+
+    // Load per-actor graphics base
+    gfx_base = actor_gfx_base[actorIndex]
+
+    // Configure cel address tables (offsets within gfx section)
+    ofs_cel_hi_tbl = actor_ofs_cel_hi_tbl[actorIndex]
+    ofs_cel_lo_tbl = constant 2        // skip initial unused entry
+
+    // Bind limb→cel sequence table
+    cel_seq_tbl = actor_cel_seq_tbl[actorIndex]
+
+    // Precompute "actor * numberOfLimbs" stride for limb tables
+    actor_limb_slot_base = actorIndex * TOTAL_LIMBS
+
+    // Clear any previously drawn rows for this sprite slot
+    clear_sprite_visible_rows(spriteSlot)
+
+    // Reset vertical coverage accumulator
+    vertical_offset = 0
+
+    // If actor is marked invisible for this costume, skip drawing
+    if (actor_vars[active_costume] has ACTOR_IS_INVISIBLE bit):
+        goto commit_sprite_state
+
+    // Draw all limbs, track coverage, commit per-bank Y/coverage
+    draw_actor_limbs()
+
+    // If actor is behind foreground layer, apply foreground mask
+    if actor_box_attr[actorIndex] != 0:
+        mask_actor_with_foreground_layer()
+
+    // Copy staged rows into the final sprite memory region
+    blit_sprite_vthird()
+
+commit_sprite_state:
+    // Commit sprite X for this slot (pixel position)
+    spriteSlot  = actor_sprite_index[actorIndex]
+    actor_sprite_x[spriteSlot] = actor_tgt_sprite_x[actorIndex]
+
+    // Commit background color for this slot based on costume
+    costumeIndex = active_costume
+    sprite_0_color[spriteSlot] = character_sprite_bkg_colors[costumeIndex]
+end procedure
+		
+		
+procedure setup_costume_for_actor():
+    costumeIndex = active_costume
+
+    // Is there an actor bound to this costume?
+    actorId = actor_for_costume[costumeIndex]
+    if actorId is "no actor":
+        return
+
+    // Fast path: if cached resource pointer for this costume
+    // already matches the requested costume resource, nothing to do
+    if costume_ptr_tbl[costumeIndex] == active_costume_rsrc[costumeIndex]:
+        return
+
+    // Cache costume base and compute per-actor graphics base
+    costumeBase = costume_ptr_tbl[costumeIndex]
+    actorIndex  = actorId
+
+    costume_base        = costumeBase
+    actor_gfx_base[actorIndex] = costumeBase + headerSize(9 bytes)
+
+    // Update "current costume resource" cache for this costume
+    active_costume_rsrc[costumeIndex] = costumeBase
+
+    // From the costume header, read offsets relative to graphics base:
+    //  +4: cel-address HI table offset (1 byte)
+    //  +5..+6: limb cel sequence table offset (16-bit)
+    //  +7..+8: clip-set table offset (16-bit)
+    header = memory_at(costume_base)
+
+    celHiOffset   = header[4]
+    celSeqOffset  = read16(header[5])
+    clipTblOffset = read16(header[7])
+
+    actor_ofs_cel_hi_tbl[actorIndex] = celHiOffset
+
+    actor_cel_seq_tbl[actorIndex] =
+        actor_gfx_base[actorIndex] + celSeqOffset
+
+    actor_clip_tbl[actorIndex] =
+        actor_gfx_base[actorIndex] + clipTblOffset
+end procedure
+		
+		
+procedure set_actor_sprite_base(spriteIndex):
+    // Lookup (spriteIndex * 64) from tables
+    offset = multiple_64[spriteIndex]   // 16-bit result
+
+    // Low byte of base = low byte of offset
+    actor_sprite_base.low = offset.low
+
+    // High byte of base = offset.high + bankHigh
+    if sprite_bank_sel == 0:
+        bankHigh = highByte(SPRITE_BASE_1)
+    else:
+        bankHigh = highByte(SPRITE_BASE_0)
+
+    actor_sprite_base.high = offset.high + bankHigh
+end procedure
+		
+		
+procedure set_sprite_ptr_for_row(rowIndex):
+    // rowIndex is a logical row (starting at 8)
+    // offset = byte offset of this row within the sprite record (3 * rowIndex)
+    offset = sprite_row_offsets[rowIndex]    // 16-bit
+
+    // src_row_ptr = actor_sprite_base + offset
+    src_row_ptr = actor_sprite_base + offset
+end procedure
+		
+		
+procedure clear_sprite_visible_rows(spriteIndex):
+    // Select per-bank bottom and vertical coverage for this sprite slot
+    if sprite_bank_sel != 0:
+        bottom = sprite_y_buf1[spriteIndex]      // last covered row (exclusive)
+        height = sprite_voff_buf1[spriteIndex]   // number of rows covered
+    else:
+        bottom = sprite_y_buf0[spriteIndex]
+        height = sprite_voff_buf0[spriteIndex]
+
+    // Compute top row index
+    top = bottom - height
+    clear_row_idx = top
+
+    // Clip bottom to visible window [0 .. VISIBLE_ROW_MAX]
+    if bottom > VISIBLE_ROW_MAX:
+        // If the sprite is entirely below the visible window, nothing to clear
+        if top > VISIBLE_ROW_MAX:
+            return
+
+        // Otherwise, clamp bottom to last visible row
+        bottom = VISIBLE_ROW_MAX
+
+        // clear_row_idx already set from 'top', falls through to loop startup
+    else:
+        // bottom is within window; make sure top is not past window
+        if top > VISIBLE_ROW_MAX:
+            clear_row_idx = 0    // clamp to top of window
+
+    // Clear rows from clear_row_idx up to (but not including) bottom
+    row = clear_row_idx
+    while row < bottom:
+        // Build pointer for this row
+        set_sprite_ptr_for_row(row)
+
+        // Clear the 3 bytes that store this sprite's row
+        clear 3 bytes starting at src_row_ptr
+
+        row += 1
+    end while
+end procedure
+		
+		
+procedure compute_cel_ptr():
+    // Compute limb index for this actor
+    limbIndex = actor_limb_slot_base + current_limb
+
+    // Combine frame index and base cel index
+    frame     = limb_frame_idx[limbIndex]
+    baseCel   = limb_current_cel[limbIndex]
+    seqIndex  = frame + baseCel
+
+    // Map frame to cel-id offset using cel sequence table
+    celIndexOffset = cel_seq_tbl[seqIndex]
+
+    // celIndexOffset indexes into a table in the gfx section that holds
+    // HI-byte pointers; add the HI-table offset to find the exact entry
+    hiEntryIndex = gfx_base[celIndexOffset] + ofs_cel_hi_tbl
+
+    // celIndexOffset also feeds into the LO-table: add lo-table offset
+    loEntryIndex = celIndexOffset + ofs_cel_lo_tbl
+
+    // Read relative cel address from LO and HI tables and add gfx_base
+    relLo = gfx_base[loEntryIndex]
+    relHi = gfx_base[hiEntryIndex]
+
+    relativeAddress = combine(relLo, relHi)      // 16-bit offset from gfx_base
+    src_cel_ptr     = gfx_base + relativeAddress
+end procedure
+		
+		
+procedure blit_sprite_vthird():
+    vthird_row_idx = 0
+
+    while vthird_row_idx < 7:
+        // Map local index (0..6) to an absolute row index to copy
+        absoluteRow = copy_offsets[vthird_row_idx]
+
+        // Build source pointer for this row
+        set_sprite_ptr_for_row(absoluteRow)
+
+        // Derive destination pointer as one page before source
+        derive_dest_from_src()
+
+        // Copy 3 bytes of this row from staged buffer to final sprite memory
+        for byteIndex in [2, 1, 0]:
+            dest_row_ptr[byteIndex] = src_row_ptr[byteIndex]
+
+        vthird_row_idx += 1
+    end while
+
+end procedure
+		
+		
+procedure derive_dest_from_src():
+    // dest_row_ptr points to the same offset as src_row_ptr,
+    // but one page (256 bytes) earlier in memory
+    dest_row_ptr = src_row_ptr - 256
+end procedure
+
+
+procedure draw_actor_limbs():
+    actorIndex = actor
+
+    // Seed vertical position from actor's base sprite Y
+    current_sprite_y_pos = character_sprite_y[actorIndex]
+
+    // Reset per-draw state
+    intercel_vertical_displacement  = 0
+    sprite_vertical_offset          = 0
+    current_limb                    = 0
+
+    // Loop over all limbs for this actor
+    while current_limb < TOTAL_LIMBS:
+        // Compute per-limb index for this actor
+        limbIndex = actorIndex * TOTAL_LIMBS + current_limb
+
+        // Cache flip state for this limb
+        current_limb_flip = limb_flip_tbl[limbIndex]
+
+        // Adjust working Y based on inter-cel vertical displacement
+        current_sprite_y_pos -= intercel_vertical_displacement
+
+        // Resolve cel pointer for this limb animation frame
+        compute_cel_ptr()
+
+        // Render limb with masking and flip flags, updating:
+        //   - vertical_offset
+        //   - intercel_vertical_displacement (by convention, in blitter)
+        blit_and_mask_cel()
+
+        // Track maximum vertical coverage so far
+        if vertical_offset > sprite_vertical_offset:
+            sprite_vertical_offset = vertical_offset
+
+        current_limb += 1
+    end while
+
+    // Commit final per-bank Y position and vertical coverage for this actor
+    commit_sprite_coverage_for_bank()
+end procedure
+
+
+procedure commit_sprite_coverage_for_bank():
+    actorIndex = actor
+    spriteSlot = actor_sprite_index[actorIndex]
+
+    // Write Y and vertical coverage into the active sprite bank buffers
+    if sprite_bank_sel != 0:
+        sprite_voff_buf1[spriteSlot] = sprite_vertical_offset
+        sprite_y_buf1[spriteSlot]    = current_sprite_y_pos
+    else:
+        sprite_voff_buf0[spriteSlot] = sprite_vertical_offset
+        sprite_y_buf0[spriteSlot]    = current_sprite_y_pos
+
+    // Mirror max vertical coverage per actor for later consumers
+    actor_sprite_y_extent[actorIndex] = sprite_vertical_offset
+end procedure
+*/
+		

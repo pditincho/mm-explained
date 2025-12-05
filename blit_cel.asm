@@ -890,10 +890,284 @@ blit_next_row:
 
         // Advance to next row and restart blit
         inx
-        stx     current_row_idx      // row_y := row_y + 1
-        ldx     #$00                 // X := 0 (in-row byte selector)
+        stx     current_row_idx     // row_y := row_y + 1
+        ldx     #$00                // X := 0 (in-row byte selector)
         ldy     cel_ofs   			// restore Y (saved read index)
         jmp     $0000 				//blit_dispatch - dispatch to chosen copy/flip path
 
 exit_blit:
         rts
+
+/*
+procedure blit_and_mask_cel():
+    # Reset row-skip state
+    row_skip_needed = False
+    header_read_index = 0
+    cel_ofs = 0
+
+    # --- Parse 3-byte header prefix ---
+    bytes_per_row     = read_byte(cel_ptr + header_read_index); header_read_index += 1
+    vertical_size     = read_byte(cel_ptr + header_read_index); header_read_index += 1
+    horizontal_offset = read_byte(cel_ptr + header_read_index); header_read_index += 1
+
+    # Validate: horizontal_offset + bytes_per_row ≤ 3 (3 bytes per 12-pixel row)
+    if horizontal_offset + bytes_per_row > 3:
+		halt
+
+    # Choose copy/flip variant and horizontal destination byte index
+    select_blit_variant(bytes_per_row,
+                        horizontal_offset,
+                        current_limb_flip)
+
+    # --- Compute vertical range in sprite space ---
+    # current_row_idx: where the cel’s top row lands in sprite Y
+    vertical_offset = read_byte(cel_ptr + header_read_index)
+    header_read_index += 1
+
+    current_row_idx = current_sprite_y_pos - vertical_offset
+
+    # last_row_idx: exclusive bottom bound (current + height)
+    last_row_idx = current_row_idx + vertical_size
+
+    # If bottom ≤ SCREEN_Y_MAX, do simple clamp of start.
+    # If bottom > SCREEN_Y_MAX, perform visibility check (fully below vs partially visible).
+    if last_row_idx <= SCREEN_Y_MAX:
+        clamp_rows_to_screen()
+    else:
+        if current_row_idx <= SCREEN_Y_MAX:
+            clamp_end_to_screenmax()
+        else:
+            return    # fully below screen → nothing to draw
+
+
+procedure clamp_end_to_screenmax():
+    # Bottom exceeds screen, but top is visible: clamp the end.
+    last_row_idx = SCREEN_Y_MAX
+    init_output_and_mask_ptrs()
+
+
+procedure clamp_rows_to_screen():
+    # Called when bottom is within screen. We still need to clamp the top if it’s above.
+    if current_row_idx <= SCREEN_Y_MAX:
+        # Top is not below screen; no special top clamp, proceed.
+        init_output_and_mask_ptrs()
+        return
+
+    # Top is below or at bottom limit → clamp the start to first visible row
+    # rows_to_skip = number of rows to throw away from the input
+    rows_to_skip = current_row_idx - 1
+    current_row_idx = 1         # clamp to top visible row index
+    row_skip_needed = True         # flag that we must skip input rows
+
+    # If, after clamping, the bottom is still above the start, nothing to render
+    if last_row_idx < current_row_idx:
+        return
+
+    init_output_and_mask_ptrs()
+
+
+procedure init_output_and_mask_ptrs():
+    # Compute destination sprite row pointer for current_row_idx
+    sprite_ptr = actor_sprite_base + sprite_row_offsets[current_row_idx]
+
+    # Compute mask_row_ptr from tile row index (current_row_idx // 8)
+    tile_row_index = current_row_idx // 8
+    mask_row_ptr   = mask_row_base(tile_row_index) + mask_row_debug_offset
+
+    # Read header bytes 4 and 5 (5th is unused, 6th is intercel vertical offset)
+    header_read_index += 1
+    fifth_byte = read_byte(cel_ptr + header_read_index)
+    header_read_index += 1
+    intercel_vertical_displacement = read_byte(cel_ptr + header_read_index)
+
+    # Move cel_ptr from header start to first pixel byte
+    # (header_read_index currently points to last header byte; add header_read_index+1)
+    cel_ptr = cel_ptr + (header_read_index + 1)
+
+    handle_row_skip()
+
+
+procedure handle_row_skip():
+    if not row_skip_needed:
+        goto next_row
+
+    # Skip 'rows_to_skip' rows of input pixels
+    remaining_rows = rows_to_skip
+    while remaining_rows > 0:
+        # For each row, skip bytes_per_row bytes of cel data
+        remaining_bytes = bytes_per_row
+        while remaining_bytes > 0:
+            cel_ptr += 1
+            remaining_bytes -= 1
+
+        remaining_rows -= 1
+
+    # After skipping, proceed to first visible row
+    next_row()
+
+
+procedure next_row():
+    # Enter the row-blitting loop
+    blit_next_row()
+
+
+procedure select_blit_variant(bytes_per_row, horizontal_offset, flip_flag):
+    # Save header_read_index (Y) to restore later
+    saved_read_ofs = header_read_index
+
+    if flip_flag:
+        # Configure flipped blit
+        blit_dispatch = flip_entry_table[bytes_per_row]
+
+        # Flipped layout is right-anchored: choose where the first byte lands
+        horizontal_byte_offset = 2 - horizontal_offset
+    else:
+        # Configure normal (non-flipped) blit
+        blit_dispatch = copy_entry_table[bytes_per_row]
+
+        # Non-flipped layout: last cel byte + horizontal offset
+        # (if bytes_per_row==0, we won’t use this; zero-width dispatch
+        #  bypasses the write anyway).
+        horizontal_byte_offset = (bytes_per_row - 1) + horizontal_offset
+
+    # Restore header_read_index and store horizontal_byte_offset
+    header_read_index = saved_read_ofs
+    horizontal_byte_offset_global = horizontal_byte_offset
+
+    # Configure mask dispatch based on width
+    mask_dispatch = mask_entry_table[bytes_per_row]
+
+
+# All three use shared state:
+#   cel_ptr  : pointer to current cel row byte
+#   header_read_index (Y-equivalent): index within cel data
+#   X        : in-row byte index (0..2)
+#   blit_bytes[0..2]: staging buffer for this row
+
+procedure copy_row_3bytes():
+    # Called when bytes_per_row == 3
+    blit_bytes[ X ] = read_byte(cel_ptr + header_read_index); X += 1; header_read_index += 1
+    # falls through to copy_row_2bytes
+
+procedure copy_row_2bytes():
+    # Called when bytes_per_row >= 2
+    blit_bytes[ X ] = read_byte(cel_ptr + header_read_index); X += 1; header_read_index += 1
+    # falls through to copy_row_1byte
+
+procedure copy_row_1byte():
+    # Called when bytes_per_row >= 1
+    blit_bytes[ X ] = read_byte(cel_ptr + header_read_index); X += 1; header_read_index += 1
+
+    # Save updated read index for next row
+    cel_ofs = header_read_index
+
+    # Then perform mask/composite for this row
+    dispatch_mask_after_copy()
+
+
+procedure dispatch_mask_after_copy():
+    # Just reuse the flip dispatch’s mask entry; in code this jumps to the
+    # common label used by flipped path as well.
+    dispatch_mask_after_flip()
+
+
+# For flipped rows, each source byte is looked up in flipped_patterns[]
+# to get the horizontally mirrored bit pattern.
+
+procedure flip_row_3bytes():
+    # bytes_per_row == 3
+    src = read_byte(cel_ptr + header_read_index)
+    blit_bytes[2] = flipped_patterns[src]
+    header_read_index += 1
+    # falls through to flip_row_2bytes
+
+procedure flip_row_2bytes():
+    src = read_byte(cel_ptr + header_read_index)
+    blit_bytes[1] = flipped_patterns[src]
+    header_read_index += 1
+    # falls through to flip_row_1byte
+
+procedure flip_row_1byte():
+    src = read_byte(cel_ptr + header_read_index)
+    blit_bytes[0] = flipped_patterns[src]
+    header_read_index += 1
+
+    # Save updated read index for next row
+    cel_ofs = header_read_index
+
+    dispatch_mask_after_flip()
+
+
+procedure dispatch_mask_after_flip():
+    # Position within the sprite row where the rightmost cel byte is written
+    y_index = horizontal_byte_offset_global
+
+    # Call the appropriate mask routine chosen earlier
+    mask_dispatch(y_index)
+
+
+# Common conventions:
+#   sprite_ptr points to the start of the destination sprite row
+#   y_index    is the byte index within that row (0..2), initially set so that
+#              blit_bytes[2] aligns with the rightmost destination byte.
+
+procedure apply_mask_3bytes(y_index):
+    # Rightmost byte
+    src = blit_bytes[2]
+    mask = sprite_mask_patterns[src]
+    dst  = sprite_ptr[y_index]
+    sprite_ptr[y_index] = (dst & mask) | src
+    y_index -= 1
+
+    # fall through to 2-byte version
+
+procedure apply_mask_2bytes(y_index):
+    # Middle byte
+    src = blit_bytes[1]
+    mask = sprite_mask_patterns[src]
+    dst  = sprite_ptr[y_index]
+    sprite_ptr[y_index] = (dst & mask) | src
+    y_index -= 1
+
+    # fall through to 1-byte version
+
+procedure apply_mask_1byte(y_index):
+    # Leftmost byte
+    src = blit_bytes[0]
+    mask = sprite_mask_patterns[src]
+    dst  = sprite_ptr[y_index]
+    sprite_ptr[y_index] = (dst & mask) | src
+
+    # After masking, advance to next output row
+    advance_output_row()
+
+
+procedure advance_output_row():
+    # If we've reached the last row, stop.
+    if current_row_idx == last_row_idx:
+        exit_blit()
+        return
+
+    # Recompute sprite_ptr for this row index
+    row_index = current_row_idx
+    sprite_ptr = actor_sprite_base + sprite_row_offsets[row_index]
+
+    blit_next_row()
+
+
+procedure blit_next_row():
+    # Loop guard: stop if we've already rendered the last row
+    if current_row_idx == last_row_idx:
+        return
+
+    # Move to the next row
+    current_row_idx += 1
+
+    # Reset in-row cursor and cel read offset
+    in_row_byte_index = 0
+    header_read_index = cel_ofs
+
+    # Dispatch to copy/flip handler chosen earlier
+    blit_dispatch()
+
+*/

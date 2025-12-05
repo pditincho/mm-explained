@@ -52,7 +52,7 @@ Description
 Notes
         Relies on helpers from included modules:
         - random.asm        → generate_random_byte
-        - view.asm          → clear_view_buffers, video/register symbols
+        - render_room.asm          → clear_view_buffers, video/register symbols
         - save_game.asm     → load_state_from_disk, save_state_to_disk
         - ops_primitives.asm/script_primitives.asm → operand readers, utilities
 ================================================================================
@@ -83,7 +83,7 @@ Notes
 #import "ops_primitives.asm"
 #import "entry_point.asm"
 #import "random.asm"
-#import "view.asm"
+#import "render_room.asm"
 #import "save_game.asm"
 
 /*

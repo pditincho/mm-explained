@@ -17,12 +17,9 @@ Private routines
         decode_object_gfx          Resolve source, trim to viewport, emit three layers.
         decode_trimmed_window      Row-wise decode with left/right stream skips.
 
-Dependencies
-        decompressor.asm     	   stream decoder
-
 Global Inputs
         current_room                      Active room id.
-        room_obj_count             Loop basis (implementation must match count vs last-index).
+        room_obj_count             		  Loop basis (implementation must match count vs last-index).
         room_ptr_lo/hi_tbl				  Per-room base pointer tables.
         room_obj_id_lo/hi_tbl			  Map room slot → object INDEX (lo) and immutability flag (hi).
         object_attributes[]               Per-object attribute byte; bit7 = OVERLAY_MASK.
@@ -133,20 +130,16 @@ Example B (living room): Old rusty key (hanging) from the glass chandelier
 
 /*
 ================================================================================
-render_room_objects
+  render_room_objects
 ================================================================================
-
 Summary
         Scan room objects in descending order. Render only those flagged for
         overlay redraw and whose ancestor chain satisfies the required overlay
         state. Visibility on viewport is checked before decoding.
 
-Arguments
-        None (uses globals and tables; X/A/Y are scratch)
-
 Global Inputs
         current_room                   Active room id used to load room base pointer.
-        room_obj_count          Loop basis. 
+        room_obj_count          	   Loop basis. 
         room_ptr_lo/hi_tbl             Per-room base pointer tables (lo/hi).
         room_obj_id_lo_tbl             Map from loop slot to object ID used by
                                        object_attributes[] lookups.
@@ -157,12 +150,6 @@ Global Inputs
         ancestor_overlay_req_tbl       Per-object required ancestor overlay state
                                        ($00 require clear, $80 require set).
 									   
-Vars/State
-        draw_candidate_idx        		Saved candidate object index for render test.
-        ancestor_overlay_req       		Required ancestor overlay state ($00 or $80).
-        room_rsrc_base            		Active room base pointer (lo/hi) for resource access.
-
-
 Description
         - Early exit if room has no objects.
         - Load room_rsrc_base from current_room.
@@ -184,97 +171,96 @@ render_room_objects:
         // ----------------------------------------
         // Early out if room has zero objects
         // ----------------------------------------
-        ldx     room_obj_count        // Load room object last-index/count; Z=1 if zero
-        bne     load_room_base_ptr           // X != 0 → proceed with setup and loop
-        rts                                  // No objects → return early
+        ldx     room_obj_count        		// Load room object last-index/count; Z=1 if zero
+        bne     load_room_base_ptr          // X != 0 → proceed with setup and loop
+        rts                                 // No objects → return early
 
 load_room_base_ptr:
         // ----------------------------------------
         // Refresh room_rsrc_base = room_ptr[current_room] 
         // ----------------------------------------
-        ldx     current_room                 // X := current room id
-        lda     room_ptr_lo_tbl,x            // A := room base lo
-        sta     room_rsrc_base               // room_rsrc_base.lo = A
-        lda     room_ptr_hi_tbl,x            // A := room base hi
-        sta     room_rsrc_base + 1               // room_rsrc_base.hi = A
+        ldx     current_room                // X := current room id
+        lda     room_ptr_lo_tbl,x           // A := room base lo
+        sta     room_rsrc_base              // room_rsrc_base.lo = A
+        lda     room_ptr_hi_tbl,x           // A := room base hi
+        sta     room_rsrc_base + 1          // room_rsrc_base.hi = A
 
         // ----------------------------------------
         // Main scan loop: X := last index (descending)
 		// Note: X is indexing per-room objects (not global object IDs)
         // ----------------------------------------
-        ldx     room_obj_count        // Initialize descending loop: X = last object index (or count-1)
+        ldx     room_obj_count        		// Initialize descending loop: X = last object index (or count-1)
 
 scan_objects_desc:
         // ----------------------------------------
         // Immutable cull: objects with nonzero index_hi are always pre-baked in the background
         // ----------------------------------------
-        lda     room_obj_id_hi_tbl,x       		 // Fetch immutability flag/high index byte
-        bne     advance_to_prev_object       // ≠0 → immutable → skip
+        lda     room_obj_id_hi_tbl,x       	// Fetch immutability flag/high index byte
+        bne     advance_to_prev_object      // ≠0 → immutable → skip
 
         // ----------------------------------------
         // If the object is not requiring an overlay drawing, cull it
         // - obj_idx := room_obj_id_lo_tbl[X]
         // - if (object_attributes[obj_idx] & OVERLAY_MASK) == 0 → skip
         // ----------------------------------------
-        ldy     room_obj_id_lo_tbl,x      		// Y := object index mapped from X
+        ldy     room_obj_id_lo_tbl,x      	// Y := object index mapped from X
         lda     object_attributes,y         // A := attributes; N reflects bit7 (OVERLAY_MASK)
         bpl     advance_to_prev_object      // N=0 → bit7 clear → skip candidate
 
         // ----------------------------------------
         // Mark this X as draw candidate
         // ----------------------------------------
-        stx     draw_candidate_idx           	  // Save X as candidate to test/draw
+        stx     draw_candidate_idx          // Save X as candidate to test/draw
 
 climb_parent_chain_check:
-        lda     ancestor_overlay_req_tbl,x        // Load required ancestor overlay state
-        sta     ancestor_overlay_req              // Save requirement for upcoming compare
+        lda     ancestor_overlay_req_tbl,x  // Load required ancestor overlay state
+        sta     ancestor_overlay_req        // Save requirement for upcoming compare
 
-        lda     parent_idx_tbl,x                  // Load parent INDEX (0 = no parent)
-        bne     fetch_parent_and_test             // Nonzero → check parent’s overlay state against requirement
+        lda     parent_idx_tbl,x            // Load parent INDEX (0 = no parent)
+        bne     fetch_parent_and_test       // Nonzero → check parent’s overlay state against requirement
 
         // No parent → ancestor test passes; proceed to visibility/render
         jmp     test_and_render_candidate
 
 fetch_parent_and_test:
-        tay                                     // Y := parent INDEX (1..N)
-        lda     room_obj_id_lo_tbl,y                 // A := parent OBJECT-ID from map (index→id)
-        tax                                     // X := parent OBJECT-ID for next lookup
+        tay                                 // Y := parent INDEX (1..N)
+        lda     room_obj_id_lo_tbl,y        // A := parent OBJECT-ID from map (index→id)
+        tax                                 // X := parent OBJECT-ID for next lookup
 
-        lda     object_attributes,x             // A := parent attributes (addressed by ID here)
-        and     #OVERLAY_MASK                   // check overlay state
-        cmp     ancestor_overlay_req            // does it match required state?
-        bne     cull_candidate                  // no → cull original candidate
+        lda     object_attributes,x         // A := parent attributes (addressed by ID here)
+        and     #OVERLAY_MASK               // check overlay state
+        cmp     ancestor_overlay_req        // does it match required state?
+        bne     cull_candidate              // no → cull original candidate
 
-        tya                                     // X := parent INDEX to continue climb
+        tya                                 // X := parent INDEX to continue climb
         tax
-        jmp     climb_parent_chain_check        // check next ancestor
+        jmp     climb_parent_chain_check    // check next ancestor
 
 cull_candidate:
         // ----------------------------------------
         // Skip this candidate and resume the descending loop
         // ----------------------------------------
-        ldx     draw_candidate_idx            // restore loop index for step/branch
-        jmp     advance_to_prev_object        // continue scan
+        ldx     draw_candidate_idx          // restore loop index for step/branch
+        jmp     advance_to_prev_object      // continue scan
 
 test_and_render_candidate:
         // ----------------------------------------
         // Visibility gate on X; render only if intersects viewport
         // ----------------------------------------
-        ldx     draw_candidate_idx            // restore candidate index for draw
-        jmp     render_object_if_visible      // decode/draw if visible this frame
+        ldx     draw_candidate_idx          // restore candidate index for draw
+        jmp     render_object_if_visible    // decode/draw if visible this frame
 
 advance_to_prev_object:
         // ----------------------------------------
         // Loop step: X := X-1; continue until X == 0
         // ----------------------------------------
-        dex                             // move to previous object index
-        bne     scan_objects_desc       // X != 0 → keep scanning
-        rts                             // X == 0 → done
+        dex                             	// move to previous object index
+        bne     scan_objects_desc       	// X != 0 → keep scanning
+        rts                             	// X == 0 → done
 /*
 ================================================================================
 render_object_if_visible
 ================================================================================
-
 Summary
 	Frustum-cull on the X axis against the current viewport and decode the
 	object’s graphics only if its X span intersects the visible window.
@@ -500,17 +486,14 @@ ns_culled:
 
 /*
 ============================================================================
-decode_object_gfx 
+  decode_object_gfx 
 ============================================================================
-Decode one object’s compressed graphics into three layers (tiles, color, mask). 
-Trim horizontally to the viewport and optionally collapse to a single column on scroll.
+Summary
+	Decode one object’s compressed graphics into three layers (tiles, color, mask). 
+	Trim horizontally to the viewport and optionally collapse to a single column on scroll.
 
 Arguments
 	- X		Object index.
-
-Returns
-	- None.
-	- On return: X restored from decompress_candidate. A,Y undefined.
 
 Global Inputs
 	- room_rsrc_base 			Base of room data (lo/hi).
@@ -557,7 +540,6 @@ Description
 
 ============================================================================
 */
-
 * = $3D87
 decode_object_gfx:
         // ------------------------------------------------------------
@@ -590,10 +572,10 @@ decode_object_gfx:
 		clc                                 
 		lda     room_rsrc_base            // A := room_rsrc_base.lo
 		adc     obj_gfx_ptr_tbl,y         // A := lo(base) + lo(offset)
-		sta     decomp_src_ptr_lo           // decomp_src_ptr.lo := result
-		lda     room_rsrc_base + 1            // A := room_rsrc_base.hi
+		sta     decomp_src_ptr_lo         // decomp_src_ptr.lo := result
+		lda     room_rsrc_base + 1        // A := room_rsrc_base.hi
 		adc     obj_gfx_ptr_tbl+1,y       // A := hi(base) + hi(offset) + C
-		sta     decomp_src_ptr_hi           // decomp_src_ptr.hi := result
+		sta     decomp_src_ptr_hi         // decomp_src_ptr.hi := result
 
         // ------------------------------------------------------------
         // Compute left trim: max(0, viewport_left_col - obj_left_col)           
@@ -670,9 +652,9 @@ trims_finalized:
         // ------------------------------------------------------------
 		ldy     obj_top_row               // Y := row index to draw at
 		lda     screen_row_offsets_hi,y   // A := row offset hi byte
-		sta     screen_row_offset + 1        // save hi
+		sta     screen_row_offset + 1     // save hi
 		lda     screen_row_offsets_lo,y   // A := row offset lo byte
-		sta     screen_row_offset        // save lo
+		sta     screen_row_offset         // save lo
 
         // ------------------------------------------------------------
         // Compute starting column offset:                            
@@ -686,9 +668,9 @@ trims_finalized:
 		adc     src_skip_left
 		clc                               // add column delta to row base offset
 		adc     screen_row_offset
-		sta     screen_row_offset        // update row base offset (lo)
+		sta     screen_row_offset         // update row base offset (lo)
 		bcc     start_decode              // no carry → hi unchanged
-		inc     screen_row_offset + 1      // carry → bump row base offset (hi)
+		inc     screen_row_offset + 1     // carry → bump row base offset (hi)
 
 start_decode:	
 
@@ -699,34 +681,34 @@ start_decode:
 		clc                               // compute dst := base + offset
 		lda     screen_row_offset
 		adc     frame_buffer_base
-		sta     destination_ptr          // dst.lo
+		sta     destination_ptr           // dst.lo
 		lda     screen_row_offset + 1
 		adc     frame_buffer_base + 1
-		sta     destination_ptr + 1          // dst.hi
+		sta     destination_ptr + 1       // dst.hi
 		jsr     decode_trimmed_window     // blit visible window into pixel layer
 
         // ------------------------------------------------------------
         // Layer 2: color - dst := COLOR_LAYER base + row_offset                  
         // ------------------------------------------------------------
 		clc                               
-		lda     screen_row_offset        // A := row_offset.lo
+		lda     screen_row_offset         // A := row_offset.lo
 		adc     #<COLOR_LAYER_COL_0       // add base lo
-		sta     destination_ptr          // dst.lo
-		lda     screen_row_offset + 1        // A := row_offset.hi
+		sta     destination_ptr           // dst.lo
+		lda     screen_row_offset + 1     // A := row_offset.hi
 		adc     #>COLOR_LAYER_COL_0       // add base hi + carry
-		sta     destination_ptr + 1          // dst.hi
+		sta     destination_ptr + 1       // dst.hi
 		jsr     decode_trimmed_window     // blit visible window into color layer
 
         // ------------------------------------------------------------
         // Layer 3: mask - dst := MASK_LAYER base + row_offset                   
         // ------------------------------------------------------------
 		clc                               
-		lda     screen_row_offset        // A := row_offset.lo
+		lda     screen_row_offset         // A := row_offset.lo
 		adc     #<MASK_LAYER_COL_0        // add base lo
-		sta     destination_ptr          // dst.lo
-		lda     screen_row_offset + 1        // A := row_offset.hi
+		sta     destination_ptr           // dst.lo
+		lda     screen_row_offset + 1     // A := row_offset.hi
 		adc     #>MASK_LAYER_COL_0        // add base hi + carry
-		sta     destination_ptr + 1          // dst.hi
+		sta     destination_ptr + 1       // dst.hi
 		jsr     decode_trimmed_window     // blit visible window into mask layer
 
         // ------------------------------------------------------------
@@ -734,45 +716,23 @@ start_decode:
         // ------------------------------------------------------------
 		ldx     decompress_candidate      // restore object index (X)
 		rts                               // return
-
 /*
 ================================================================================
-decode_trimmed_window
+  decode_trimmed_window
 ================================================================================
 Summary
-
   Decode a rectangular window from the decompression stream into a destination
   buffer laid out in 40-byte rows. For each output row, skip a left margin,
   decode cols_to_draw bytes, then skip a right margin.
 
-Arguments
-
-  None (uses globals).
-
-Vars/State
-
-  obj_rows_remaining     loop counter for remaining rows
-  decomp_skip_rem    byte count consumed by decomp_skip_8bit
-
 Global Inputs
-
   src_skip_left      bytes to skip before each row in the stream
   src_skip_right     bytes to skip after each row in the stream
   cols_to_draw       number of bytes to decode per row
   rows_to_draw       number of rows to output
   destination_ptr    ZP pointer to start of current destination row
 
-Global Outputs
-
-  destination_ptr  	advanced by ROW_STRIDE after each row (net: height * stride)
-  (destination_ptr + k*ROW_STRIDE + 0..cols_to_draw-1) written with bytes
-
-Returns
-
-  Nothing. A and Y clobbered; X preserved.
-
 Description
-
   • For each row:
     - Skip src_skip_left decoded bytes via decomp_skip_8bit.
     - Decode cols_to_draw bytes with decomp_stream_next into destination_ptr[Y].
@@ -793,7 +753,7 @@ decode_trimmed_window:
         // Initialize loop: obj_rows_remaining ← rows_to_draw             
         // ------------------------------------------------------------
 		lda     rows_to_draw             // A := requested row count
-		sta     obj_rows_remaining           // seed row loop counter
+		sta     obj_rows_remaining       // seed row loop counter
 
 skip_left_margin:
         // ------------------------------------------------------------
@@ -820,9 +780,9 @@ decode_row_loop:
 		lda     <destination_ptr         // A := dst_lo
 		clc                              // prepare unsigned add
 		adc     #ROW_STRIDE              // add row stride (40 bytes)
-		sta     destination_ptr         // store new dst_lo
+		sta     destination_ptr          // store new dst_lo
 		bcc     skip_right_margin        // no carry → hi byte unchanged
-		inc     destination_ptr + 1         // carry → bump dst_hi
+		inc     destination_ptr + 1      // carry → bump dst_hi
 
 skip_right_margin:
         // ------------------------------------------------------------
@@ -835,7 +795,225 @@ skip_right_margin:
         // ------------------------------------------------------------
         // Loop over rows                                              
         // ------------------------------------------------------------
-		dec     obj_rows_remaining           // one row completed
+		dec     obj_rows_remaining       // one row completed
 		bne     skip_left_margin         // more rows pending → next row
 		rts                              // done
 
+/*
+procedure render_room_objects():
+    if room_obj_count == 0:
+        return
+
+    # Base pointer for all per-room object graphics
+    roomIndex      = current_room
+    room_rsrc_base = room_ptr_tbl[roomIndex]     # 16-bit base pointer
+
+    # Walk room objects from highest index down to 1
+    for roomObjIndex from room_obj_count down to 1:
+        # Immutable object? (baked into background)
+        if room_obj_id_hi_tbl[roomObjIndex] != 0:
+            continue
+
+        # Map room object index → object index
+        objIndex = room_obj_id_lo_tbl[roomObjIndex]
+
+        # Only overlay objects are candidates
+        attrs = object_attributes[objIndex]
+        if (attrs & OVERLAY_MASK) == 0:
+            continue
+
+        # This candidate’s ancestor requirement bit (0 or OVERLAY_MASK)
+        requiredOverlayBit = ancestor_overlay_req_tbl[roomObjIndex]
+
+        # Walk ancestor chain in room-object index space
+        parentIndex = parent_idx_tbl[roomObjIndex]
+        visibleThroughAncestors = true
+
+        while parentIndex != 0:
+            parentRoomObjIndex = parentIndex
+            parentObjIndex     = room_obj_id_lo_tbl[parentRoomObjIndex]
+            parentAttrs        = object_attributes[parentObjIndex]
+            parentOverlayBit   = parentAttrs & OVERLAY_MASK
+
+            if parentOverlayBit != requiredOverlayBit:
+                visibleThroughAncestors = false
+                break
+
+            # Climb to next ancestor in room-object index space
+            parentIndex = parent_idx_tbl[parentRoomObjIndex]
+
+        if not visibleThroughAncestors:
+            continue
+
+        # All ancestors satisfy the overlay requirement → try to draw
+        render_object_if_visible(roomObjIndex)
+end procedure
+
+
+procedure render_object_if_visible(roomObjIndex):
+    # Geometry in tile units (columns)
+    objLeft  = obj_left_col_tbl[roomObjIndex]
+    objWidth = obj_width_tbl[roomObjIndex]
+    objRight = objLeft + objWidth          # exclusive right edge
+
+    leftEdge  = viewport_left_col          # inclusive
+    rightEdge = viewport_right_col         # inclusive edge used in tests
+
+    scrollFlag = screen_scroll_flag        # $00 = scroll right, $FF = scroll left,
+                                           # otherwise "no scroll"
+
+    if scrollFlag == $00:
+        # Scrolling right: only redraw when object crosses the right edge
+        # rule: objLeft ≤ rightEdge AND objRight > rightEdge
+        if objLeft > rightEdge:
+            return
+        if objRight <= rightEdge:
+            return
+
+        decode_object_gfx(roomObjIndex)
+
+    elif scrollFlag == $FF:
+        # Scrolling left: only redraw when object crosses the left edge
+        # rule: objLeft ≤ leftEdge AND objRight > leftEdge
+        if objLeft > leftEdge:
+            return
+        if objRight <= leftEdge:
+            return
+
+        decode_object_gfx(roomObjIndex)
+
+    else:
+        # No scroll: redraw whenever object overlaps viewport window
+        # rule: objLeft ≤ rightEdge AND objRight > leftEdge
+        if objLeft > rightEdge:
+            return
+        if objRight <= leftEdge:
+            return
+
+        decode_object_gfx(roomObjIndex)
+end procedure
+
+
+procedure decode_object_gfx(roomObjIndex):
+    # Basic geometry (tiles)
+    objLeft   = obj_left_col_tbl[roomObjIndex]
+    objTop    = obj_top_row_tbl[roomObjIndex]
+    objWidth  = obj_width_tbl[roomObjIndex]
+    objHeight = obj_height_tbl[roomObjIndex]
+
+    # Source: pointer into room resource for this object’s compressed graphics
+    # (each object has a 16-bit offset relative to room_rsrc_base)
+    offset = obj_gfx_ptr_tbl[roomObjIndex]    # 16-bit relative
+    decomp_src_ptr = room_rsrc_base + offset  # compressed stream pointer
+
+    # -------------------------------------------------------------------------
+    # Horizontal trimming against viewport
+    # -------------------------------------------------------------------------
+    leftEdge  = viewport_left_col
+    rightEdge = viewport_right_col        # inclusive
+
+    # Trim on the left: how many columns lie entirely before the viewport?
+    src_skip_left = leftEdge - objLeft
+    if src_skip_left < 0:
+        src_skip_left = 0
+
+    # Compute right-trim:
+    # inclusive right edge of the object, then excess past viewport
+    objRightInclusive = objLeft + (objWidth - 1)
+    src_skip_right    = objRightInclusive - rightEdge
+    if src_skip_right < 0:
+        src_skip_right = 0
+
+    # Visible columns
+    cols_to_draw = objWidth - src_skip_left - src_skip_right
+    # (guaranteed ≥ 1 due to earlier visibility tests)
+
+    # -------------------------------------------------------------------------
+    # Scroll-collapse: when scrolling, only draw the newly exposed edge column
+    # -------------------------------------------------------------------------
+    scrollFlag = screen_scroll_flag
+
+    if scrollFlag == $00:
+        # Scrolling right: draw only the rightmost visible column.
+        # Shift left skip forward so we land at the last column.
+        src_skip_left = src_skip_left + (cols_to_draw - 1)
+        cols_to_draw  = 1
+
+    elif scrollFlag == $FF:
+        # Scrolling left: draw only the leftmost visible column.
+        # Shift right skip forward so we land at the first column.
+        src_skip_right = src_skip_right + (cols_to_draw - 1)
+        cols_to_draw   = 1
+
+    # -------------------------------------------------------------------------
+    # Destination: starting row offset and horizontal displacement
+    # -------------------------------------------------------------------------
+    # Row base offset (in bytes) for the top row of the object
+    rowOffset = screen_row_offsets[objTop]      # e.g., 40 * objTop
+
+    # Horizontal offset from viewport left:
+    #   (object left minus viewport left) + src_skip_left
+    colOffset = (objLeft - leftEdge) + src_skip_left
+
+    # Base offset for the first destination cell in all layers
+    screen_row_offset = rowOffset + colOffset
+
+    # -------------------------------------------------------------------------
+    # Decode into three layers: tiles, color, and mask
+    # -------------------------------------------------------------------------
+    rows_to_draw = objHeight
+
+    # 1) Tile layer
+    decomp_dict4_init()    # initialize dictionary once at start
+    destination_ptr = frame_buffer_base + screen_row_offset
+    decode_trimmed_window(cols_to_draw, rows_to_draw,
+                          src_skip_left, src_skip_right,
+                          destination_ptr)
+
+    # 2) Color layer
+    destination_ptr = COLOR_LAYER_COL_0 + screen_row_offset
+    decode_trimmed_window(cols_to_draw, rows_to_draw,
+                          src_skip_left, src_skip_right,
+                          destination_ptr)
+
+    # 3) Mask layer (foreground mask index layer)
+    destination_ptr = MASK_LAYER_COL_0 + screen_row_offset
+    decode_trimmed_window(cols_to_draw, rows_to_draw,
+                          src_skip_left, src_skip_right,
+                          destination_ptr)
+end procedure
+
+
+procedure decode_trimmed_window(cols_to_draw,
+                                rows_to_draw,
+                                src_skip_left,
+                                src_skip_right,
+                                destination_ptr):
+    # cols_to_draw > 0 is assumed by callers.
+
+    rowCount = rows_to_draw
+
+    while rowCount > 0:
+        # 1) Skip left margin in the decoded stream
+        decomp_skip_rem = src_skip_left
+        decomp_skip_8bit()            # discard src_skip_left decoded bytes
+
+        # 2) Decode visible window for this row
+        col = 0
+        while col < cols_to_draw:
+            byte = decomp_stream_next()
+            destination_ptr[col] = byte
+            col += 1
+
+        # 3) Advance destination pointer to next row (40 columns per row)
+        destination_ptr += VIEW_COLS      # typically 40
+
+        # 4) Skip right margin in the decoded stream
+        decomp_skip_rem = src_skip_right
+        decomp_skip_8bit()
+
+        rowCount -= 1
+    end while
+end procedure
+
+*/

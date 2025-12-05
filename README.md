@@ -117,6 +117,7 @@ This an index of what each file represents:
 | **random.asm** | Pseudo-random number generator |
 | **render_actor.asm** | Onscreen rendering of actors |
 | **render_object.asm** | Onscreen rendering of objects |
+| **render_room.asm** | Room viewport rendering and scrolling |
 | **room_gfx_rsrc.asm** | Room rendering helpers |
 | **room_loader.asm** | Room resource loader |
 | **rsrc_mgmt.asm** | General resource loader (costumes, sounds, scripts, objects) |
@@ -131,7 +132,6 @@ This an index of what each file represents:
 | **start_game.asm** | Game start/restart helpers |
 | **ui_interaction.asm** | UI handlers for verbs, objects, sentence bar |
 | **ui_messages.asm** | UI message rendering for the top bar |
-| **view.asm** | Room viewport rendering and scrolling |
 | **voice_allocation.asm** | Virtual voice allocator |
 | **voice_scheduler.asm** | Voice scheduler for the sound engine |
 | **walkbox_dfs.asm** | Walkbox DFS path search |
@@ -248,7 +248,7 @@ Each method offers a different perspective, and you can switch between them as n
 * `actor_sprites` - Sprite allocation, mapping, draw ordering
 * `render_actor` - Actor drawing
 * `render_object` - Object drawing
-* `view` - Viewport rendering and scrolling
+* `render_room` - Room viewport rendering and scrolling
 * `camera` - Camera positioning
 * `flashlight` - Flashlight beam rendering
 * `shutter` - Shutter open/close transitions

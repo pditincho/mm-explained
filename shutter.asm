@@ -1,42 +1,63 @@
 /*
 ================================================================================
-  shutter.asm — Screen shutter transition system
+Shutter transition system
 ================================================================================
+
 Credits: @enthusi for figuring out the logic of this module.
 
 Summary
-        Implements the horizontal and vertical "shutter" effect used for room
-        transitions. The system supports both closing and opening sequences,
-        alternates between double-buffered frame buffers, and synchronizes
-        with raster IRQ timing for smooth animation.
+	This module implements a tile-based “shutter” room transition that opens or
+	closes a rectangular frame around the viewport. It drives a perimeter sweep
+	over a rectangle in tile coordinates, shrinking or expanding it over several
+	iterations while either blacking out tiles (closing) or copying them from an
+	off-screen frame buffer (opening).
 
-Modules
-        - open_shutter: triggers the opening transition and unhides the cursor.
-        - configure_shutter_buffers_and_colors: sets up source/destination frame
-          buffers and optional color RAM initialization.
-        - do_shutter_effect: animates the shutter’s perimeter over multiple passes.
-        - plot_one_tile_of_shutter_effect: plots a single tile cell per edge step.
-        - copy_vic_color_ram_wrapper: safely updates $D800 color RAM.
-        - ensure_raster_irq_ready: guarantees raster IRQ environment readiness.
+Global Inputs
+	frame_buffer               Selects which view buffer is currently active
+	shutter_direction_flag     Selects closing vs opening behavior
+	shutter_delta_table        Table of initial rectangle bounds, per-edge deltas,
+	                           and iteration count for each shutter mode
 
-Globals
-        shutter_direction_flag   0=closing, ≠0=opening
-        frame_buffer             active frame buffer selector
-        dst_buffer_ptr, src_buffer_ptr
-        color_ram_ptr, color_ram_page_ptr
-        rect_left_x..rect_bottom_y, rect_left_dx..rect_bottom_dy
-        shutter_iter_count       iteration counter for perimeter passes
+Global Outputs
+	dst_buffer_ptr             Destination frame-buffer base for the effect
+	src_buffer_ptr             Source frame-buffer base (opening mode only)
+	color_ram_ptr              Pointer to color-layer data used during opening
+	color_ram_page_ptr         Pointer to tile/bitmap data used during opening
+	rect_left_x..rect_bottom_y Current shutter rectangle bounds in tile units
+	rect_left_dx..rect_bottom_dy Per-edge signed deltas applied each iteration
+	shutter_iter_count         Remaining iterations for the active shutter run
+	hide_cursor_flag           Cleared when the opening effect finishes
+	view frame buffers         Tile bytes updated along the animated rectangle
+	VIC color RAM              Refreshed from prepared tables when opening
 
 Description
-        - Provides visual transitions between scenes using tile-by-tile rectangle
-          expansion or contraction (shutter motion).
-        - Uses two precomputed delta-table entries that define edge bounds,
-          signed per-edge increments, and iteration counts.
-        - Opening sequence reveals previous image and optionally restores color RAM.
-        - Closing sequence masks current view and prepares the next frame buffer.
-
+	- Configures source and destination frame buffers based on frame_buffer and
+	  shutter_direction_flag:
+	    • Closing: only dst_buffer_ptr is set; tiles are overwritten with black.
+	    • Opening: dst_buffer_ptr selects the new visible buffer, src_buffer_ptr
+	      selects the other buffer to reveal from, and VIC color RAM is updated
+	      from prepared room color data.
+	- Loads rectangle parameters from shutter_delta_table into rect_* and
+	  shutter_iter_count:
+	    • Initial left/top/right/bottom tile coordinates.
+	    • Signed per-edge deltas that control how the rectangle grows or shrinks.
+	    • A finite iteration count for the animation.
+	- On each animation step:
+	    • Waits for a safe raster window so drawing does not interfere with the
+	      display.
+	    • Walks the current rectangle perimeter in four legs (top, right,
+	      bottom, left), calling plot_one_tile_of_shutter_effect(x,y) at each
+	      tile along the edges.
+	    • plot_one_tile_of_shutter_effect computes the row base in the selected
+	      frame buffers and either writes a black tile (closing) or copies the
+	      tile from the source buffer to the destination (opening).
+	    • After one full sweep, applies the per-edge deltas to shrink or expand
+	      the rectangle and decrements shutter_iter_count.
+	- Repeats perimeter sweeps until shutter_iter_count reaches zero, at which
+	  point the shutter is fully closed or fully open and the effect terminates.
 ================================================================================
 */
+
 #importonce
 #import "constants.inc"
 #import "irq_handlers.asm"
@@ -498,3 +519,142 @@ exit_plot_tile:
         tay
         rts
 
+
+/*
+function open_shutter():
+    directionFlag = SHUTTER_OPEN      // non-zero
+    tableIndex    = DELTA_TABLE_OPEN_OFS  // selects entry #1 in table
+
+    do_shutter_effect(directionFlag, tableIndex)
+
+    // After the effect is done, show the cursor again
+    hide_cursor_flag = FALSE
+
+
+function configure_shutter_buffers_and_colors():
+    if shutter_direction_flag == 0:
+        // -------------------------
+        // Closing path
+        // -------------------------
+        if frame_buffer == 1:
+            // closing: draw into buffer 0
+            dst_buffer_ptr = VIEW_FRAME_BUF_0
+        else:
+            // closing: draw into buffer 1
+            dst_buffer_ptr = VIEW_FRAME_BUF_1
+
+        // No source buffer and no VIC color init needed on close
+    else:
+        // -------------------------
+        // Opening path
+        // -------------------------
+        if frame_buffer == 1:
+            // opening: dst = buffer 1, src = buffer 0
+            dst_buffer_ptr = VIEW_FRAME_BUF_1
+            src_buffer_ptr = VIEW_FRAME_BUF_0
+        else:
+            // opening: dst = buffer 0, src = buffer 1
+            dst_buffer_ptr = VIEW_FRAME_BUF_0
+            src_buffer_ptr = VIEW_FRAME_BUF_1
+
+        // Initialize VIC color RAM from prepared RAM tables
+        // (preserve X register in real code; abstracted away here)
+        copy_vic_color_ram_wrapper()
+
+    // Common tail: seed RAM pointers used by drawing code
+    color_ram_ptr       = COLOR_LAYER_COL_0   // color-layer metadata in RAM
+    color_ram_page_ptr  = TILE_DEFS_ADDR      // tile/bitmap base in RAM
+
+
+function do_shutter_effect(directionFlag, tableIndex):
+    // Save direction and configure buffers/colors
+    shutter_direction_flag = directionFlag
+    configure_shutter_buffers_and_colors()
+
+    // -------------------------------------------
+    // Load rectangle + delta + iteration params
+    // from the selected entry in shutter_delta_table.
+    // tableIndex is 0 for closing, 9 for opening.
+    // -------------------------------------------
+    entry = shutter_delta_table[tableIndex / DELTA_TABLE_ENTRY_SIZE]
+
+    rect_left_x      = entry[0]
+    rect_top_y       = entry[1]
+    rect_right_x     = entry[2]
+    rect_bottom_y    = entry[3]
+    rect_left_dx     = entry[4]
+    rect_top_dy      = entry[5]
+    rect_right_dx    = entry[6]
+    rect_bottom_dy   = entry[7]
+    shutter_iter_count = entry[8]
+
+    // -------------------------------------------
+    // Main animation loop
+    // -------------------------------------------
+    while shutter_iter_count > 0:
+        // Ensure we are in a safe raster window to draw
+        ensure_raster_irq_ready()
+
+        // Seed top-left corner of rectangle
+        x = rect_left_x
+        y = rect_top_y
+
+        // 1) Top edge: (left,top) → (right,top), stepping X increasing
+        plot_one_tile_of_shutter_effect(x, y)
+        while x != rect_right_x:
+            x += 1
+            plot_one_tile_of_shutter_effect(x, y)
+
+        // 2) Right edge: (right,top) → (right,bottom), stepping Y increasing
+        while y != rect_bottom_y:
+            y += 1
+            plot_one_tile_of_shutter_effect(x, y)
+
+        // 3) Bottom edge: (right,bottom) → (left,bottom), stepping X decreasing
+        while x != rect_left_x:
+            x -= 1
+            plot_one_tile_of_shutter_effect(x, y)
+
+        // 4) Left edge: (left,bottom) → (left,top), stepping Y decreasing
+        while y != rect_top_y:
+            y -= 1
+            plot_one_tile_of_shutter_effect(x, y)
+
+        // ---------------------------------------
+        // Apply signed deltas to all four edges
+        // (in order: left, top, right, bottom)
+        // ---------------------------------------
+        rect_left_x   += rect_left_dx
+        rect_top_y    += rect_top_dy
+        rect_right_x  += rect_right_dx
+        rect_bottom_y += rect_bottom_dy
+
+        // Countdown passes
+        shutter_iter_count -= 1
+    // when count reaches 0, rectangle has fully opened/closed
+
+
+function plot_one_tile_of_shutter_effect(x, y):
+    // Conceptual view: we want pixel/tile at (x,y) in the
+    // destination buffer, possibly copying from the source buffer.
+
+    // Compute row offset for this tile row (Y * 40 bytes per row)
+    rowOffset = screen_row_offsets[y]   // precomputed Y*40
+
+    // Build per-row pointers for this row
+    src_tile_ptr = src_buffer_ptr + rowOffset    // row base in source
+    dst_tile_ptr = dst_buffer_ptr + rowOffset    // row base in destination
+
+    // Column index is x; the tile cell address is base + x
+    srcAddr = src_tile_ptr + x
+    dstAddr = dst_tile_ptr + x
+
+    if shutter_direction_flag == 0:
+        // Closing: write black
+        writeByte(dstAddr, 0x00)
+    else:
+        // Opening: copy one byte from source to dest
+        value = readByte(srcAddr)
+        writeByte(dstAddr, value)
+
+*/    

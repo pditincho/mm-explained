@@ -1,3 +1,33 @@
+/*
+================================================================================
+Flashlight window system
+================================================================================
+
+Summary
+	This module renders a small “flashlight” window into the active frame buffer,
+	either clearing the region to darkness or revealing pixels from the off-screen
+	buffer. It converts beam coordinates into a clamped 4×6 character window and
+	uses a self-modifying blit loop for per-frame updates.
+
+Description
+	- Maintains a pair of pointers (flashlight_src / flashlight_dest)
+	  that track matching source/destination row bases in the two frame buffers.	  
+	- Normalizes incoming beam coordinates (X,Y) so they represent the top-left
+	  corner of the flashlight window, including a raster→row conversion for Y.
+	- Clamps the window origin so the 4×6 region always stays within the visible
+	  40×25 character grid, using bounds chosen to avoid table overruns.
+	- Chooses source/destination frame bases based on frame_buffer, treating the
+	  “current” buffer as the draw target and the “other” buffer as the light
+	  source to copy from.
+	- Computes per-row start addresses via screen_row_offsets[Y] and patches the
+	  operand bytes of absolute,X LDA/STA instructions so the inner loop runs
+	  with minimal per-pixel address arithmetic.
+	- Implements a nested Y/X loop over a fixed 4×6 window: in copy mode it
+	  copies bytes from the source frame; in clear mode it writes zeros, thus
+	  carving a lit window out of an otherwise darkened scene.
+	  
+================================================================================
+*/
 #importonce
 #import "globals.inc"
 #import "constants.inc"
@@ -285,3 +315,88 @@ blit_store_to_dst:
         bpl     blit_row_loop
 
         rts
+
+/*
+function clear_flashlight_area():
+    // Read current beam position (in whatever units the engine uses)
+    beamX = flashlight_beam_x
+    beamY = flashlight_beam_y
+
+    mode = FLASH_MODE_CLEAR   // clear window to darkness
+
+    update_flashlight_window(mode, beamX, beamY)
+
+
+function draw_flashlight_area():
+    beamX = flashlight_beam_x
+    beamY = flashlight_beam_y
+
+    mode = FLASH_MODE_COPY    // copy lit pixels from source frame
+
+    update_flashlight_window(mode, beamX, beamY)
+
+
+function update_flashlight_window(mode, beamX, beamY):
+    // ----------------------------------------------------------------
+    // Step 1: normalize beam coordinates to window origin
+    // ----------------------------------------------------------------
+    // Convert Y from raster-ish units to row index
+    normalizedY = (beamY >> 2) - FLASH_NORMALIZE_OFFSET
+    normalizedX = beamX - FLASH_NORMALIZE_OFFSET
+
+    // ----------------------------------------------------------------
+    // Step 2: choose frame buffer pairing
+    // ----------------------------------------------------------------
+    if frame_buffer == 1:
+        // Current visible frame is buffer 1; draw into it, read from 2
+        destBase = FRAMEBUF1_BASE
+        srcBase  = FRAMEBUF2_BASE
+    else:
+        // Current visible frame is buffer 2; draw into it, read from 1
+        destBase = FRAMEBUF2_BASE
+        srcBase  = FRAMEBUF1_BASE
+
+    // ----------------------------------------------------------------
+    // Step 3: clamp window origin so the 4×6 window stays on-screen
+    // ----------------------------------------------------------------
+    // Horizontal clamp: ensure [X .. X + (FLASH_WIN_WIDTH - 1)] is inside row
+    if normalizedX < FLASH_X_CLAMP_MIN:
+        normalizedX = FLASH_X_CLAMP_MIN
+    else if normalizedX > FLASH_X_CLAMP_MAX:
+        normalizedX = FLASH_X_CLAMP_MAX
+
+    // Vertical clamp: ensure [Y .. Y + (FLASH_WIN_HEIGHT - 1)] is inside screen.
+    // The real code uses a slightly odd signed/V-flag path; final effect is:
+    if normalizedY < FLASH_Y_CLAMP_MIN:
+        normalizedY = FLASH_Y_CLAMP_MIN
+    else if normalizedY > FLASH_Y_CLAMP_MAX:
+        normalizedY = FLASH_Y_CLAMP_MAX
+
+    // ----------------------------------------------------------------
+    // Step 4: compute starting addresses for top row
+    // ----------------------------------------------------------------
+    // screen_row_offsets[Y] gives the row’s byte offset from the buffer base.
+    rowOffset = screen_row_offsets[normalizedY]
+
+    // Top-left cell of the flashlight window in video RAM
+    destRowBase = destBase + rowOffset + normalizedX
+    srcRowBase  = srcBase  + rowOffset + normalizedX
+
+    // ----------------------------------------------------------------
+    // Step 5: blit the 4×6 window
+    // ----------------------------------------------------------------
+    for row = 0 to FLASH_WIN_HEIGHT - 1:
+        // For each row, copy/clear FLASH_WIN_WIDTH consecutive bytes
+        for col = 0 to FLASH_WIN_WIDTH - 1:
+            if mode == FLASH_MODE_COPY:
+                value = readByte(srcRowBase + col)
+            else:  // FLASH_MODE_CLEAR
+                value = 0
+
+            writeByte(destRowBase + col, value)
+
+        // Advance to next text row in both buffers (stride = SCREEN_COLS_PER_ROW)
+        destRowBase += SCREEN_COLS_PER_ROW
+        srcRowBase  += SCREEN_COLS_PER_ROW
+
+*/

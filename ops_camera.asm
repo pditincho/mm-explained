@@ -180,4 +180,40 @@ script_cam_follow_costume:
 		jsr     refresh_script_addresses_if_moved
 		rts
 
+/*
+procedure op_cam_seek_to()
+    // Force camera into pan mode
+    cam_mode = CAM_MODE_PAN
 
+    // Read target position operand from script
+    target_pos = script_load_operand_bit7()
+
+    // Delegate to core camera seek logic
+    cam_seek_to(target_pos)
+
+procedure op_set_camera_pan_goal()
+    // Force camera into pan mode
+    cam_mode = CAM_MODE_PAN
+
+    // Read target position operand from script
+    target_pos = script_load_operand_bit7()
+
+    // Set target pan position for incremental camera updates
+    cam_pan_goal = target_pos
+
+procedure op_cam_follow_costume()
+    // Read costume index operand from script
+    costume_index = script_load_operand_bit7()
+
+    // Conceptual fall-through
+    script_cam_follow_costume(costume_index)
+
+procedure script_cam_follow_costume(costume_index)
+    // Lock camera onto actor associated with this costume
+    cam_follow_costume(costume_index)
+
+    // If resources or the room load repositioned scripts in memory,
+    // refresh script instruction pointers
+    refresh_script_addresses_if_moved()
+
+*/

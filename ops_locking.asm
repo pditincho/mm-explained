@@ -153,3 +153,101 @@ op_unlock_room:
 		and     #MASK_CLEAR_BIT7    // clear bit7
 		sta     room_liveness_tbl,x    // commit unlock
 		rts                         
+
+/*
+procedure op_lock_sound()
+    // Read sound index from script
+    sound_index = script_read_byte()
+
+    // Get current attributes and set lock bit
+    attrs = sound_liveness_tbl[sound_index]
+    attrs = attrs OR MASK_BIT7
+
+    // Store updated attributes
+    sound_liveness_tbl[sound_index] = attrs
+
+
+procedure op_unlock_sound()
+    // Read sound index from script
+    sound_index = script_read_byte()
+
+    // Get current attributes and clear lock bit
+    attrs = sound_liveness_tbl[sound_index]
+    attrs = attrs AND MASK_CLEAR_BIT7
+
+    // Store updated attributes
+    sound_liveness_tbl[sound_index] = attrs
+
+
+procedure op_lock_script()
+    // Read script index from script
+    script_index = script_read_byte()
+
+    // Get current attributes and set lock bit
+    attrs = script_liveness_tbl[script_index]
+    attrs = attrs OR MASK_BIT7
+
+    // Store updated attributes
+    script_liveness_tbl[script_index] = attrs
+
+
+procedure op_unlock_script()
+    // Read script index from script
+    script_index = script_read_byte()
+
+    // Get current attributes and clear lock bit
+    attrs = script_liveness_tbl[script_index]
+    attrs = attrs AND MASK_CLEAR_BIT7
+
+    // Store updated attributes
+    script_liveness_tbl[script_index] = attrs
+
+
+procedure op_lock_costume()
+    // Read costume index from script
+    costume_index = script_read_byte()
+
+    // Get current attributes and set lock bit
+    attrs = costume_liveness_tbl[costume_index]
+    attrs = attrs OR MASK_BIT7
+
+    // Store updated attributes
+    costume_liveness_tbl[costume_index] = attrs
+
+
+procedure op_unlock_costume()
+    // Read costume index from script
+    costume_index = script_read_byte()
+
+    // Get current attributes and clear lock bit
+    attrs = costume_liveness_tbl[costume_index]
+    attrs = attrs AND MASK_CLEAR_BIT7
+
+    // Store updated attributes
+    costume_liveness_tbl[costume_index] = attrs
+
+
+procedure op_lock_room()
+    // Read room index from script
+    room_index = script_read_byte()
+
+    // Get current attributes and set lock bit
+    attrs = room_liveness_tbl[room_index]
+    attrs = attrs OR MASK_BIT7
+
+    // Store updated attributes
+    room_liveness_tbl[room_index] = attrs
+
+
+procedure op_unlock_room()
+    // Read room index from script
+    room_index = script_read_byte()
+
+    // Get current attributes and clear lock bit
+    attrs = room_liveness_tbl[room_index]
+    attrs = attrs AND MASK_CLEAR_BIT7
+
+    // Store updated attributes
+    room_liveness_tbl[room_index] = attrs
+
+*/

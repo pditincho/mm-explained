@@ -426,3 +426,156 @@ op_put_costume_in_room:
 		sta     costume_room_idx,x
 		rts
 
+/*
+procedure op_walk_costume_to_immovable_object()
+    walk_costume_to_object_common(space = "room_object")
+
+
+
+procedure op_walk_costume_to_movable_object()
+    walk_costume_to_object_common(space = "inventory_object")
+
+
+
+procedure walk_costume_to_object_common(space)
+    // space = "room_object" (immovable) or "inventory_object" (movable)
+
+    // Read which costume will walk
+    active_costume = read_costume_index_from_script()
+
+    // Read which object to walk to (low byte only)
+    object_index = read_object_index_from_script()
+
+    // Try to resolve object data in the requested space
+    // (returns a status and sets internal pointers if found)
+    status = resolve_object_resource(space, object_index)
+
+    if status == OBJ_NOT_FOUND then
+        // No object → nothing happens
+        return
+    end if
+
+    // Compute an approach point near the object (fills target_x/target_y)
+    set_approach_point_for_object()
+
+    // Ask the pathing system to walk this costume to (target_x, target_y)
+    set_costume_target(active_costume, target_x, target_y)
+
+
+procedure op_put_costume_at_immovable_object()
+    put_costume_at_object_common(space = "room_object")
+
+
+
+procedure op_put_costume_at_movable_object()
+    put_costume_at_object_common(space = "inventory_object")
+
+
+
+procedure put_costume_at_object_common(space)
+    // Read which costume we will teleport
+    active_costume = read_costume_index_from_script()
+
+    // Read object index (low byte)
+    object_index = read_object_index_from_script()
+
+    // Resolve the object in the requested space
+    status = resolve_object_resource(space, object_index)
+
+    if status != OBJ_NOT_FOUND then
+        // Object exists → derive coordinates near it
+        set_approach_point_for_object()
+        // target_x / target_y now hold the destination
+    else
+        // Object missing → use fallback coordinates
+        target_x = COSTUME_FALLBACK_X_DEST
+        target_y = COSTUME_FALLBACK_Y_DEST
+    end if
+
+    // Use costume’s current room as the destination room
+    target_room = costume_room_idx[active_costume]
+
+    // Place costume at (target_x, target_y) in target_room
+    place_costume_at_target(active_costume, target_x, target_y, target_room)
+
+    // If any resource loads moved memory, repair script pointers
+    refresh_script_addresses_if_moved()
+
+
+procedure op_walk_costume_to_costume()
+    // Read the “moving” costume index
+    moving_costume = read_costume_index_from_script()
+    active_costume = moving_costume
+
+    // Resolve its actor slot
+    moving_actor = actor_for_costume[moving_costume]
+    if moving_actor is unassigned then
+        // No actor for this costume; skip the following 16-bit offset
+        skip_signed_offset_in_script()
+        return
+    end if
+
+    // Read the “target” costume index
+    target_costume = read_secondary_costume_index_from_script()
+
+    // Resolve the target’s actor slot
+    target_actor = actor_for_costume[target_costume]
+    if target_actor is unassigned then
+        // Consume the following data byte (offset) and return; no movement
+        discard_one_script_byte()
+        return
+    end if
+
+    // Read unsigned approach offset from script
+    offset = read_byte_from_script()
+
+    // Store both +offset and its negative for later approach logic
+    actor_approach_x_offset_pos_byte = offset
+    actor_approach_x_offset_neg_byte = two_complement(offset)
+
+    // Compute destination near target_actor using the approach offsets
+    set_approach_point_for_actor(moving_actor, target_actor,
+                                 actor_approach_x_offset_pos_byte,
+                                 actor_approach_x_offset_neg_byte)
+
+    // Ask pathing to walk moving_costume’s actor to that destination
+    set_costume_target(moving_costume, target_x, target_y)
+
+
+procedure op_walk_costume_to_location()
+    // Read costume and explicit coordinates
+    active_costume = read_costume_index_from_script()
+    target_x       = read_x_operand_from_script()
+    target_y       = read_y_operand_from_script()
+
+    // Pathfind and queue a walk to (target_x, target_y)
+    set_costume_target(active_costume, target_x, target_y)
+
+
+procedure op_put_costume_at()
+    // Read costume and explicit coordinates
+    active_costume = read_costume_index_from_script()
+    target_x       = read_x_operand_from_script()
+    target_y       = read_y_operand_from_script()
+
+    // Get the costume’s current room
+    target_room = costume_room_idx[active_costume]
+
+    // Teleport costume to (target_x, target_y) in this room
+    place_costume_at_target(active_costume, target_x, target_y, target_room)
+
+    // Fix up any script pointers if memory moved
+    refresh_script_addresses_if_moved()
+
+
+procedure op_put_costume_in_room()
+    // Read which costume to remap
+    costume_index = read_costume_index_from_script()
+
+    // Read the target room index
+    room_index = read_room_index_from_script()
+
+    // Update mapping table
+    costume_room_idx[costume_index] = room_index
+
+*/

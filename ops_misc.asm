@@ -613,3 +613,206 @@ op_stop_current_script:
 * = $6AD9
         ldx     #$00                           // X := 0 → current script slot
         jmp     dispatch_stop_by_index         // tail-call stop handler
+
+/*
+procedure op_interrupt_script()
+    // Compute relocatable interrupted PC = task_pc - script_base
+    interrupted_pc = task_pc - script_base
+
+    // Store relocatable PC
+    interrupted_pc_lo = low_byte(interrupted_pc)
+    interrupted_pc_hi = high_byte(interrupted_pc)
+
+    // Remember which script was interrupted
+    interrupted_script_index = task_cur_idx
+
+    // Discard next three bytes in the stream:
+    //  - 1 raw byte
+    //  - 2-byte offset via helper
+    discard_byte = script_read_byte()
+    script_skip_offset()      // skips two more bytes
+
+procedure op_get_new_random()
+    // Destination game variable index
+    dest_var = script_read_byte()
+
+    // Seed index (opcode bit7 + script operand)
+    seed_index = script_load_operand_bit7()
+
+    // Generate random byte using seed index
+    random_value = generate_random_byte(seed_index)
+
+    // Store result into game_vars[dest_var]
+    game_vars[dest_var] = random_value
+
+
+
+procedure op_set_script_pause_counters()
+    // Use current task index for all 3 counters
+    task_index = task_cur_idx
+
+    // Read and set pause_counter_3, _2, _1
+    pause_counter_3[task_index] = script_read_byte()
+    pause_counter_2[task_index] = script_read_byte()
+    pause_counter_1[task_index] = script_read_byte()
+
+    // Mark task paused and hand off to pause handler
+    task_state_tbl[task_index] = TASK_STATE_PAUSED
+    op_pause_task()   // does not return to caller in normal flow
+
+
+
+procedure op_set_lights()
+    // Read lights mode into global state
+    global_lights_state = script_load_operand_bit7()
+
+    if global_lights_state == LIGHTS_ENVIRONMENT_ON then
+        // Environment lit
+        mcolor0 = 0x0A
+        mcolor1 = 0x00
+    else
+        // Environment dark: clear scene and use “dark” colors
+        clear_view_buffers()
+        mcolor0 = 0x00
+        mcolor1 = 0x0B
+    end if
+
+    // Commit sprite multicolors
+    vic_sprite_mcolor0_reg = mcolor0
+    vic_sprite_mcolor1_reg = mcolor1
+
+    // Reset camera position
+    cam_current_pos = CAM_DEFAULT_POS
+
+
+
+procedure op_save_load_game()
+    // Prepare raster/sound state and select save-game disk side
+    init_raster_and_sound_state()
+    active_side_id = GAME_DISK_ID_SAVEGAME
+
+    // Destination game var index for status code
+    dest_var = script_read_byte()
+
+    // Operation selector from script (value semantics per code, not header)
+    selector = script_load_operand_bit7()
+
+    if selector == 0x01 then
+        // Per implementation: selector == 1 → LOAD
+        status = load_state_from_disk()
+    else
+        // Any other value → SAVE
+        status = save_state_to_disk()
+    end if
+
+    // Store status byte
+    game_vars[dest_var] = status
+
+    // Fix up any moved scripts and re-init raster IRQ environment
+    refresh_script_addresses_if_moved()
+    init_raster_irq_env()
+
+
+
+procedure op_restart_game()
+    // Prepare for room transition and load the kid-select room
+    prepare_video_for_new_room()
+    switch_to_room(ROOM_IDX_START)
+
+    // Reset CPU stack pointer
+    set_stack_pointer(0xFF)
+
+    // Jump to full engine reset
+    reset_game_engine()
+
+
+
+procedure op_setup_sprites_and_sound()
+    // Initialize raster, sprites, and sound controller state
+    init_raster_and_sound_state()
+
+
+
+procedure op_raster_setup()
+    // Initialize raster IRQ configuration for the engine
+    init_raster_irq_env()
+
+
+
+procedure op_do_sentence()
+    // Advance to next slot in sentence stack
+    sentstk_top_idx = sentstk_top_idx + 1
+    slot = sentstk_top_idx
+
+    // Verb
+    verb_id = script_read_byte()
+    stacked_verb_ids[slot] = verb_id
+
+    // Configure helper with current opcode to interpret operands
+    input_opcode = opcode
+
+    // Resolve direct object (DO)
+    (do_lo, do_hi) = get_script_object_for_sentence(input_opcode)
+    stacked_do_id_lo[slot] = do_lo
+    stacked_do_id_hi[slot] = do_hi
+
+    // Prepare for indirect object (IO) resolution
+    input_opcode = input_opcode << 1   // encode “second object mode”
+    (io_lo, io_hi) = get_script_object_for_sentence(input_opcode)
+
+    // Store IO and placeholder preposition
+    stacked_io_id_lo[slot] = io_lo
+    stacked_prep_ids[slot] = io_lo     // preposition placeholder
+    stacked_io_id_hi[slot] = io_hi
+
+    // No direct return value; sentence stack now has verb, DO, IO, prep
+
+
+
+procedure op_is_sound_playing()
+    // Destination variable index
+    dest_var = script_read_byte()
+
+    // Sound index (opcode bit7 + operand)
+    sound_index = script_load_operand_bit7()
+
+    // Attribute byte; bits 6..0 hold some refcount
+    attrs = sound_liveness_tbl[sound_index]
+    refcount = attrs AND 0x7F
+
+    // Store masked refcount; nonzero means sound is playing
+    game_vars[dest_var] = refcount
+
+
+
+procedure op_is_script_running()
+    // Destination variable index
+    dest_var = script_read_byte()
+
+    // Script index to test
+    target_script = script_load_operand_bit7()
+
+    // Scan task slots X = TASK_MAX_INDEX .. 1
+    result = FALSE
+    for slot from TASK_MAX_INDEX down_to 1 do
+        if task_script_idx_tbl[slot] == target_script then
+            // (The load of task_state_tbl[slot] in code is unused)
+            result = TRUE
+            break
+        end if
+    end for
+
+    // Store boolean result (00/01) into game vars
+    if result == TRUE then
+        game_vars[dest_var] = TRUE
+    else
+        game_vars[dest_var] = FALSE
+    end if
+
+
+
+procedure op_stop_current_script()
+    // X = 0 tells the dispatcher to stop “current script” slot
+    dispatch_stop_by_index(0)
+
+*/

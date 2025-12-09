@@ -1103,3 +1103,387 @@ write_name_from_script_loop:
         // ------------------------------------------------------------
         jsr     refresh_inventory
         rts
+
+/*
+procedure script_is_object_attr_bit_clear(bitmask)
+    // bitmask comes in as A
+    obj_bitmask = bitmask
+
+    // Read attributes of the “current” object in this script context
+    attrs = script_read_object_attributes()
+
+    // Test selected bits
+    test = attrs AND obj_bitmask
+
+    if test != 0 then
+        // Bit is set → condition is “true” → skip following offset
+        script_skip_offset()
+    else
+        // Bit is clear → condition is “false” → apply signed offset
+        op_displace_pointer()
+    end if
+
+
+
+procedure script_is_object_attr_bit_set(bitmask)
+    // bitmask comes in as A
+    obj_bitmask = bitmask
+
+    // Read attributes of the “current” object in this script context
+    attrs = script_read_object_attributes()
+
+    // Test selected bits
+    test = attrs AND obj_bitmask
+
+    if test == 0 then
+        // Bit is clear → condition “true” for the *set* test
+        // (this helper is wired so “set” means: skip when bit is clear)
+        script_skip_offset()
+    else
+        // Bit is set → condition “false” → apply signed offset
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_obj_attr_bit7_set()
+    // Test “bit 7 is set” using shared helper
+    script_is_object_attr_bit_set(MASK_BIT7)
+
+
+procedure op_if_obj_attr_bit7_clear()
+    // Test “bit 7 is clear” using shared helper
+    script_is_object_attr_bit_clear(MASK_BIT7)
+
+
+procedure op_if_obj_attr_bit6_set()
+    script_is_object_attr_bit_set(MASK_BIT6)
+
+
+procedure op_if_obj_attr_bit6_clear()
+    script_is_object_attr_bit_clear(MASK_BIT6)
+
+
+procedure op_if_obj_attr_bit5_set()
+    script_is_object_attr_bit_set(MASK_BIT5)
+
+
+procedure op_if_obj_attr_bit5_clear()
+    script_is_object_attr_bit_clear(MASK_BIT5)
+
+
+procedure script_clear_object_attr_bit(clear_mask)
+    // clear_mask has 0 where bits should be cleared, 1 where preserved
+    obj_bitmask = clear_mask
+
+    attrs = script_read_object_attributes()
+    attrs = attrs AND obj_bitmask
+    script_set_object_attributes(attrs)
+
+
+procedure script_set_object_attr_bit(set_mask)
+    // set_mask has 1 where bits should be set
+    obj_bitmask = set_mask
+
+    attrs = script_read_object_attributes()
+    attrs = attrs OR obj_bitmask
+    script_set_object_attributes(attrs)
+
+
+procedure op_set_obj_attr_bit7()
+    script_set_object_attr_bit(MASK_BIT7)
+
+
+procedure op_clear_obj_attr_bit7()
+    script_clear_object_attr_bit(MASK_CLEAR_BIT7)
+
+
+procedure op_set_obj_attr_bit6()
+    script_set_object_attr_bit(MASK_BIT6)
+
+
+procedure op_clear_obj_attr_bit6()
+    script_clear_object_attr_bit(MASK_CLEAR_BIT6)
+
+
+procedure op_set_obj_attr_bit5()
+    script_set_object_attr_bit(MASK_BIT5)
+
+
+procedure op_clear_obj_attr_bit5()
+    script_clear_object_attr_bit(MASK_CLEAR_BIT5)
+
+
+
+procedure op_if_active_io_eq_lo()
+    // Compare only the low byte of active IO
+    mode = IO_CMP_MODE_LO_ONLY
+    result = cmp_active_io_vs_script(mode)   // TRUE if equal, FALSE otherwise
+
+    if result == TRUE then
+        script_skip_offset()     // condition “true”
+    else
+        op_displace_pointer()    // condition “false”
+    end if
+
+
+
+procedure op_if_active_io_eq_16()
+    // Compare hi==0 and low byte
+    mode = IO_CMP_MODE_HI0_AND_LO
+    result = cmp_active_io_vs_script(mode)
+
+    if result == TRUE then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_active_io_ne_lo()
+    mode = IO_CMP_MODE_LO_ONLY
+    result = cmp_active_io_vs_script(mode)
+
+    if result == FALSE then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_active_io_ne_16()
+    mode = IO_CMP_MODE_HI0_AND_LO
+    result = cmp_active_io_vs_script(mode)
+
+    if result == FALSE then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+function cmp_active_io_vs_script(mode) -> byte  // returns TRUE (1) or FALSE (0)
+    // mode == IO_CMP_MODE_HI0_AND_LO:
+    //   require active_io_id_hi == 0, else consume one script byte and return FALSE
+    // mode == IO_CMP_MODE_LO_ONLY:
+    //   ignore hi for equality, always proceed to low-byte comparison
+
+    if mode == IO_CMP_MODE_HI0_AND_LO then
+        // Require hi == 0
+        if active_io_id_hi != 0 then
+            // Still must consume one script byte
+            discard = script_read_byte()
+            return FALSE
+        end if
+    else
+        // LO_ONLY path: hi is not part of equality, but if hi != 0, we still
+        // flow through into the lo compare; behavior is “compare only lo”.
+        // Nothing to do here beyond establishing flags in assembly.
+        pass
+    end if
+
+    // Common: read candidate low index from script
+    candidate_lo = script_read_byte()
+
+    if candidate_lo == active_io_id_lo then
+        return TRUE
+    else
+        return FALSE
+    end if
+end function
+
+
+procedure op_pickup_object()
+    // 1) Decode object index operand: 0 means “use active direct object”
+    operand = script_read_byte()
+    if operand == 0 then
+        effective_index = active_do_id_lo
+    else
+        effective_index = operand
+    end if
+
+    room_obj_index = effective_index
+    obj_index_backup = effective_index
+    room_obj_state = 0
+
+    // 2) Find the object in the current room
+    status = dispatch_to_room_search(room_obj_index, room_obj_state)
+    if status == OBJECT_NOT_FOUND then
+        return
+    end if
+
+    // At this point room_obj_ptr points to the room object data
+
+    // 3) Read object size from header at room_obj_ptr[0..1]
+    obj_src_ptr = room_obj_ptr
+    size_lo = read_byte(obj_src_ptr + 0)
+    size_hi = read_byte(obj_src_ptr + 1)
+    obj_size_lo = size_lo
+    obj_size_hi = size_hi
+
+    // 4) Allocate a heap block of that size
+    heap_block_ptr = mem_alloc(size_hi, size_lo)
+
+    // 5) Re-resolve room object pointer in case allocation moved things
+    room_obj_index = obj_index_backup
+    room_obj_state = 0
+    status = dispatch_to_room_search(room_obj_index, room_obj_state)
+    if status == OBJECT_NOT_FOUND then
+        // (Code doesn’t check this in detail, but logically this would be an error)
+        return
+    end if
+    obj_src_ptr = room_obj_ptr
+
+    // 6) Copy object data into heap block (size_lo bytes, ignoring size_hi)
+    count = obj_size_lo
+    // Copy bytes [0 .. count-1]
+    for i from 0 to count - 1 do
+        byte_val = read_byte(obj_src_ptr + i)
+        write_byte(heap_block_ptr + i, byte_val)
+    end for
+
+    // 7) Tag block header and register in inventory
+    // Header: [heap_block_ptr + OFFSET_TYPE] = RSRC_TYPE_OBJECT
+    write_byte(heap_block_ptr + OFFSET_TYPE, RSRC_TYPE_OBJECT)
+
+    // Find a free inventory slot, returned in slot_index
+    slot_index = find_free_inventory_slot()
+
+    // Register block pointer and object index in inventory tables
+    object_ptr_lo_tbl[slot_index] = low_byte(heap_block_ptr)
+    object_ptr_hi_tbl[slot_index] = high_byte(heap_block_ptr)
+    inventory_objects[slot_index] = obj_index_backup
+
+    // Also store the inventory slot index into the block header at OFFSET_INV_INDEX
+    write_byte(heap_block_ptr + OFFSET_INV_INDEX, slot_index)
+
+    // 8) Update ownership and object attributes
+    idx = obj_index_backup
+    attrs = object_attributes[idx]
+
+    // Set “in inventory” and “removed from room” flags (bits 7 and 5)
+    attrs = attrs OR MASK_OBJ_FLAGS_SET
+
+    // Clear previous owner nibble and set new owner = current kid
+    attrs = attrs AND MASK_OBJ_CLEAR_OWNER
+    attrs = attrs OR current_kid_idx
+
+    object_attributes[idx] = attrs
+
+    // 9) Camera and UI refresh
+    cam_current_pos = CAMERA_RESET_POSITION
+    refresh_script_addresses_if_moved()
+    refresh_inventory()
+
+
+
+procedure op_get_object_owner()
+    // Destination game variable index
+    variable_index = script_read_byte()
+
+    // Decode object index (bit7-aware)
+    obj_index = script_load_operand_bit7()
+    if obj_index == 0 then
+        obj_index = active_do_id_lo
+    end if
+
+    // Owner is stored in low nibble of attributes
+    attrs = object_attributes[obj_index]
+    owner = attrs AND OWNER_NIBBLE_MASK
+
+    // Write owner into game_vars[variable_index]
+    game_vars[variable_index] = owner
+
+
+
+procedure op_set_object_owner()
+    // 1) Resolve item index (object)
+    item_index = script_load_operand_bit7()
+    if item_index == 0 then
+        item_index = active_do_id_lo
+    end if
+    item = item_index
+
+    // 2) Resolve owner
+    owner_candidate = script_load_operand_bit6()
+
+    if owner_candidate == OWNER_NONE then
+        // Owner 0 means “remove this object from inventory”
+        // Replace with sentinel and flag removal
+        owner_candidate = OWNER_REMOVE_SENTINEL
+        remove_obj_from_inv_flag = OWNER_REMOVE_SENTINEL
+    end if
+
+    owner = owner_candidate
+
+    // 3) Commit owner into attributes low nibble
+    attrs = object_attributes[item]
+    attrs = attrs AND MASK_OBJ_CLEAR_OWNER   // clear low nibble
+    attrs = attrs OR owner                   // set new owner nibble
+    object_attributes[item] = attrs
+
+    // 4) Refresh inventory UI and script relocations as needed
+    refresh_inventory()
+    refresh_script_addresses_if_moved()
+
+
+
+procedure op_remove_from_inventory()
+    // X contains the object index to remove
+
+    // Look up the object’s inventory resource and its pointer
+    status, resource_ptr, slot_index = resolve_object_resource(X)
+
+    if status != OBJ_FOUND_IN_INV then
+        return
+    end if
+
+    // Save slot_index, free the heap block
+    heap_ptr = resource_ptr
+    mem_release(heap_ptr)
+
+    // Clear inventory slot and pointer tables for this slot
+    inventory_objects[slot_index] = 0
+    object_ptr_lo_tbl[slot_index] = 0
+    object_ptr_hi_tbl[slot_index] = 0
+
+
+
+procedure op_set_object_name()
+    // 1) Resolve object index; 0 = active object
+    raw_index = script_read_byte()
+    if raw_index == 0 then
+        object_index = active_do_id_lo
+    else
+        object_index = raw_index
+    end if
+
+    // 2) Determine location from opcode high bit:
+    //    bit7 = 0 → inventory name
+    //    bit7 = 1 → room object name
+    if (opcode AND 0x80) == 0 then
+        obj_hi_selector = OBJ_HI_MOVABLE      // inventory
+    else
+        obj_hi_selector = OBJ_HI_IMMOVABLE    // room object
+    end if
+
+    // 3) Resolve destination buffer pointer for this object’s name
+    object_name_pointer = resolve_object_name(object_index, obj_hi_selector)
+
+    // 4) Copy a zero-terminated string from the script into that buffer
+    i = 0
+    loop:
+        ch = script_read_byte()
+        write_byte(object_name_pointer + i, ch)
+        i = i + 1
+        if ch != WORD_TERMINATOR then
+            goto loop
+        end if
+
+    // 5) Refresh inventory UI (name changes are visible there)
+    refresh_inventory()
+
+*/

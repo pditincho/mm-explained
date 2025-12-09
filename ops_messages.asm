@@ -296,4 +296,76 @@ op_print_costume_msg_at_offset:
 		jmp     print_costume_msg_at_offset  	// use offset variant
 
 
+/*
+procedure op_print_player_message_inline()
+    // Set the speaker to the current kid
+    talking_costume = current_kid_idx
+
+    // Fall through conceptually to “inline” message printer
+    print_costume_msg_inline()
+
+
+
+procedure print_costume_msg_inline()
+    // Use current script PC as the start of the message
+    message_ptr = task_pc
+
+    // Print the message and advance message_ptr past the payload
+    prepare_message_for_topbar(message_ptr)
+
+    // Resume script execution after the message data
+    task_pc = message_ptr
+
+
+
+procedure op_print_player_message_at_offset()
+    // Set the speaker to the current kid
+    talking_costume = current_kid_idx
+
+    // Fall through conceptually to “offset” message printer
+    print_costume_msg_at_offset()
+
+
+
+procedure print_costume_msg_at_offset()
+    // Read 16-bit offset (little-endian) from script stream
+    offset_lo = script_read_byte()
+    offset_hi = script_read_byte()
+
+    // Form a 16-bit offset value
+    offset = make_16bit(offset_lo, offset_hi)
+
+    // Compute message pointer: task_pc + offset
+    message_ptr = task_pc + offset
+
+    // Pre-decrement so the printer’s initial increment lands on the first char
+    message_ptr = message_ptr - 1
+
+    // Print the message starting at message_ptr; printer advances message_ptr
+    prepare_message_for_topbar(message_ptr)
+
+    // Note: task_pc is not changed here; caller controls script flow
+
+
+
+procedure op_print_costume_msg_inline()
+    // Operand selects the speaking costume
+    costume_id = script_load_operand_bit7()
+    talking_costume = costume_id
+
+    // Inline text follows at task_pc
+    print_costume_msg_inline()
+
+
+
+procedure op_print_costume_msg_at_offset()
+    // Operand selects the speaking costume
+    costume_id = script_load_operand_bit7()
+    talking_costume = costume_id
+
+    // Message is at task_pc + 16-bit offset in the script
+    print_costume_msg_at_offset()
+
+
+*/
 

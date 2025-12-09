@@ -298,3 +298,113 @@ Description
 op_stop_music:
         jsr     stop_music
         rts
+		
+/*		
+procedure op_stop_sound()
+    // Resolve sound index (low byte from script, high bit from opcode)
+    sound_index = script_load_operand_bit7()
+
+    // Request sound engine to stop this sound and clear its pending starts
+    stop_sound_and_clear_pending_starts(sound_index)
+
+
+procedure op_play_music()
+    // ------------------------------------------------------------
+    // 1) Choose which music track to actually start
+    // ------------------------------------------------------------
+
+    // Prefer music slot #1 if already loaded
+    if sound_ptr_hi_tbl[MUSIC_IDX_1] != 0 then
+        chosen_music = MUSIC_IDX_1
+    else if sound_ptr_hi_tbl[MUSIC_IDX_2] != 0 then
+        // Else prefer slot #2 if loaded
+        chosen_music = MUSIC_IDX_2
+    else
+        // Neither slot 1 nor 2 is resident:
+        // derive music index from disk side and load it.
+        //
+        // active_side_id is a raw side marker (e.g. $31 / $32).
+        normalized = active_side_id - DISK_SIDE_ID_BASE   // → 1 or 2
+        chosen_music = normalized
+
+        // Ensure that music resource is resident
+        rsrc_cache_sound(chosen_music)
+
+        // If heap moved, fix script pointers
+        refresh_script_addresses_if_moved()
+    end if
+
+    selected_music_idx = chosen_music
+
+    // Temporarily bump refcount for the chosen music while we enforce
+    // residency of a script-specified music (if any)
+    sound_liveness_tbl[selected_music_idx]++
+
+    // ------------------------------------------------------------
+    // 2) Ensure operand-specified music is resident
+    // ------------------------------------------------------------
+
+    // Operand is a music index we must guarantee resident, but
+    // playback will still use selected_music_idx
+    operand_music_index = script_load_operand_bit7()
+    // (Value is pushed/pulled around the call in asm; here we just
+    // model residency guarantee.)
+    rsrc_cache_sound(operand_music_index)
+
+    // Restore chosen music’s refcount
+    sound_liveness_tbl[selected_music_idx]--
+
+    // ------------------------------------------------------------
+    // 3) Initialize pointers for the music we will actually start
+    // ------------------------------------------------------------
+    music_to_start_ptr = make_pointer(
+        sound_ptr_lo_tbl[selected_music_idx],
+        sound_ptr_hi_tbl[selected_music_idx]
+    )
+
+    // Initialize internal music pointer state from this base
+    setup_music_pointers(music_to_start_ptr)
+
+    // Compute entry point of per-music init code:
+    // it starts after the resource header.
+    music_init_code_ptr = music_to_start_ptr + MEM_HDR_LEN
+
+    // ------------------------------------------------------------
+    // 4) Run music’s initialization code with I/O mapped in
+    // ------------------------------------------------------------
+
+    // The init routine may optionally use the operand_music_index,
+    // which the asm restores in A before calling it.
+    call_function_at(music_init_code_ptr)   // per-music init script
+
+    // If music init caused relocations, fix script PCs
+    refresh_script_addresses_if_moved()
+
+		
+procedure op_start_sound()
+    // Resolve sound index from script/opcode
+    sound_index = script_load_operand_bit7()
+
+    start_sound_with_loaded_index(sound_index)
+
+
+
+procedure start_sound_with_loaded_index(sound_index)
+    // 1) Stop any existing instance of this sound
+    stop_sound_and_clear_pending_starts(sound_index)
+
+    // 2) Ensure the sound resource is resident in memory
+    rsrc_cache_sound(sound_index)
+
+    // 3) Start the sound
+    start_sound(sound_index)
+
+    // 4) If loading/starting moved things in memory, fix script PCs
+    refresh_script_addresses_if_moved()
+
+
+procedure op_stop_music()
+    // Delegate fully to sound engine’s music stop routine
+    stop_music()
+
+*/

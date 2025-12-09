@@ -761,3 +761,230 @@ apply_clip:
 
 exit_oacc:
         rts
+
+/*
+procedure op_apply_bitmask_to_actor_var()
+    // Point generic bitmask helper at actor variables
+    pointer = &actor_vars[0]
+    max_var_index = COSTUME_MAX_INDEX + 1   // valid indices: 0 .. COSTUME_MAX_INDEX
+
+    // Apply script-driven set/clear operation, then refresh UI
+    apply_bitmask_to_var(pointer, max_var_index)
+    refresh_inventory()
+
+procedure op_test_costume_var_bitmask()
+    // Point generic tester at actor variables
+    pointer = &actor_vars[0]
+
+    // Delegate to shared helper:
+    //   script provides:
+    //     - destination game-var index
+    //     - source actor-var index
+    //     - bitmask
+    //   helper writes 0/1 to game_vars[dest]
+    test_var_bitmask(pointer)
+
+procedure op_get_costumes_distance()
+    // Read destination game-var index
+    dest_var = script_read_byte()
+
+    // Read the two costume indices to compare
+    reference_costume = script_load_operand_bit7()
+    other_costume     = script_load_operand_bit6()
+
+    // Compute distance between the actors behind these costumes
+    distance = compute_actors_distance(reference_costume, other_costume)
+
+    // Store result
+    game_vars[dest_var] = distance
+
+
+procedure op_get_closest_costume()
+    // Target game-var for the result
+    dest_var = script_read_byte()
+
+    // Costume we are measuring distances from
+    reference_costume = script_load_operand_bit7()
+
+    // Start from “one past last costume” and count down
+    current_costume = COSTUME_MAX_INDEX + 1
+
+    // Use shared search
+    run_closest_costume_search(dest_var, reference_costume, current_costume)
+
+
+procedure op_get_closest_kid()
+    // Target game-var for the result
+    dest_var = script_read_byte()
+
+    // Costume we are measuring distances from
+    reference_costume = script_load_operand_bit7()
+
+    // Start from highest kid costume index and count down
+    current_costume = FIRST_NON_KID_INDEX - 1
+
+    // Use the same shared search logic as op_get_closest_costume
+    run_closest_costume_search(dest_var, reference_costume, current_costume)
+
+
+procedure run_closest_costume_search(dest_var, reference_costume, start_costume)
+    current_costume  = start_costume
+    closest_distance = 0xFF          // “no distance yet”
+    closest_costume  = 0xFF          // “none yet”
+
+    loop
+        current_costume = current_costume - 1
+        if current_costume == 0
+            break
+
+        distance = compute_actors_distance(reference_costume, current_costume)
+
+        if distance < closest_distance
+            closest_distance = distance
+            closest_costume  = current_costume
+        end if
+    end loop
+
+    game_vars[dest_var] = closest_costume
+
+
+procedure op_get_costume_motion_state()
+    // Where to store the motion state code
+    dest_var = script_read_byte()
+
+    // Which costume to inspect
+    costume_index = script_load_operand_bit7()
+
+    // Map costume → actor (or “none” sentinel)
+    actor_entry = actor_for_costume[costume_index]
+
+    if not costume_has_assigned_actor(actor_entry) then
+        // No actor: treat as stopped
+        result = MOTION_STOPPED_CODE
+    else
+        actor_index = extract_actor_index(actor_entry)
+        result = actor_motion_state[actor_index]
+    end if
+
+    game_vars[dest_var] = result
+
+
+procedure op_get_costume_room()
+    // Destination game-var index
+    dest_var = script_read_byte()
+
+    // Costume whose room we want
+    costume_index = script_load_operand_bit7()
+
+    // Look up room directly from costume table
+    room = costume_room_idx[costume_index]
+
+    game_vars[dest_var] = room
+
+
+procedure op_get_costume_x()
+    // Destination game-var index
+    dest_var = script_read_byte()
+
+    // Costume whose X coordinate we want
+    costume_index = script_load_operand_bit7()
+
+    // Check whether we should use current position or path destination
+    if costume_is_moving(costume_index) then
+        // Use path’s destination X
+        value = costume_target_x[costume_index]
+    else
+        // Use current actor X
+        actor_entry = actor_for_costume[costume_index]
+        actor_index = extract_actor_index(actor_entry)
+        value = actor_pos_x[actor_index]
+    end if
+
+    game_vars[dest_var] = value
+
+
+procedure op_get_costume_y()
+    // Destination game-var index
+    dest_var = script_read_byte()
+
+    // Costume whose Y coordinate we want
+    costume_index = script_load_operand_bit7()
+
+    if costume_is_moving(costume_index) then
+        // Use path’s destination Y
+        value = costume_target_y[costume_index]
+    else
+        // Use current actor Y
+        actor_entry = actor_for_costume[costume_index]
+        actor_index = extract_actor_index(actor_entry)
+        value = actor_pos_y[actor_index]
+    end if
+
+    game_vars[dest_var] = value
+
+
+procedure op_get_costume_clip_set()
+    // Destination game-var index
+    dest_var = script_read_byte()
+
+    // Costume whose clip we want
+    costume_index = script_load_operand_bit7()
+
+    actor_entry = actor_for_costume[costume_index]
+
+    if costume_is_moving(costume_index) then
+        // Use the currently active clip for this costume
+        clip = costume_clip_set[costume_index]
+    else
+        // Not moving: derive a standing clip from facing direction
+        actor_index = extract_actor_index(actor_entry)
+        facing_mask = actor_cur_facing_direction[actor_index]
+        clip = map_facing_direction_to_standing_clip(facing_mask)
+    end if
+
+    game_vars[dest_var] = clip
+
+
+procedure op_apply_costume_clip()
+    // Costume being affected
+    active_costume = script_load_operand_bit7()
+
+    // Clip “id” or control code
+    target_clip_id = script_load_operand_bit6()
+
+    // Loop count / extra argument
+    clip_loop_cnt = script_read_byte()
+
+    // Special control cases based on target_clip_id
+    if target_clip_id == CLIP_ARG_KEEP_MOUTH_OPEN then
+        // Keep actor’s mouth held open
+        actor_index = extract_actor_index_if_any(actor_for_costume[active_costume])
+        if actor_index then
+            actor_mouth_state[actor_index] = MOUTH_STATE_HELD_OPEN
+        end if
+        return
+    end if
+
+    if target_clip_id == CLIP_ARG_KEEP_MOUTH_CLOSED then
+        // Force actor’s mouth closed
+        actor_index = extract_actor_index_if_any(actor_for_costume[active_costume])
+        if actor_index then
+            actor_mouth_state[actor_index] = MOUTH_STATE_CLOSED
+        end if
+        return
+    end if
+
+    if target_clip_id == CLIP_ARG_RESET_STATE then
+        // Reset actor’s animation state and mark stopped
+        actor_index = extract_actor_index_if_any(actor_for_costume[active_costume])
+        if actor_index then
+            actor = actor_index              // install as current actor
+            set_actor_stopped_and_render()   // clear motion and refresh visuals
+        end if
+        return
+    end if
+
+    // Default: apply a normal animation clip to the costume
+    assign_clip_to_costume(active_costume, target_clip_id, clip_loop_cnt)
+
+*/

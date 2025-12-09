@@ -481,3 +481,158 @@ unsuspend_task:
 		bne     unsuspend_task                	// loop while X != 0
 		rts                                     // done
 
+/*
+procedure op_enter_cutscene()
+    // Save current control + room context
+    saved_control_mode = control_mode
+    saved_room_id      = current_room
+
+    // Freeze all other scripts
+    suspend_other_tasks()
+
+    // Put UI into cutscene base state (clear sentence bar, set mode)
+    setup_cutscene()
+
+    // Snapshot current sentence tokens
+    for idx = SENTENCE_TOTAL_TOKENS down_to 0 do
+        stacked_io_id_hi[idx] = sentence_parts[idx]
+    end for
+
+    // Reset sentence UI and clear forced trigger
+    init_sentence_ui_and_stack()
+    forced_sentence_trigger = FALSE
+
+    // Remember which task was active when cutscene started
+    saved_task_idx = task_cur_idx
+
+    // Clear any stored interrupt PC
+    interrupted_pc_lo = 0
+    interrupted_pc_hi = 0
+
+procedure op_exit_cutscene()
+    // Clear transient targeting/interrupt state
+    var_target_x            = 0
+    saved_task_idx          = 0
+    interrupted_script_index = 0
+    interrupted_pc_lo       = 0
+    interrupted_pc_hi       = 0
+
+    // If we entered from keypad mode, return to keypad context
+    if saved_control_mode == CONTROL_MODE_KEYPAD then
+        control_mode = saved_control_mode
+
+        prepare_video_for_new_room()
+        switch_to_room(saved_room_id)
+
+        // Unfreeze scripts
+        resume_suspended_tasks()
+        return
+    end if
+
+    // Non-keypad exit path
+    mode_to_restore = saved_control_mode
+
+    // Unfreeze scripts first
+    resume_suspended_tasks()
+
+    // Re-center camera on current kid and refresh scripts if room changed
+    script_cam_follow_costume(current_kid_idx)
+
+    // Restore sentence tokens from snapshot
+    for idx = SENTENCE_STACK_LAST_IDX down_to 0 do
+        sentence_parts[idx] = stacked_io_id_hi[idx]
+    end for
+
+    // Restore control mode and mark sentence bar dirty so it will be redrawn
+    set_control_mode(mode_to_restore)
+    sentence_bar_needs_refresh = TRUE
+
+procedure op_switch_control_mode()
+    // Read desired mode from script operand
+    mode = script_load_operand_bit7()
+
+    set_control_mode(mode)
+
+procedure set_control_mode(mode)
+    // Cutscene mode: clear sentence bar and set cutscene state
+    if mode == CONTROL_MODE_CUTSCENE then
+        setup_cutscene()
+        return
+    end if
+
+    // Normal mode: redraw hotspots and resume tasks
+    if mode == CONTROL_MODE_NORMAL then
+        case_mode_normal()
+        return
+    end if
+
+    // Disable-kid mode: behave like normal, then mark kid input disabled
+    if mode == CONTROL_MODE_DISABLE_KID then
+        case_mode_normal()
+        control_mode = CONTROL_MODE_DISABLE_KID
+        return
+    end if
+
+    // Keypad mode: cutscene-like UI plus keypad flag and suspend others
+    if mode == CONTROL_MODE_KEYPAD then
+        setup_cutscene()
+        control_mode = CONTROL_MODE_KEYPAD
+        suspend_other_tasks()
+        return
+    end if
+
+    // Unknown mode: do nothing
+    return
+
+procedure setup_cutscene()
+    // Sentence bar is freshly cleared, so no immediate redraw needed
+    sentence_bar_needs_refresh = FALSE
+
+    // Clear interaction/sentence region on screen to spaces
+    fill_dest_ptr = SENTENCE_BAR_BASE
+    fill_byte_cnt = INTERACTION_AREA_LEN
+    mem_fill_x(fill_dest_ptr, fill_byte_cnt, ' ')
+
+    // Mark control mode as cutscene
+    control_mode = CONTROL_MODE_CUTSCENE
+
+
+procedure case_mode_normal()
+    // Temporarily treat as cutscene so redraw logic is in a known state
+    control_mode = CONTROL_MODE_CUTSCENE
+
+    render_all_hotspots()
+
+    // Back to normal control mode
+    control_mode = CONTROL_MODE_NORMAL
+
+    // Ensure any previously suspended tasks are running again
+    resume_suspended_tasks()
+
+
+procedure suspend_other_tasks()
+    // Walk tasks from highest index down to 1, skipping current and inactive
+    for task_index = TASK_MAX_INDEX down_to 1 do
+        if task_index == task_cur_idx then
+            continue
+        end if
+
+        state = task_state_tbl[task_index]
+        if state == TASK_STATE_INACTIVE then
+            continue
+        end if
+
+        // Mark this task as suspended (set suspended flag bit)
+        task_state_tbl[task_index] = state OR TASK_MASK_SUSPENDED
+    end for
+
+procedure resume_suspended_tasks()
+    // Clear the "suspended" flag on all non-zero task slots
+    for task_index = TASK_MAX_INDEX down_to 1 do
+        state = task_state_tbl[task_index]
+
+        // Clear suspended flag bit
+        task_state_tbl[task_index] = state AND TASK_MASK_CLEAR_SUSPENDED
+    end for
+
+*/

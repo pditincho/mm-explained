@@ -409,3 +409,137 @@ op_load_sound:
 		jsr     rsrc_cache_sound          			// load sound resource
 		jsr     refresh_script_addresses_if_moved   // fix relocated script pointers
 		rts                                     
+
+/*
+procedure op_load_room()
+    // Read target room index
+    room_index = script_load_operand_bit7()
+
+    // If already in this room, skip loading
+    if room_index == current_room then
+        // Still go through relocation + camera reset below
+        goto finalize_room_load
+    end if
+
+    // Prepare display for room transition and load new room
+    prepare_video_for_new_room()
+    switch_to_room(room_index)      // updates current_room and room resources
+
+finalize_room_load:
+    // Fix any script pointers that moved during load
+    refresh_script_addresses_if_moved()
+
+    // Reset camera position to default starting value
+    cam_current_pos = CAM_DEFAULT_POS
+
+
+procedure op_load_room_with_ego()
+    // Check if the current kid (ego) is frozen
+    ego_index   = current_kid_idx
+    ego_flags   = actor_vars[ego_index]
+
+    if (ego_flags AND ACTOR_IS_FROZEN) then
+        // Ego is frozen: consume this opcode’s operands and stop this task
+        script_skip_offset()        // skips [entry_object, room] operands
+        op_stop_current_task()
+        return
+    end if
+
+    // Ego is not frozen: proceed with room transition
+    prepare_video_for_new_room()
+
+    // Read entry object index
+    entry_object_id = script_read_byte()
+
+    // Read target room index
+    target_room_id = script_read_byte()
+
+    // Record new room for this kid’s costume
+    costume_room_idx[ego_index] = target_room_id
+
+    // Load destination room; this updates current_room
+    switch_to_room(target_room_id)
+
+    // Look up the entry object in the new room
+    obj_idx_lo = entry_object_id
+    obj_idx_hi = OBJ_HI_MOVABLE
+    object_index = dispatch_to_room_search(obj_idx_lo, obj_idx_hi)
+
+    if object_index == OBJ_NOT_FOUND then
+        // No entry object found; just stop this task
+        op_stop_current_task()
+        return
+    end if
+
+    // Compute approach point / destination based on the entry object
+    set_approach_point_for_object(object_index)
+
+    // Treat the current kid as the active costume for placement
+    active_costume = ego_index
+
+    // Set placement target room to the now-current room
+    target_room = current_room
+
+    // Instantly move the costume to the computed destination
+    place_costume_at_target()
+
+    // Align camera with ego’s actor X coordinate
+    actor_index_for_ego = actor_for_costume[ego_index]
+    ego_actor_x         = actor_pos_x[actor_index_for_ego]
+    cam_target_pos      = ego_actor_x
+
+    // Reset camera position to default starting value
+    cam_current_pos = CAM_DEFAULT_POS
+
+    // Reset the sentence UI and clear any pending forced sentence trigger
+    init_sentence_ui_and_stack()
+    forced_sentence_trigger = FALSE
+
+    // This opcode hands control back to the main loop by stopping the current task
+    op_stop_current_task()
+
+
+procedure op_load_costume()
+    // Read costume index (opcode bit7 may provide high bit)
+    costume_index = script_load_operand_bit7()
+
+    // Ensure that costume’s resource is resident
+    rsrc_cache_costume(costume_index)
+
+    // Fix any script pointers that moved during load
+    refresh_script_addresses_if_moved()
+
+
+procedure op_load_room_for_subresource()
+    // Read room index (opcode bit7 may provide high bit)
+    room_index = script_load_operand_bit7()
+
+    // Preload this room’s data into the cache only
+    cache_room(room_index)      // does not change current_room or display
+
+    // Fix any script pointers that moved during load
+    refresh_script_addresses_if_moved()
+
+
+procedure op_load_script()
+    // Read script index (opcode bit7 may provide high bit)
+    script_index = script_load_operand_bit7()
+
+    // Ensure the script resource is resident
+    rsrc_cache_script(script_index)
+
+    // Fix any script pointers that moved during load
+    refresh_script_addresses_if_moved()
+
+
+procedure op_load_sound()
+    // Read sound index (opcode bit7 may provide high bit)
+    sound_index = script_load_operand_bit7()
+
+    // Ensure the sound resource is resident
+    rsrc_cache_sound(sound_index)
+
+    // Fix any script pointers that moved during load
+    refresh_script_addresses_if_moved()
+
+*/

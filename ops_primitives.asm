@@ -1069,3 +1069,320 @@ commit_boolean_result:
         // ----------------------------
         sta     game_vars,y
         rts
+
+
+/*
+procedure op_displace_pointer()
+    // Read signed 16-bit offset from script
+    offset = script_read_word()        // little-endian, two’s complement
+
+    // Add offset to current script PC
+    new_pc = task_pc + offset
+    task_pc = new_pc
+
+
+procedure op_stop_current_task()
+    current_task = task_cur_idx
+
+    // If this task has a nonzero index, deactivate its referenced script
+    if current_task != 0 then
+        script_id = task_script_idx_tbl[current_task]
+        deactivate_script_by_resource(script_id)
+    end if
+
+    // Drop this task’s return address so it cannot resume
+    discard_return_address_for_current_call()
+    // Control returns to the caller’s caller; task is effectively stopped
+
+
+procedure op_pause_task()
+    // Drop this call frame so execution does not return into this opcode
+    discard_return_address_for_current_call()
+
+    // Save a PC-relative offset for this task so it can be resumed later
+    save_task_relative_offset()
+
+
+
+procedure op_do_nothing()
+    // No-op
+    return
+
+
+
+procedure op_copy_operand_to_variable()
+    // Destination variable index
+    dest_index = script_read_byte()
+
+    // Operand value (immediate or variable, depending on opcode bit7)
+    value = script_load_operand_bit7()
+
+    game_vars[dest_index] = value
+
+
+
+procedure op_increment_var()
+    // Operand encodes which variable to increment
+    index = script_load_operand_bit7()
+
+    game_vars[index] = (game_vars[index] + 1) mod 256
+
+
+
+procedure op_decrement_var()
+    // Operand encodes which variable to decrement
+    index = script_load_operand_bit7()
+
+    game_vars[index] = (game_vars[index] - 1) mod 256
+
+
+
+procedure op_add_value_to_var()
+    dest_index = script_read_byte()
+    value = script_load_operand_bit7()
+
+    game_vars[dest_index] = (game_vars[dest_index] + value) mod 256
+
+
+
+procedure op_subtract_value_from_var()
+    dest_index = script_read_byte()
+    value = script_load_operand_bit7()
+
+    game_vars[dest_index] = (game_vars[dest_index] - value) mod 256
+
+
+
+procedure op_if_operand_nonzero()
+    value = script_load_operand_bit7()
+
+    if value != 0 then
+        // TRUE: skip over the following 16-bit offset
+        script_skip_offset()
+    else
+        // FALSE: read and apply the offset to PC
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_operand_zero()
+    value = script_load_operand_bit7()
+
+    if value == 0 then
+        // TRUE
+        script_skip_offset()
+    else
+        // FALSE
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_operand_ge()
+    // Compare two operands according to VM rules
+    // script_compare_operands sets flags as: op1 vs op2
+    script_compare_operands()
+
+    // Condition: op1 ≥ op2
+    if (op1_is_greater_or_equal_to_op2()) then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_operand_le()
+    script_compare_operands()
+
+    // Condition: op1 ≤ op2 (op1 < op2 OR op1 == op2)
+    if (op1_is_less_than_op2() or op1_equals_op2()) then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_operand_gt()
+    script_compare_operands()
+
+    // Condition: op1 > op2 (strictly greater)
+    if (op1_is_greater_than_op2()) then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_operand_lt()
+    script_compare_operands()
+
+    // Condition: op1 < op2
+    if (op1_is_less_than_op2()) then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_operand_ne()
+    script_compare_operands()
+
+    // Condition: op1 ≠ op2
+    if (op1_not_equal_to_op2()) then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_if_operand_eq()
+    script_compare_operands()
+
+    // Condition: op1 == op2
+    if (op1_equals_op2()) then
+        script_skip_offset()
+    else
+        op_displace_pointer()
+    end if
+
+
+
+procedure op_stop_script_by_index()
+    // Operand encodes the target script index or 0 = “current script”
+    script_index = script_load_operand_bit7()
+
+    dispatch_stop_by_index(script_index)
+
+
+
+procedure dispatch_stop_by_index(script_index)
+    if script_index == 0 then
+        // 0 means “use the current task’s script”
+        current_task = task_cur_idx
+        script_index = task_script_idx_tbl[current_task]
+    end if
+
+    current_task = task_cur_idx
+
+    // If there is no valid current task slot, just deactivate target script
+    if current_task == 0 then
+        deactivate_script_by_resource(script_index)
+        return
+    end if
+
+    current_script_id = task_script_idx_tbl[current_task]
+
+    if script_index == current_script_id then
+        // Target is the script currently running in this task
+        op_stop_current_task()
+    else
+        // Target is some other script
+        deactivate_script_by_resource(script_index)
+    end if
+
+
+
+procedure op_start_script()
+    // Decode script id from operand (opcode bit7 may supply high part)
+    script_id = script_load_operand_bit7()
+
+    // Ask engine to start that script
+    launch_global_script(script_id)
+
+    // Validate that the current script resource is mapped
+    if script_base_hi == 0 then
+        // Treat as failure: drop this frame so script aborts cleanly
+        discard_return_address_for_current_call()
+    end if
+
+    // Otherwise return normally
+
+
+
+procedure op_do_nothing_2()
+    // No-op
+    return
+
+
+
+procedure op_apply_bitmask_to_var()
+    // Configure which variable array we operate on (engine_vars)
+    pointer = &engine_vars[0]
+
+    // Define the maximum valid variable index (exclusive)
+    max_var_index = MAX_VAR_INDEX   // e.g. 0x37
+
+    // Delegate to generic bitmask helper
+    apply_bitmask_to_var()
+
+
+
+procedure op_test_var_bitmask()
+    // Set base pointer for variable tests to engine_vars
+    pointer = &engine_vars[0]
+
+    // Delegate to generic tester
+    test_var_bitmask()
+
+
+
+procedure apply_bitmask_to_var()
+    // 1) Which variable?
+    var_index = script_load_operand_bit7()
+
+    // Bounds check: if out of range, skip the next two operands (mask+mode)
+    if var_index >= max_var_index then
+        script_skip_offset()       // skip bitmask + mode operands
+        return
+    end if
+
+    // 2) Mask
+    bitmask = script_load_operand_bit6()
+
+    // 3) Mode: 0 = “clear path” in the actual code, nonzero = “set path”
+    mode = script_load_operand_bit5()
+
+    // Variable array is selected by (pointer); var_index goes in Y in asm
+    old_value = pointer[var_index]
+
+    if mode == BITOP_MODE_SET then
+        inverted = bitmask XOR BITOP_INVERT_MASK   // ~bitmask
+        new_value = old_value AND inverted
+    else
+        new_value = old_value OR bitmask
+    end if
+
+    pointer[var_index] = new_value
+
+
+procedure test_var_bitmask()
+    // 1) Destination game-var index for the boolean result
+    dest_index = script_read_byte()
+
+    // 2) Source variable index (relative to pointer base)
+    source_index = script_load_operand_bit7()
+
+    // 3) Bitmask
+    mask = script_load_operand_bit6()
+
+    // Compute masked value
+    value = pointer[source_index] AND mask
+
+    // Convert to boolean
+    if value == 0 then
+        boolean_result = FALSE
+    else
+        boolean_result = TRUE
+    end if
+
+    // Store into game_vars[dest_index]
+    game_vars[dest_index] = boolean_result
+
+
+*/

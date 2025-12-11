@@ -84,3 +84,28 @@ unpause_game:
         lda #FALSE
         sta game_paused_flag
         rts
+
+/*
+procedure pause_game():
+    // Change cursor appearance to indicate paused state
+    sprite_shape_cursor := CURSOR_SNAIL
+
+    // Mark the game as paused
+    game_paused_flag := TRUE
+
+    // Force the cursor’s color to white so it stands out
+    cursor_sprite_color := 1   // white
+
+    return
+
+
+procedure unpause_game():
+    // Restore the normal cursor appearance
+    sprite_shape_cursor := CURSOR_CROSS
+
+    // Mark the game as not paused anymore
+    game_paused_flag := FALSE
+
+    // Cursor color is not changed here
+    return
+*/

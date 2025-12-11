@@ -1,3 +1,121 @@
+/*
+================================================================================
+ main.asm
+================================================================================
+Summary
+    Per-frame main loop and walking-sound controller for the Maniac Mansion
+    engine. This module ties together input, scripting, actor motion, camera
+    control, room redraw, flashlight effects, and audio pacing under the
+    raster-IRQ–driven timing environment.
+
+Responsibilities
+    • Frame orchestration
+      - Run a single “game frame” worth of work, then wait for a fixed number
+        of raster IRQ ticks before advancing to the next frame.
+      - Sequence keyboard input, script execution, inventory cleanup, sentence
+        processing, actor movement/animation, camera updates, and rendering
+        in a deterministic order.
+      - Enforce an “active room” gate so most work is skipped while no room is
+        loaded or during early boot transitions.
+
+    • Rendering and camera
+      - Maintain separate camera target vs. current camera position, updating
+        target from game logic and committing it at the end of each frame.
+      - Redraw the room view when the camera target differs from the committed
+        camera position, optionally running a foreground-actor refresh pass for
+        actors flagged as behind front layers.
+      - Advance actor visibility, sprite states, and frame buffers, then redraw
+        only those actors whose render flags request an update.
+      - Coordinate with the raster IRQ via a shared video_update_signal so that
+        color/graphics updates (including flashlight effects) remain synchronized
+        with video timing.
+
+    • Input, sentences, and inventory
+      - Poll and process exactly one keyboard event per main-loop iteration.
+      - Drive the sentence/action system by:
+            • Approaching and triggering entities when conditions are met.
+            • Executing the current sentence.
+            • Draining the sentence stack of queued sentences.
+      - Clean up inventory entries by scanning for objects whose ownership has
+        been changed to a “remove/limbo” sentinel and removing them from the
+        inventory table.
+
+    • Actor expression and special effects
+      - Toggle mouth animation bits for speaking actors to create a simple 
+		open/closed talking effect driven by their mouth state flags.
+      - Drive a shutter effect when needed, then ensure the cursor is visible afterward.
+      - Maintain a dynamic flashlight beam when the global lights mode is
+        “flashlight only” by:
+            • Tracking cursor-relative beam coordinates.
+            • Clearing/redrawing the flashlight mask when the cursor or camera
+              moves.
+            • Requesting a color-only redraw mode so the IRQ path applies the
+              proper visual update.
+
+    • Audio pacing – walking sounds
+      - Periodically scan actors and, in eligible rooms, play a single walking
+        sound effect for the first moving actor whose costume declares a step
+        SFX mapping.
+      - Use a signed throttle counter to avoid evaluating walking SFX every
+        frame, and reset this counter only on underflow.
+      - Suppress walking sounds entirely in specific exterior rooms that rely
+        on ambient environmental audio (e.g., crickets).
+      - Decouple walking SFX from script ownership by clearing the current task
+        index before dispatching a walking sound.
+
+    • Timing and IRQ interaction
+      - Reset and monitor irq_entry_count at the start and end of each main-loop
+        pass, waiting until a fixed number of IRQ entries have occurred before
+        starting the next frame; this ties game speed to raster timing.
+      - Use busy-wait loops on both video_update_signal and irq_entry_count as
+        simple synchronization primitives between the main thread of execution
+        and the raster IRQ handler.
+      - Maintain debug/monitor mirrors for key runtime variables (current kid,
+        camera target, room, and music state) so external debugging tools or
+        monitor code can inspect live engine state without altering behavior.
+
+Key flows
+    1) Each frame:
+         • Reset IRQ pacing counter.
+         • Handle one keyboard event.
+         • Update debug mirrors and cursor coordinate transforms.
+         • Execute active scripts and perform inventory cleanup.
+         • If no room is active, skip to the end and wait for next frame.
+         • Run sentence processing and mouth animation.
+         • Step actor motion/animation and update camera target.
+         • Redraw room if camera changed; optionally refresh FG actors.
+         • Step actor visibility, sprites, and flip framebuffers.
+         • Redraw flagged actors and rotate the sprite shapeset bank.
+         • Run shutter effect and walking-sound logic.
+         • If lights == flashlight-only, update flashlight mask and request a
+           color-only redraw as needed.
+         • Signal the IRQ to perform its video update and wait until it clears
+           the signal.
+         • Perform a full costume sweep to ensure all visible actors with
+           assigned sprites are drawn.
+         • Commit camera position and wait for the configured IRQ pacing count.
+
+    2) Walking-sound evaluation:
+         • On each call, immediately exit in “outdoor ambience” rooms.
+         • Decrement a signed throttle counter; only when it underflows:
+              – Reset the counter to a configured delay.
+              – Scan actors from highest index downward:
+                    · Skip unused actors and those in a stopped motion state.
+                    · Skip costumes with no step SFX mapping.
+                    · For the first qualifying actor, clear script ownership,
+                      then invoke the walking-sound handler with the mapped
+                      sound index and stop scanning.
+
+Notes
+    • The module assumes that irq_entry_count and video_update_signal are
+      maintained by the IRQ handler; desynchronizing that interaction will
+      distort pacing or stall the main loop.
+    • All per-frame work is serialized in a fixed order to avoid possible race
+      conditions between sentence processing, actor movement, and rendering.
+    • Room 0 is treated as a “no active room” state: the main loop continues
+      running but skips most world logic until a room is assigned.
+================================================================================
+*/
 #importonce
 #import "globals.inc"
 #import "constants.inc"
@@ -403,3 +521,265 @@ advance_to_next_actor:
 update_walking_sounds_exit:
         rts                                   
 
+
+/*
+function main_loop():
+    loop forever:
+        // Optional debug hook
+        call do_nothing_077B()
+
+        // Reset IRQ pacing counter (main loop should run once per N IRQs)
+        irq_entry_count = 0
+
+        // --------------------------------------------------
+        // Keyboard input
+        // --------------------------------------------------
+        keyboard_handle_one_key()
+
+        // --------------------------------------------------
+        // Debug/monitor mirrors (no gameplay effect)
+        // --------------------------------------------------
+        var_current_kid_idx             = current_kid_idx
+        var_camera_position             = cam_target_pos
+        var_msg_flag                    = topbar_mode
+        var_current_room                = current_room
+        var_music_playback_in_progress  = music_playback_in_progress
+
+        // --------------------------------------------------
+        // Cursor coordinate conversions
+        // --------------------------------------------------
+        // Convert cursor X from viewport-relative to room-absolute
+        cursor_x_pos_quarter_absolute =
+            cursor_x_pos_quarter_relative + viewport_left_col
+
+        // Pre-bias cursor Y for later use
+        cursor_y_pos_half_off_by_8 =
+            cursor_y_pos_half - CURSOR_Y_BIAS
+
+        // --------------------------------------------------
+        // Script execution
+        // --------------------------------------------------
+        execute_running_tasks()
+
+        // --------------------------------------------------
+        // Inventory cleanup (remove limbo objects)
+        // --------------------------------------------------
+        if remove_obj_from_inv_flag:
+            remove_obj_from_inv_flag = FALSE
+
+            // Scan inventory slots from highest index down
+            for inv_index from INVENTORY_SLOTS down to 1:
+                obj_index = inventory_objects[inv_index]
+
+                // Check object’s owner nibble
+                owner_bits = object_attributes[obj_index] & OWNER_NIBBLE_MASK
+                if owner_bits == OWNER_REMOVE_SENTINEL:
+                    // Remove this object from inventory
+                    op_remove_from_inventory(inv_index)
+
+        // --------------------------------------------------
+        // Active room gate
+        // --------------------------------------------------
+        if current_room == 0:
+            // No active room yet → skip the rest of the frame
+            continue  // jump to top of main_loop
+
+        // --------------------------------------------------
+        // Sentence processing (click/walk/use logic)
+        // --------------------------------------------------
+        handle_entity_approach_and_trigger()
+        process_sentence()
+        process_sentence_stack_entry()
+
+        // --------------------------------------------------
+        // Mouth animation toggling for speaking actors
+        // --------------------------------------------------
+        for actor_index from ACTOR_MAX_INDEX down to 0:
+            if (actor_mouth_state[actor_index] & MOUTH_STATE_SPEAK_CLOSED):
+                // Toggle mouth bit pattern (open ↔ closed)
+                actor_mouth_state[actor_index] ^= MOUTH_TOGGLE_MASK
+
+        // --------------------------------------------------
+        // Actor movement, camera, and room redraw
+        // --------------------------------------------------
+        step_actor_motion_and_animation()
+        cam_upd_target()
+
+        // Default: assume no scroll
+        screen_scroll_flag = CAM_DEFAULT_POS
+
+        // If camera target changed, redraw the room
+        if cam_target_pos != cam_current_pos:
+            render_room_view()
+
+            // Only run FG-actor refresh when a specific scroll mode is active
+            if screen_scroll_flag == 1:
+                // Refresh actors behind foreground layers
+                for actor_index from ACTOR_MAX_INDEX down to 0:
+                    if costume_for_actor[actor_index] < 0:
+                        continue  // unused actor
+
+                    if actor_box_attr[actor_index] == 0:
+                        continue  // not behind foreground
+
+                    actor_render_flags[actor_index] |= ACTOR_RENDER_REFRESH
+
+        // --------------------------------------------------
+        // Actor visibility and buffer swap
+        // --------------------------------------------------
+        step_actor_visibility_and_sprites()
+        alternate_frame_buffer()
+
+        // --------------------------------------------------
+        // Redraw flagged actors and rotate sprite shapeset
+        // --------------------------------------------------
+        redraw_flagged_actors()
+
+        target_sprite_shapeset = sprite_bank_sel + 1   // select next sprite shapeset
+
+        // --------------------------------------------------
+        // Shutter effect (fade-in / blinds)
+        // --------------------------------------------------
+        if open_shutter_flag:
+            if global_lights_state == LIGHTS_ENVIRONMENT_ON:
+                open_shutter()
+
+            open_shutter_flag = FALSE
+            hide_cursor_flag  = FALSE   // ensure cursor is visible
+
+        // --------------------------------------------------
+        // Walking sound generation
+        // --------------------------------------------------
+        update_walking_sounds()
+
+        // --------------------------------------------------
+        // Flashlight-beam logic (lights == flashlight-only)
+        // --------------------------------------------------
+        if global_lights_state == LIGHTS_FLASHLIGHT_ONLY:
+            // If camera scroll is active, we force a redraw
+            if screen_scroll_flag != CAM_DEFAULT_POS:
+                goto flashlight_coords_changed
+
+            // If cursor hasn’t moved, no flashlight update needed
+            if cursor_x_pos_quarter_relative == flashlight_beam_x and
+               cursor_y_pos_half            == flashlight_beam_y:
+                goto synchronize_on_video_update
+
+flashlight_coords_changed:
+            clear_flashlight_area()
+
+            flashlight_beam_x = cursor_x_pos_quarter_relative
+            flashlight_beam_y = cursor_y_pos_half
+
+            draw_flashlight_area()
+
+            // Request color-only video update for flashlight effect
+            video_setup_mode = VID_SETUP_COPY_COLORS
+
+        // --------------------------------------------------
+        // Video-update synchronization with IRQ
+        // --------------------------------------------------
+synchronize_on_video_update:
+        video_update_signal = SIGNAL_SET
+
+        // Wait until IRQ has completed the requested video update
+        while video_update_signal:
+            ;  // busy-wait
+
+        // --------------------------------------------------
+        // Second actor draw sweep (full costume scan)
+        // --------------------------------------------------
+        costume_index = 0
+
+        while costume_index <= COSTUME_MAX_INDEX:
+            x = costume_index
+            actor_index = actor_for_costume[x]
+
+            if actor_index >= 0:
+                // Actor exists for this costume
+                actor = actor_index
+                active_costume = x
+
+                // Only process visible actors
+                if (actor_render_flags[actor] & ACTOR_RENDER_VISIBLE):
+                    // Clear “clear-visible” flag bits
+                    flags = actor_render_flags[actor]
+                    flags &= ~ACTOR_RENDER_CLEAR_VISIBLE
+                    actor_render_flags[actor] = flags
+
+                    // If actor has a sprite assigned, update/draw it
+                    if actor_sprite_index[actor] != NO_SPRITE:
+                        map_room_to_sprite_coords(actor, active_costume)
+                        draw_actor(actor, active_costume)
+
+            costume_index += 1
+
+        // --------------------------------------------------
+        // Commit camera position for next frame
+        // --------------------------------------------------
+        cam_current_pos = cam_target_pos
+
+        // --------------------------------------------------
+        // Wait for 4 IRQ cycles to pace the main loop
+        // --------------------------------------------------
+        while irq_entry_count < IRQ_PACING_THRESHOLD:
+            ;  // busy-wait until enough IRQ ticks have occurred
+
+        // Loop back to top of main_loop
+        // (implicit via outer "loop forever")
+
+
+
+function update_walking_sounds():
+    // ------------------------------------------------------------
+    // Suppress walking sounds in specific outdoor rooms
+    // ------------------------------------------------------------
+    if current_room == ROOM_FRONT_OF_MANSION:
+        return
+
+    if current_room == ROOM_MANSION_ROAD_ENTRANCE:
+        return
+
+    // ------------------------------------------------------------
+    // Throttle: only occasionally evaluate walking SFX
+    // ------------------------------------------------------------
+    walking_snd_throttle_ctr -= 1
+
+    // If counter is still >= 0, skip this tick
+    if walking_snd_throttle_ctr >= 0:
+        return
+
+    // Counter underflowed: reset it and scan actors this tick
+    walking_snd_throttle_ctr = WALK_SND_THROTTLE_RESET
+
+    // Start with highest actor index
+    for actor_index from ACTOR_MAX_INDEX down to 0:
+        costume_index = costume_for_actor[actor_index]
+
+        // Skip unused actors (negative costume index)
+        if costume_index < 0:
+            continue
+
+        // Skip stopped actors (no movement → no steps)
+        if actor_motion_state[actor_index] == MOTION_STOPPED_CODE:
+            continue
+
+        // Check whether this costume defines a walking SFX
+        attrs = costume_anim_attrs[costume_index]
+        step_sfx_index = attrs & COSTUME_ATTR_STEP_SFX_MASK
+
+        if step_sfx_index == 0:
+            continue  // no walking sound defined
+
+        // --------------------------------------------------------
+        // Found an actor that should emit a walking sound
+        // --------------------------------------------------------
+        // This walking sound is not owned by any script/task.
+        task_cur_idx = TASK_IDX_NONE
+
+        start_sound_with_loaded_index(step_sfx_index)
+
+        // Only play one walking sound per evaluation: break loop.
+        break
+
+*/

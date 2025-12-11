@@ -90,3 +90,46 @@ reset_game_engine:
 
         // Enter main game loop / start game
         jmp     start_game
+
+
+/*
+function game_code_entry():
+    // Initialize CPU basics
+    set_stack_pointer(0xFF)
+
+    // Put VIC into a blank, known text mode (24/25 rows, scroll=0)
+    vic_set_screen_control(VIC_CTRL_BLANK_0)
+
+    // Disable interrupts while we reconfigure hardware
+    disable_interrupts()
+
+    // Map I/O out so RAM under I/O/ROM is visible (memory config = MAP_IO_OUT)
+    cpu_set_memory_config(MAP_IO_OUT)
+
+    // Bring up low-level subsystems: memory, video, sprites, sound baseline
+    init_memory_sound_and_video()
+
+    // Initialize high-level game engine state: UI, verbs, camera, actors, RNG, etc.
+    init_game_engine()
+
+reset_game_engine:
+    // Mark that we need to (re)initialize raster IRQ-related state
+    raster_irq_init_pending_flag = TRUE
+
+    // Coordinate with raster IRQ, blank screen, mute SID if needed
+    // and establish a known VIC/SID baseline
+    init_raster_and_sound_state()
+
+    // Reset logical-voice bookkeeping and related sound engine state
+    reset_logical_voices_and_state()
+
+    // Clear heap region by filling it with zeroes
+    fill_dest_ptr  = HEAP_FREE_HDR_ADDR
+    fill_byte_cnt  = HEAP_INIT_SIZE_BYTES
+    fill_value_x   = 0
+    mem_fill_x_1(fill_dest_ptr, fill_byte_cnt, fill_value_x)
+
+    // Tail-jump into main game startup sequence
+    start_game()      // does not return
+
+*/

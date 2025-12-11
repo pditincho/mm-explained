@@ -988,9 +988,9 @@ set_cursor_color:
         ldy     cia1_irq_status_reg                  // dummy read → clear pending CIA1 IRQ edge latch
 
 		//Set next IRQ handler as irq_handler3
-        ldy  #<irq_handler3                        
+        ldy  	#<irq_handler3                        
         sty     irq_handler                         
-        ldy  #>irq_handler3                        
+        ldy  	#>irq_handler3                        
         sty     irq_handler + 1
 
         // ------------------------------------------------------------
@@ -2499,3 +2499,505 @@ finish_setup_unmap_io:
 early_exit_no_setup:
         rts
 
+
+/*
+interrupt irq_handler1():
+    # One-shot lock gate
+    if irq_sync_lock:
+        irq_sync_lock = LOCK_CLEAR
+        return_from_irq()
+
+    # VIC baseline: text/scene defaults at top of frame
+    vic_screen_control_1 = VIC_CTRL_DEFAULT_1     # 25 rows, vscroll=3, display on
+    vic_bg_color0 = COLOR_BLACK
+
+    # Per-frame bookkeeping
+    irq_entry_count += 1
+    color_ram_copy_done = FALSE
+
+    if video_update_signal:
+        # Fast path: only refresh sprite X-MSB and chain band IRQs
+        compose_sprite_x_msb_and_chain_irq()
+        enable_maskable_irqs()
+        clear_video_processed_signal()
+        maybe_run_ui_cursor_sound_block()
+        return_from_irq()
+    else:
+        # Full video / layout update path
+
+        # Optional shapeset switch
+        if target_sprite_shapeset == SPRITE_TGT_SHAPESET_1:
+            # Fill sprite_shape_1..8 with set1 indices
+            sprite_shape[1..8] = SHAPE_SET1_START + [0,4,8,12,16,20,24,28]
+        elif target_sprite_shapeset == SPRITE_TGT_SHAPESET_2:
+            # Fill sprite_shape_1..8 with set2 indices
+            sprite_shape[1..8] = SHAPE_SET2_START + [0,4,8,12,16,20,24,28]
+        # else: no shapeset change
+
+        if target_sprite_shapeset != SPRITE_TGT_SHAPESET_NONE:
+            # Seed X and ranks for sprites 0–3 from actor tables
+            sprite_0_x_lo = actor_sprite_x_lo[0]
+            sprite_1_x_lo = actor_sprite_x_lo[1]
+            sprite_2_x_lo = actor_sprite_x_lo[2]
+            sprite_3_x_lo = actor_sprite_x_lo[3]
+
+            vic_sprite_idx_0 = relative_sprite_for_actor[0]
+            vic_sprite_idx_1 = relative_sprite_for_actor[1]
+            vic_sprite_idx_2 = relative_sprite_for_actor[2]
+            vic_sprite_idx_3 = relative_sprite_for_actor[3]
+
+            sprite_0_x_hi = actor_sprite_x_hi[0]
+            sprite_1_x_hi = actor_sprite_x_hi[1]
+            sprite_2_x_hi = actor_sprite_x_hi[2]
+            sprite_3_x_hi = actor_sprite_x_hi[3]
+
+            target_sprite_shapeset = SPRITE_TGT_SHAPESET_NONE
+
+        # Chain bands and recompute MSB mask
+        compose_sprite_x_msb_and_chain_irq()
+        enable_maskable_irqs()
+
+        # Apply video_setup_mode (layout and/or color copy)
+        if video_setup_mode != VID_SETUP_NONE:
+            if video_setup_mode == VID_SETUP_COPY_COLORS:
+                copy_vic_color_ram()
+            elif video_setup_mode == VID_SETUP_C800:
+                vic_memory_layout_shadow = VIC_LAYOUT_C800
+                sprite_shape_data_ptr = SPRITE_SHAPE_SET1_ADDR
+                copy_vic_color_ram()
+            elif video_setup_mode == VID_SETUP_CC00:
+                vic_memory_layout_shadow = VIC_LAYOUT_CC00
+                sprite_shape_data_ptr = SPRITE_SHAPE_SET2_ADDR
+                copy_vic_color_ram()
+
+            # Mirror BG0 shadow into BG1 shadow and clear mode
+            room_bg1_shadow = room_bg0_shadow
+            video_setup_mode = VID_SETUP_NONE
+
+        # Clear frame-level signals and allow sound commands
+        video_update_signal = SIGNAL_CLEAR
+        new_sound_instructions_allowed = TRUE
+        video_processed_signal = SIGNAL_CLEAR
+
+        # Single-entry UI/cursor/sound block (semaphore gate)
+        maybe_run_ui_cursor_sound_block()
+
+        return_from_irq()
+
+
+function maybe_run_ui_cursor_sound_block():
+    if ui_section_semaphore:
+        return  # already running or ran this frame
+
+    ui_section_semaphore += 1
+
+    # If game not paused, service top bar, paused tasks, and cursor color animation
+    if not game_paused_flag:
+        tick_topbar_message()
+        handle_paused_tasks()
+
+        cursor_color_wait_ticks -= 1
+        if cursor_color_wait_ticks < 0:
+            cursor_color_wait_ticks = cursor_color_period
+            cursor_color_idx -= 1
+            if cursor_color_idx < 0:
+                cursor_color_idx = cursor_color_idx_first
+            cursor_sprite_color = cursor_colors[cursor_color_idx]
+
+    # Keyboard scan
+    keyboard_scan()
+
+    room_scene_clicked_flag = FALSE  # reset click latch at start of UI section
+
+    if not color_ram_copy_done and control_mode != CONTROL_MODE_CUTSCENE:
+        # Normal cursor update path
+        step_cursor_and_dispatch_hotspot()
+        (cursor_sprite_x_hi, cursor_sprite_x_lo, cursor_sprite_y) =
+            compute_corrected_cursor_pos()
+    else:
+        # Park cursor off-screen if cutscene or color copy in progress
+        cursor_sprite_x_hi  = CURSOR_OFFSCREEN_COORDS
+        cursor_sprite_x_lo  = CURSOR_OFFSCREEN_COORDS
+        cursor_sprite_y     = CURSOR_OFFSCREEN_COORDS
+
+    # Optional hide-cursor override
+    if hide_cursor_flag:
+        cursor_sprite_x_hi  = CURSOR_OFFSCREEN_COORDS
+        cursor_sprite_x_lo  = CURSOR_OFFSCREEN_COORDS
+        cursor_sprite_y     = CURSOR_OFFSCREEN_COORDS
+
+    # Click latch into sentence trigger
+    if forced_sentence_trigger != 1:
+        forced_sentence_trigger = room_scene_clicked_flag
+
+    # Sound: optional music pointer reload + sound IRQ
+    if not reload_sound_ptrs_flag:
+        idx = selected_music_idx
+        music_to_start_ptr_hi = sound_ptr_hi_tbl[idx]
+        music_to_start_ptr_lo = sound_ptr_lo_tbl[idx]
+        sound_irq_handler()
+
+    ui_section_semaphore -= 1
+
+interrupt irq_handler2():
+    # Write X-LO for sprites 0–6 using their hardware slots
+    for n in 0..6:
+        slot = vic_sprite_idx_n           # which VIC sprite this actor uses
+        vic_sprite_x_lo[slot] = sprite_n_x_lo
+
+    # Cursor (sprite 7): X-LO and horizontal expansion
+    vic_sprite7_x_lo = cursor_sprite_x_lo
+    vic_sprite_x_expand = sprite_horizontal_expansion
+
+    # Shapes for sprites 0–3 using sprite_shape_1 base
+    shape = sprite_shape_1
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1                        # consecutive shape indices
+
+    # Cursor shape into both screen banks
+    cursor_shape_slot_bank0 = sprite_shape_cursor
+    cursor_shape_slot_bank1 = sprite_shape_cursor
+
+    # Colors: either forced dark gray or per-sprite
+    if global_lights_state == LIGHTS_DARKNESS:
+        # All actor sprites 0–6 use dark gray
+        for slot in 0..6:
+            vic_sprite_color[slot] = COL_DARK_GRAY
+    else:
+        # Use per-sprite color values, keyed by hardware slot
+        vic_sprite_color[vic_sprite_idx_0] = sprite_0_color
+        vic_sprite_color[vic_sprite_idx_1] = sprite_1_color
+        vic_sprite_color[vic_sprite_idx_2] = sprite_2_color
+        vic_sprite_color[vic_sprite_idx_3] = sprite_3_color
+        vic_sprite_color[vic_sprite_idx_4] = sprite_4_color
+        vic_sprite_color[vic_sprite_idx_5] = sprite_5_color
+        vic_sprite_color[vic_sprite_idx_6] = sprite_6_color
+
+    # Cursor color independent of lights
+    vic_sprite7_color = cursor_sprite_color
+
+    # Y positions for row 1
+    vic_sprite7_y = cursor_sprite_y
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW1
+
+    # Ack current IRQ, arm next line/handler
+    ack_vic_raster_irq()
+    vic_raster_compare_line = NEXT_RASTER_LINE_H3
+    clear_cia1_irq_edge()
+    irq_vector = address_of(irq_handler3)
+
+    return_from_irq()
+
+
+interrupt irq_handler3():
+    # Set scene-band control preset (25 rows, v-scroll, display on)
+    vic_screen_control_1 = CTRL1_ROOM_REGION_PRESET
+
+    # Small timing pad
+    delay_cycles(3)
+
+    # Apply multicolor room layout
+    vic_memory_layout = vic_memory_layout_shadow
+    vic_screen_control_2 = CTRL2_ROOM_REGION_PRESET   # multicolor on, 40 cols, hscroll 0
+
+    # More padding for stable timing
+    delay_cycles(10)
+
+    # Move sprites 0–6 to row 2
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW2
+
+    # Ack IRQ, arm next line/handler
+    ack_vic_raster_irq()
+    vic_raster_compare_line = NEXT_RASTER_LINE_H4
+    clear_cia1_irq_edge()
+    irq_vector = address_of(irq_handler4)
+
+    return_from_irq()
+	
+	
+interrupt irq_handler4():
+    # Shapes for band 2: base = sprite_shape_2
+    shape = sprite_shape_2
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H5
+    irq_vector = address_of(irq_handler5)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+
+interrupt irq_handler5():
+    # Move sprites 0–6 to row 3
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW3
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H6
+    irq_vector = address_of(irq_handler6)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+
+
+interrupt irq_handler6():
+    shape = sprite_shape_3
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H7
+    irq_vector = address_of(irq_handler7)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+
+
+interrupt irq_handler7():
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW4
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H8
+    irq_vector = address_of(irq_handler8)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+
+
+interrupt irq_handler8():
+    shape = sprite_shape_4
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H9
+    irq_vector = address_of(irq_handler9)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler9():
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW5
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H10
+    irq_vector = address_of(irq_handler10)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler10():
+    shape = sprite_shape_5
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H11
+    irq_vector = address_of(irq_handler11)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler11():
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW6
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H12
+    irq_vector = address_of(irq_handler12)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+
+interrupt irq_handler12():
+    shape = sprite_shape_6
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H13
+    irq_vector = address_of(irq_handler13)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler13():
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW7
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H14
+    irq_vector = address_of(irq_handler14)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler14():
+    shape = sprite_shape_7
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H15
+    irq_vector = address_of(irq_handler15)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler15():
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_ROW8
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H16
+    irq_vector = address_of(irq_handler16)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler16():
+    shape = sprite_shape_8
+    for n in 0..3:
+        slot = vic_sprite_idx_n
+        sprite_shape_table[slot] = shape
+        shape += 1
+
+    vic_raster_compare_line = NEXT_RASTER_LINE_H17
+    irq_vector = address_of(irq_handler17)
+
+    ack_vic_raster_irq()
+    clear_cia1_irq_edge()
+
+    return_from_irq()
+	
+	
+interrupt irq_handler17():
+    # Switch VIC into text UI layout
+    vic_screen_control_1 = CTRL1_INT_REGION_PRESET
+    delay_cycles(4)   # alignment before committing layout
+    vic_memory_layout  = TEXT_CHARSET_LAYOUT
+    vic_screen_control_2 = CTRL2_INT_REGION_PRESET
+
+    # Hide sprites 0–6 by parking Y off-screen
+    for slot in 0..6:
+        vic_sprite_y[slot] = SPRITES_Y_OFFSCREEN
+
+    # Ack IRQ, arm end-of-frame raster, re-chain to irq_handler1
+    ack_vic_raster_irq()
+    vic_raster_compare_line = NEXT_RASTER_LINE_H1
+    clear_cia1_irq_edge()
+    irq_vector = address_of(irq_handler1)
+
+    return_from_irq()
+	
+	
+function compose_sprite_x_msb_and_chain_irq():
+    combined_msb_mask = 0
+
+    # Actor sprites 0–6
+    for n in 0..6:
+        bit_value = sprite_n_x_hi           # 0 or 1 for bit8
+        bit_pos   = vic_sprite_idx_n        # which bit in the MSB mask (0..7)
+
+        # Shift bit_value left bit_pos times
+        shifted = bit_value << bit_pos
+        combined_msb_mask |= shifted
+
+    # Cursor sprite (sprite 7) always uses bit7 position
+    cursor_bit = cursor_sprite_x_hi         # 0 or 1
+    shifted_cursor = cursor_bit << 7
+    combined_msb_mask |= shifted_cursor
+
+    vic_sprite_x_msb_reg = combined_msb_mask
+    vic_sprite7_x_lo     = cursor_sprite_x_lo
+
+    # IRQ housekeeping: ack and chain to irq_handler2 at raster H2
+    ack_vic_raster_irq()
+    vic_raster_compare_line = NEXT_RASTER_LINE_H2
+    clear_cia1_irq_edge()
+    irq_vector = address_of(irq_handler2)
+
+    return
+	
+	
+interrupt nmi_handler():
+    return_from_irq()   # no-op NMI handler
+
+
+function init_raster_irq_env():
+    # Run only once
+    if not raster_irq_init_pending_flag:
+        return
+
+    # Enable all 8 sprites
+    vic_sprite_enable = SPRITES_ENABLE_ALL
+
+    # Point IRQ vector to irq_handler1
+    irq_vector = address_of(irq_handler1)
+
+    # Default screen control baseline
+    vic_screen_control_1 = VIC_CTRL_DEFAULT_1
+
+    # Initial raster line for first irq_handler1 entry (near end-of-frame)
+    vic_raster_compare_line = RASTER_IRQ_LINE_INIT  # e.g., line 250
+
+    # Clear any stale raster IRQ and enable raster IRQ as source
+    vic_irq_flag  = VIC_IRQ_RASTER_ACK
+    vic_irq_mask  = VIC_IRQ_RASTER_ACK
+
+    # Quench CIA latches
+    discard cia1_irq_status
+    discard cia2_port_a
+
+    # Border baseline
+    vic_border_color = COLOR_BLACK
+
+    # Optional SID master volume restore
+    if memory[$3465] != 0:
+        sid_master_volume = sid_volfilt_shadow
+
+    # Map I/O out, re-enable maskable IRQs, and clear pending flag
+    enable_maskable_irqs()
+    raster_irq_init_pending_flag = FALSE
+	
+*/

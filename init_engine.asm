@@ -1,3 +1,91 @@
+/*
+================================================================================
+ init_engine.asm
+================================================================================
+Summary
+    Low-level bring-up and relocation for the Maniac Mansion engine. This module
+    clears and normalizes key memory regions, installs interrupt vectors and
+    drive code, configures VIC/CIA/SID state, relocates runtime code/data into
+    their final addresses, and seeds core engine globals such as the sentence
+    system, camera, and actor/costume tables.
+
+Responsibilities
+    • Hardware and IRQ baseline
+      - Program IRQ/NMI vectors and install custom drive/IRQ handlers.
+      - Configure the 6510 I/O port and DDR for predictable RAM/I/O mapping.
+      - Establish a known VIC-II layout (bank selection, screen/charset base,
+        raster IRQ line, sprite enables, colors, and border state).
+      - Coordinate with the raster IRQ via a lock/handshake and apply a safe
+        VIC/SID baseline, optionally muting audio while voices are active.
+
+    • Memory clearing and layout
+      - Clear zero-page variables from $0015..$00FF without disturbing core
+        KERNAL/BASIC cells.
+      - Zero the main engine/game variable region and a secondary work buffer
+        used by later subsystems.
+      - Clear both scene frame buffers, dot-data, sprite registers, and sprite
+        memory, then paint an initial color bar in color RAM.
+      - Provide reusable byte-fill and block-copy helpers used by other modules
+        to clear or relocate memory ranges.
+
+    • Code and data relocation
+      - Copy character set and UI arrow tiles into their runtime character ROM
+        window.
+      - Relocate engine graphics and script-handler code from loader addresses
+        into their final execution bank.
+      - Relocate engine constant tables, the room-graphics decompressor, and a
+        small initialization block used by runtime code.
+      - Leave all relocated blocks in the layout expected by the script engine,
+        room renderer, and resource loader.
+
+    • Engine and rendering state initialization
+      - Initialize actor→sprite mappings, actor sprite base page, and the room
+        mask pointer used by masking/clipping logic.
+      - Seed the sentence stack, default verb, message timing, lights mode,
+        active disk side, and camera position.
+      - Normalize per-costume default clips and per-actor facing/costume
+        mappings to a “no actor / no costume” baseline.
+      - Seed the pseudo-random generator with stable nonzero values for
+        deterministic startup behavior.
+
+    • Raster and sound interaction
+      - Provide a reusable raster/SID init entry that can be called once the
+        IRQ environment is live, guarded by a flag and by a “music active”
+        check to avoid disrupting playback.
+      - Snapshot logical voice activity and mute SID master volume while
+        applying raster/video initialization.
+
+Key flows
+    1) Power-on / loader handoff:
+         • Loader jumps to game_code_entry (in entry_point.asm).
+         • game_code_entry calls init_memory_sound_and_video to:
+             - Install vectors and drive code.
+             - Clear graphics, zero page, and engine/game regions.
+             - Configure VIC/CIA layout, sprite state, and color RAM.
+             - Relocate core runtime blocks via relocate_memory.
+         • init_game_engine seeds high-level engine globals.
+         • A separate call to init_raster_and_sound_state syncs with the first
+           raster IRQ and establishes a safe video/audio baseline.
+
+    2) Runtime reuse:
+         • mem_fill_x_3 and copy_memory are used by other modules for clears
+           and relocations.
+         • init_actor_render_state is the canonical “reset” for actor sprite
+           mappings when rooms or scenes are reinitialized.
+         • init_game_engine is the canonical “reset” for sentence/verb/camera
+           state when starting a new game.
+
+Notes
+    • All hard-coded source/destination addresses and sizes are coupled to the disk
+      image layout and loader’s copy strategy.
+    • init_raster_and_sound_state is deliberately idempotent and guards against
+      both active music and double-initialization; callers must rely on the
+      raster_irq_init_pending_flag to avoid reprogramming VIC/SID mid-game.
+    • Zero-page and engine-variable clears assume that no active IRQ handlers
+      are using the cleared ranges; callers are expected to invoke this module
+      only during early startup or controlled reinitialization windows.
+================================================================================
+*/
 #importonce
 #import "globals.inc"
 #import "constants.inc"
@@ -1070,3 +1158,333 @@ reset_actors:
         sta     random_2
 
         rts
+
+/*
+function init_raster_and_sound_state():
+    // If music is currently playing, do not touch raster/SID state.
+    if music_playback_in_progress:
+        return
+
+    // If raster IRQ init is already pending/in progress, do nothing.
+    if raster_irq_init_pending_flag:
+        return
+
+    // Handshake with raster IRQ: set a lock and wait until IRQ clears it.
+    irq_sync_lock = LOCK_SET
+    while irq_sync_lock != 0:
+        ;  // spin until IRQ handler clears the lock
+
+    // Immediately after the IRQ returns, disable interrupts.
+    disable_interrupts()
+
+    // Apply a known VIC screen-control preset (blank screen, fixed rows/scroll).
+    vic_screen_control_reg_1 = CTRL1_BLANK_PRESET
+
+    // Disable all sprites.
+    vic_sprite_enable_reg = SPRITES_DISABLE_ALL
+
+    // Set border color to black.
+    vic_border_color_reg = COLOR_BLACK
+
+    // Snapshot current voice activity mask.
+    voice_active_mask_snapshot = voice_instr_active_mask
+
+    // If any logical voices are active, mute SID master volume temporarily.
+    if voice_active_mask_snapshot != 0:
+        sid_master_volume = 0
+
+    // Mark that raster-IRQ initialization is now pending/in progress.
+    raster_irq_init_pending_flag = TRUE
+
+
+function init_memory_sound_and_video():
+    // 1) Setup interrupt vectors and disk drive code.
+    setup_vectors_and_drive_code()
+
+    // 2) Disable IRQs and configure CPU I/O port DDR.
+    disable_interrupts()
+    cpu_port_ddr = CPU_PORT_DDR_INIT
+
+    // 3) Blank screen during memory initialization.
+    vic_screen_control_reg_1 &= SCREEN_OFF_MASK
+
+    // 4) Clear memory regions and set video defaults.
+    cpu_set_memory_config(MAP_IO_OUT)
+
+    clear_gfx_memory()                 // frame buffers, dot data, top color bar
+    clear_zero_page_vars()             // ZP $0015..$00FF
+    clear_game_and_engine_vars()       // engine/game region + CAD0–CB90
+    init_video_mode_and_click_flag()   // video_setup_mode + room_scene_clicked_flag
+    clear_gfx_memory()                 // second clear to ensure clean buffers
+    setup_border_and_sprite_colors()   // border and sprite multicolors
+    clear_sprite_regs_and_sprite_memory()
+
+    // 5) Install an RTS NMI handler at a fixed address.
+    nmi_handler = address(rts_stub)       // RTS stub
+
+    // 6) Initialize actor rendering state (sprite base + room mask + mapping table).
+    init_actor_render_state()
+
+    // 7) Initialize sound engine state
+    reset_sound_engine_state()
+
+    // 8) Configure IRQ vector and VIC/CIA video layout.
+    disable_interrupts()
+
+    irq_vector = address(irq_handler1)
+
+    vic_screen_control_reg_1 = CTRL1_BLANK_PRESET
+    vic_memory_layout_shadow = VIC_MEM_LAYOUT_INIT
+    vic_memory_layout_reg    = VIC_MEM_LAYOUT_INIT
+
+    frame_buffer = 1                   // select framebuffer #1
+    vic_screen_control_reg_2 = CTRL2_ROOM_REGION_PRESET
+
+    vic_raster_line_reg = RASTER_IRQ_LINE_INIT
+    vic_irq_flag_reg     = VIC_IRQ_RASTER_ACK
+    vic_irq_mask_reg     = VIC_IRQ_RASTER_ACK   // enable raster IRQ
+
+    dummy = cia1_irq_status_reg        // read to clear CIA1 IRQ flags
+
+    // Select VIC bank $C000–$FFFF via CIA2 PRA.
+    tmp = cia2_pra
+    tmp = (tmp & CIA2_VIC_BANK_MASK) | CIA2_VIC_BANK_C000
+    cia2_pra = tmp
+
+    // Stop CIA1 timers on underflow (do not start them).
+    cia1_timer_a_ctrl_reg = CIA1_TIMER_STOP_ON_UF
+    cia1_timer_b_ctrl_reg = CIA1_TIMER_STOP_ON_UF
+
+    // Enable all sprites.
+    vic_sprite_enable_reg = SPRITES_ENABLE_ALL
+
+    // 9) Copy a small init block from loader area into high RAM.
+    copy_memory(
+        src  = INIT_COPY_SRC_START,
+        dest = INIT_COPY_DST_START,
+        size = INIT_COPY_SIZE_BYTES
+    )
+
+    // 10) Relocate the main runtime blocks, then return.
+    relocate_memory()
+
+
+function copy_memory(src, dest, size):
+    // Copies `size` bytes from src to dest forwards.
+    // Precondition: size > 0 and dest is not inside the source range in a way
+    // that would require backward copying.
+
+    while size > 0:
+        byte = read_byte(src)
+        write_byte(dest, byte)
+
+        src  = src  + 1
+        dest = dest + 1
+        size = size - 1
+
+
+function relocate_memory():
+    // 1) Copy character set and UI arrows.
+    copy_memory(
+        src  = BLOCK_CHARS_SRC_START,
+        dest = BLOCK_CHARS_DST_START,
+        size = BLOCK_CHARS_SIZE_BYTES
+    )
+
+    // 2) Copy graphics and script handler code.
+    copy_memory(
+        src  = BLOCK_GFX_CODE_SRC_START,
+        dest = BLOCK_GFX_CODE_DST_START,
+        size = BLOCK_GFX_CODE_SIZE_BYTES
+    )
+
+    // 3) Copy engine constants.
+    copy_memory(
+        src  = BLOCK_CONSTS_SRC_START,
+        dest = BLOCK_CONSTS_DST_START,
+        size = BLOCK_CONSTS_SIZE_BYTES
+    )
+
+    // 4) Copy decompression routines.
+    copy_memory(
+        src  = BLOCK_DECOMP_SRC_START,
+        dest = BLOCK_DECOMP_DST_START,
+        size = BLOCK_DECOMP_SIZE_BYTES
+    )
+
+    // 5) Copy initialization block used by runtime.
+    copy_memory(
+        src  = BLOCK_INIT_SRC_START,
+        dest = BLOCK_INIT_DST_START,
+        size = BLOCK_INIT_SIZE_BYTES
+    )
+
+    // 6) Initialize cursor position and interaction region.
+    cursor_x_pos        = CURSOR_INIT_X
+    cursor_y_pos        = CURSOR_INIT_Y
+    hotspot_entry_ofs   = INTERACTION_REGION_DEFAULT
+    update_cursor_physics_from_hotspot()
+
+    // 7) Hide cursor and enable interrupts.
+    hide_cursor_flag = TRUE
+    enable_interrupts()
+
+    // 8) Initialize raster interrupt environment.
+    init_raster_irq_env()
+
+    return
+
+
+function clear_zero_page_vars():
+    // Clear $0015 .. $00FF to zero, leave $0000..$0014 intact.
+    addr = ZP_CLEAR_START   // $0015
+    while addr <= 0x00FF:
+        write_byte(addr, ZP_CLEAR_VALUE)   // 0
+        addr = addr + 1
+
+
+function clear_game_and_engine_vars():
+    // Zero main engine range using mem_fill_x_3.
+    fill_pointer = CLEAR_GAME_START
+    fill_count   = CLEAR_GAME_SIZE
+    fill_value   = CLEAR_VALUE_ZERO
+    mem_fill_x_3(fill_pointer, fill_count, fill_value)
+
+    // Then clear the CAD0–CB90 work area.
+    clear_cad0_cb90()
+
+function mem_fill_x_3(dest, size, value):
+    // Fill `size` bytes at `dest` with `value`.
+    // Precondition: size > 0.
+
+    ptr  = dest
+    remaining = size
+
+    while remaining > 0:
+        write_byte(ptr, value)
+        ptr       = ptr + 1
+        remaining = remaining - 1
+
+
+function clear_cad0_cb90():
+    fill_pointer = ZFILL_CAD0_START
+    fill_count   = ZFILL_CAD0_SIZE
+    fill_value   = ZFILL_VALUE_ZERO
+    mem_fill_x_3(fill_pointer, fill_count, fill_value)
+
+
+function setup_border_and_sprite_colors():
+    // Border color = black.
+    vic_border_color_reg = COLOR_BLACK
+
+    // Global sprite multicolor 1 = black, 0 = light-red/skin.
+    vic_sprite_mcolor1_reg = COLOR_BLACK
+    vic_sprite_mcolor0_reg = COLOR_LIGHT_RED
+
+
+function clear_sprite_regs_and_sprite_memory():
+    // Clear sprite control and collision registers.
+    vic_sprite_x_expand_reg  = 0
+    vic_sprite_y_expand_reg  = 0
+    vic_sprite_priority_reg  = 0
+    vic_coll_spr_spr_reg     = 0
+    vic_coll_spr_bg_reg      = 0
+
+    // Enable multicolor mode for sprites 0–6 (7 stays hi-res).
+    vic_sprite_mc_enable_reg = SPR_MC_ENABLE_0_TO_6
+
+    // Point engine sprite shape lookup at the default shape set.
+    sprite_shape_data_ptr = SPRITE_SHAPE_SET1_ADDR
+
+    // Clear sprite memory region ($E000–$EFFF) to zero.
+    fill_pointer = SPRITE_BASE_0
+    fill_count   = SPRITE_MEM_SIZE
+    fill_value   = 0
+    mem_fill_x_3(fill_pointer, fill_count, fill_value)
+
+
+function init_video_mode_and_click_flag():
+    video_setup_mode        = VID_SETUP_NONE
+    room_scene_clicked_flag = TRUE
+
+
+function clear_gfx_memory():
+    // 1) Clear frame buffer 1.
+    mem_fill_x_3(
+        dest  = FRAMEBUF1_START,
+        size  = FRAMEBUF_SIZE,
+        value = 0
+    )
+
+    // 2) Clear frame buffer 2.
+    mem_fill_x_3(
+        dest  = FRAMEBUF2_START,
+        size  = FRAMEBUF_SIZE,
+        value = 0
+    )
+
+    // 3) Clear dot-data region.
+    mem_fill_x_3(
+        dest  = DOTDATA_START,
+        size  = DOTDATA_SIZE,
+        value = 0
+    )
+
+    // 4) Paint top color-RAM bar with COLOR_BAR_FILL.
+    for i from 0 to COLOR_BAR_LEN - 1:
+        vic_color_ram[i] = COLOR_BAR_FILL
+
+
+function init_actor_render_state():
+    // Set actor sprite base to high byte of sprite memory base.
+    actor_sprite_base_high = high_byte(SPRITE_BASE_0)
+
+    // Set default room mask pointer.
+    mask_base_ptr = ROOM_MASK_PTR
+
+    // Initialize actor→sprite mapping table to NO_SPRITE.
+    for actor_index from 0 to ACTOR_COUNT_TOTAL - 1:
+        actor_sprite_index[actor_index] = NO_SPRITE
+
+
+function init_game_engine():
+    // Sentence stack initialization.
+    sentstk_top_idx    = SENTENCE_STACK_EMPTY_IDX
+    sentstk_free_slots = SENTENCE_STACK_SIZE
+
+    // Standard message bar delay (16-bit).
+    std_msg_countdown = STD_MSG_DEFAULT_TICKS
+
+    // Text speed (characters per tick).
+    text_delay_factor = TEXT_DELAY_DEFAULT
+
+    // Default verb = "Walk to".
+    current_verb_id = VERB_WALK_TO
+
+    // Sentence bar needs initial refresh.
+    sentence_bar_needs_refresh = TRUE
+
+    // Lighting mode = flashlight-only.
+    global_lights_state = LIGHTS_FLASHLIGHT_ONLY
+
+    // Active disk side = game disk side 2.
+    active_side_id = GAME_DISK_ID_SIDE2
+
+    // Initialize camera position.
+    cam_current_pos = CAMERA_INIT_POS
+
+    // Normalize all costumes and their actor mappings.
+    for costume_index from COSTUME_MAX_INDEX down to 0:
+        costume_clip_set[costume_index] = CLIP_STAND_DOWN
+        actor_for_costume[costume_index] = NO_ACTOR
+
+    // Normalize all actors and their costume mappings.
+    for actor_index from ACTOR_MAX_INDEX down to 0:
+        actor_cur_facing_direction[actor_index] = DIRECTION_DOWN
+        costume_for_actor[actor_index]          = NO_COSTUME
+
+    // Seed RNG with fixed non-zero values.
+    random_1 = RNG_SEED_1
+    random_2 = RNG_SEED_2
+
+*/

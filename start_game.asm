@@ -2,7 +2,6 @@
 ================================================================================
  start_game.asm
 ================================================================================
-
 Summary
 	Initialize core engine state and load boot-time tables from disk.
 	Configure framebuffer, player and camera, clear memory regions,
@@ -231,3 +230,84 @@ clear_inventory_memory:
 
         jmp     init_heap_free_list         // continue with heap initialization
 	
+/*	
+function start_game():
+    // 1) Clear inventory memory and initialize heap free list.
+    clear_inventory_memory()
+
+    // 2) Ensure correct disk side is in the drive.
+    disk_ensure_correct_side(GAME_DISK_ID_SIDE1)
+
+    // 3) Read object attributes block from disk.
+    //
+    //   - Initialize a read chain for track 1.
+    //   - Seek to sector 0, offset 2 and read it into a buffer that
+    //     disk_stream_copy will consume.
+    disk_init_chain(offset = 0x00, track = 0x01)
+    disk_seek_and_read_sector(offset = 0x02, sector = 0x00)
+
+    //   - Copy OBJ_ATTR_LEN bytes from the stream buffer into object_attributes.
+    disk_copy_count = OBJ_ATTR_LEN
+    disk_stream_copy(dest = object_attributes, count = disk_copy_count)
+
+    // 4) Read resource storage metadata block from disk.
+    //
+    //   - Seek to sector 1, offset 2 on the same track.
+    disk_seek_and_read_sector(offset = 0x02, sector = 0x01)
+
+    //   - Copy STORAGE_META_LEN bytes into room_disk_side_tbl.
+    disk_copy_count = STORAGE_META_LEN
+    disk_stream_copy(dest = room_disk_side_tbl, count = disk_copy_count)
+
+    // 5) Configure framebuffer preset and base address.
+    frame_buffer      = FRAMEBUFFER_INIT
+    frame_buffer_base = VIEW_FRAME_BUF_1      // base pointer for active framebuffer
+
+    // 6) Initialize player and camera.
+    current_kid_idx       = COSTUME_INDEX_DAVE
+    cam_mode              = CAM_MODE_FOLLOW_ACTOR
+    cam_follow_costume_id = current_kid_idx   // camera follows the active kid
+
+    // 7) Mark “no current script” active.
+    task_cur_idx = TASK_IDX_NONE
+
+    // 8) Clear engine variable block.
+    for x from ENGINE_VARS_LEN down to 1:
+        engine_vars[x] = 0
+
+    // 9) Clear game variable block.
+    for x from GAME_VARS_LEN down to 1:
+        game_vars[x] = 0
+
+    // 10) Lock key sound resources (3,4,5,6,8,9) against eviction.
+    for sound_index in [3, 4, 5, 6, 8, 9]:
+        sound_liveness_tbl[sound_index] |= SOUND_LOCK_MASK   // set bit7
+
+    // 11) Set embedded sound pointers for tracks 3..5.
+    sound_ptr_tbl[3] = SOUND3_PTR
+    sound_ptr_tbl[4] = SOUND4_PTR
+    sound_ptr_tbl[5] = SOUND5_PTR
+
+    // 12) Initialize raster IRQ environment (display timing, etc).
+    init_raster_irq_env()
+
+    // 13) Launch the global “start game” script.
+    launch_global_script(SCRIPT_IDX_START_GAME)
+
+    // 14) Fall through into the main loop (in main.asm).
+    main_loop()
+	
+
+function clear_inventory_memory():
+    // 1) Zero-fill the contiguous inventory object region.
+    dest  = address_of(inventory_objects)
+    size  = INVENTORY_AREA_LEN
+    value = 0
+
+    mem_fill_x(dest, size, value)
+
+    // 2) Tail-jump into heap initialization; this routine never returns
+    //    to its caller (start_game resumes after heap setup).
+    init_heap_free_list()
+
+*/	

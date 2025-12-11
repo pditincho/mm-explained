@@ -1,3 +1,5 @@
+// Miscellaneous functions that were not classified as part of another module
+
 #importonce
 
 #import "globals.inc"
@@ -1233,3 +1235,368 @@ wait_irq_handler_ack_clear:
         bpl     signal_irq_handler_once        // not taken (negative), so exit
 
         rts
+
+/*
+function mem_fill_x_1():
+    // Preconditions:
+    //   X = byte to fill with
+    //   fill_dest_ptr = pointer to first destination address
+    //   fill_byte_cnt = number of bytes to write (must be > 0)
+
+    while fill_byte_cnt != 0:
+        *fill_dest_ptr = X
+        fill_dest_ptr += 1
+        fill_byte_cnt -= 1
+    // On exit: dest advanced past last byte, counter = 0
+
+
+function alternate_frame_buffer():
+    // Only toggle when environment lights are ON
+    if global_lights_state != LIGHTS_ENVIRONMENT_ON:
+        return
+
+    if frame_buffer == 1:
+        // Switch to frame buffer 2
+        frame_buffer_base = VIEW_FRAME_BUF_0
+        video_setup_mode  = VID_SETUP_CC00
+        frame_buffer      = 2
+    else:
+        // Switch to frame buffer 1
+        frame_buffer_base = VIEW_FRAME_BUF_1
+        video_setup_mode  = VID_SETUP_C800
+        frame_buffer      = 1
+
+
+function switch_to_frame_buffer_2():
+    frame_buffer_base = VIEW_FRAME_BUF_0
+    video_setup_mode  = VID_SETUP_CC00
+    frame_buffer      = 2
+    return
+
+
+function switch_to_frame_buffer_1():
+    frame_buffer_base = VIEW_FRAME_BUF_1
+    video_setup_mode  = VID_SETUP_C800
+    frame_buffer      = 1
+    return
+
+
+function do_nothing_077B():
+    return
+
+
+function handle_entity_approach_and_trigger():
+    // No target entity → nothing to do
+    if target_entity == ENTITY_NONE:
+        return
+
+    // Resolve actor for current kid
+    actor_index = actor_for_costume[current_kid_idx]
+
+    // Only react if actor is currently stopped
+    if actor_motion_state[actor_index] != ACTOR_STATE_STOPPED:
+        return
+
+    // If contact sentinel is already set, clear it and fire the verb handler
+    if target_entity == ENTITY_CONTACT_SENTINEL:
+        target_entity = ENTITY_NONE
+        execute_verb_handler_for_object()
+        return
+
+    // Otherwise, route the destination coordinates based on entity type
+    set_approach_point(
+        obj_lo = target_obj_lo,
+        obj_hi = target_obj_hi,
+        entity = target_entity
+    )
+
+    // Re-resolve actor index (callee may have changed X)
+    actor_index = actor_for_costume[current_kid_idx]
+
+    // Compute |ΔX|
+    dx = target_x - actor_pos_x[actor_index]
+    dx = absolute_value(dx)
+
+    // If too far horizontally, clear flag and exit
+    if dx > CONTACT_X_THRESHOLD:
+        target_entity = ENTITY_NONE
+        return
+
+    // Compute |ΔY|
+    dy = target_y - actor_pos_y[actor_index]
+    dy = absolute_value(dy)
+
+    // If too far vertically, clear flag and exit
+    if dy > CONTACT_Y_THRESHOLD:
+        target_entity = ENTITY_NONE
+        return
+
+    // Close enough in both X and Y: face toward target and latch contact
+    face_toward_target()
+    target_entity = ENTITY_CONTACT_SENTINEL
+    return
+
+
+function copy_vic_color_ram_wrapper():
+    // Map VIC/Color RAM into CPU address space
+    cpu_port = MAP_IO_IN
+
+    // Copy prepared scene colors into Color RAM
+    copy_vic_color_ram()
+
+    // Restore normal RAM mapping
+    cpu_port = MAP_IO_OUT
+    return
+
+
+function copy_vic_color_ram():
+    // Copy a 17-row × 40-column color area from a fixed source layout
+    // into the corresponding 17 × 40 region in Color RAM.
+
+    for column in 39 down_to 0:
+        // For each row, copy the color at [row_base + column]
+        // Source bases: $6D89, $6DB1, ..., $7009
+        // Dest bases:   $D828, $D850, ..., $DAA8
+
+        for row in 0 .. 16:
+            src_addr = SOURCE_ROW_BASE[row] + column
+            dst_addr = DEST_ROW_BASE[row]   + column
+            ColorRAM[dst_addr] = RAM[src_addr]
+
+    color_ram_copy_done = TRUE
+    return
+
+
+function execute_room_entry_script():
+    if room_entry_script_ptr == 0:
+        return
+
+    // Configure task 0 as a room script at the entry pointer
+    task_type_tbl[0]        = SCRIPT_TYPE_ROOM
+    task_pc_ofs_lo_tbl[0]   = low(room_entry_script_ptr)
+    task_pc_ofs_hi_tbl[0]   = high(room_entry_script_ptr)
+
+    // Run task 0’s script and resume parent afterward
+    invoke_task_then_resume_parent(task_index = 0)
+    return
+
+function execute_room_exit_script():
+    if room_exit_script_ptr == 0:
+        return
+
+    // Configure task 0 as a room script at the exit pointer
+    task_type_tbl[0]        = SCRIPT_TYPE_ROOM
+    task_pc_ofs_lo_tbl[0]   = low(room_exit_script_ptr)
+    task_pc_ofs_hi_tbl[0]   = high(room_exit_script_ptr)
+
+    // Run task 0’s script and resume parent afterward
+    invoke_task_then_resume_parent(task_index = 0)
+    return
+
+
+function find_actor_under_cursor_excl_kid() -> (found_flag, costume_index):
+    // Returns:
+    //   found_flag = FIND_ACTOR_FOUND or FIND_ACTOR_NOT_FOUND
+    //   costume_index = costume id on hit, 0 on miss
+
+    for actor_index from ACTOR_MAX_INDEX down_to 0:
+        // Skip unused actor slots (bit7 set)
+        flags_or_costume = costume_for_actor[actor_index]
+        if high_bit(flags_or_costume) == 1:
+            continue
+
+        // Horizontal hit test in quarter-character units:
+        left  = actor_pos_x[actor_index]
+        right = left + ACTOR_X_RIGHT_PAD      // right edge is exclusive
+
+        if cursor_x_pos_quarter_absolute < left:
+            continue
+        if cursor_x_pos_quarter_absolute >= right:
+            continue
+
+        // Vertical hit test in “half off-by-8” domain scaled to rows
+        bottom = actor_pos_y[actor_index]     // bottom of actor’s box
+        if cursor_y_pos_half_off_by_8 > bottom:
+            continue
+
+        top = bottom - VIEW_COLS              // approximate height
+        if top < CURSOR_Y_MIN_ROW:
+            top = CURSOR_Y_MIN_ROW
+
+        if cursor_y_pos_half_off_by_8 < top:
+            continue
+
+        // Exclude the current kid
+        if flags_or_costume == current_kid_idx:
+            continue
+
+        // Hit: return the costume id as X and success code in A
+        costume_index = flags_or_costume
+        return (FIND_ACTOR_FOUND, costume_index)
+
+    // No match
+    return (FIND_ACTOR_NOT_FOUND, 0)
+
+
+function find_object_at_cursor() -> (hit_hi, hit_lo):
+    // Returns:
+    //   On hit: hi/lo global object index
+    //   On miss: X = 0 (NO_OBJECT_IDX); A undefined
+
+    if room_obj_count == 0:
+        return (undefined, NO_OBJECT_IDX)
+
+    // Scan room object indices 1..room_obj_count inclusive
+    for room_idx in 1 .. room_obj_count:
+        // Check immutability
+        if room_obj_idx_hi[room_idx] != 0:
+            // Immutable, always present
+            candidate_object = room_idx
+        else:
+            // Mutable: may be removed
+            global_idx = room_obj_idx_lo[room_idx]
+            attrs = object_attributes[global_idx]
+
+            if attrs has ATTR_REMOVED_FROM_ROOM_MASK:
+                continue  // removed from room
+
+            candidate_object = room_idx
+
+        // Parent / overlay containment resolution
+        current_room_idx = room_idx
+        ancestor_overlay_req = ancestor_overlay_req_tbl[current_room_idx]
+
+        while true:
+			// Resolve parent object "room index" (its object index in the room)
+            parent_room_idx = parent_idx_tbl[current_room_idx]
+            if parent_room_idx == 0:
+                // No parent → proceed to hit test
+                break
+
+            // Check parent attributes against required overlay/inside flag
+            parent_global_idx = room_obj_idx_lo[parent_room_idx]
+            parent_attrs = object_attributes[parent_global_idx]
+            parent_inside_bit = parent_attrs & ATTR_INSIDE_PARENT_MASK
+
+            if parent_inside_bit != ancestor_overlay_req:
+                // Ancestor containment requirement failed → skip this object
+                goto next_room_object
+
+            // Promote parent and re-check (supports multi-level ancestry)
+            current_room_idx = parent_room_idx
+            // ancestor_overlay_req stays the same
+
+        // If we reach here, containment is valid; test bounds
+        if check_cursor_object_bounds(candidate_object):
+            // Bounds routine returns hi/lo in A/X
+            hit_hi = room_obj_idx_hi[candidate_object]
+            hit_lo = room_obj_idx_lo[candidate_object]
+            return (hit_hi, hit_lo)
+
+    label next_room_object:
+        // falls through in the loop
+
+    // No object hit; outer code standardizes X=0
+    return (undefined, NO_OBJECT_IDX)
+
+
+function check_cursor_object_bounds(room_idx) -> bool:
+    // Normalize cursor coordinates to object grid
+    cursor_y = cursor_y_pos_half_off_by_8 >> 2   // scale down to row units
+    cursor_x = cursor_x_pos_quarter_absolute     // already in column units
+
+    // Horizontal containment: [left .. right), right exclusive
+    left  = obj_left_col_tbl[room_idx]
+    right = left + obj_width_tbl[room_idx]
+
+    if cursor_x < left:
+        // Miss; caller will advance to next object
+        return false
+    if cursor_x >= right:
+        return false
+
+    // Vertical containment: [top .. bottom), bottom exclusive
+    top    = obj_top_row_tbl[room_idx]
+    bottom = top + obj_height_tbl[room_idx]
+
+    if cursor_y < top:
+        return false
+    if cursor_y >= bottom:
+        return false
+
+    // Hit: caller will fetch hi/lo via tables and return them
+    return true
+
+
+function disk_id_check():
+    // Save caller’s starting sector/track
+    saved_sector = start_sector
+    saved_track  = start_track
+
+    // Set up a stream to read track 1, sector 0, offset 0
+    disk_init_chain(track = 1, offset = 0)
+    disk_seek_and_read_sector(sector = 0, offset = 0)
+
+    // Copy 1 byte from the disk stream into disk_id_in_sector
+    disk_stream_copy(dest = &disk_id_in_sector, length = 1)
+
+    // Compare read disk ID with expected side ID
+    if disk_id_in_sector == active_side_id:
+        // Debug path: matching ID considered an error here
+		hang
+    else:
+        // Mismatch: ensure we are on the correct side and restore sector/track
+        disk_ensure_correct_side(active_side_id)
+        start_track  = saved_track
+        start_sector = saved_sector
+        return
+
+
+function prepare_video_for_new_room():
+    // Hide cursor
+    hide_cursor_flag = TRUE
+
+    // Hide all actors and release sprite resources
+    hide_all_actors()
+
+    // Clear top-bar/talking UI by pointing at an empty message
+    src_msg_ptr = &empty_msg
+    shutdown_topbar_talking()
+
+    // Run the closing shutter animation (delta table index 0)
+    do_shutter_effect(mode = SHUTTER_CLOSE, delta_index = 0)
+
+    // Clear both view frame buffers
+    clear_view_buffers()
+
+    // Switch to frame buffer 2 as the active view buffer
+    switch_to_frame_buffer_2()
+
+    // Signal the video IRQ to perform any pending update, then wait for ack
+    video_update_signal = SIGNAL_SET
+    while video_update_signal != SIGNAL_CLEAR:
+        // spin
+        continue
+
+    return
+
+
+function ensure_raster_irq_ready():
+    // Ensure the raster IRQ environment is initialized
+    while raster_irq_init_pending_flag:
+        init_raster_irq_env()
+        // recheck until init flag is cleared
+
+    // Once initialization is complete, trigger a single unit of work
+    // in the IRQ handler via video_processed_signal
+    video_processed_signal = SIGNAL_SET
+
+    // Wait for IRQ handler to acknowledge by clearing the signal
+    while video_processed_signal != SIGNAL_CLEAR:
+        // spin
+        continue
+
+    // One extra tiny delay; no functional loop
+    // (DEX/BPL pattern in assembly is arranged to exit immediately)
+    return
+*/
